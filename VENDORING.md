@@ -372,3 +372,58 @@ during calibration may indicate the calibration pose itself wasn't ideal. Not so
 by writing more code — needs a domain expert's (PT/biomechanist) judgment on whether this is
 normal for this task or a real problem, before treating the leg kinematics from this pipeline as
 trustworthy for anything clinical.
+
+## Update 2026-08-17 (later): git baseline committed, `gaitAnalysis-UCM.py` rewritten
+
+**Git baseline.** Per this doc's own earlier recommendation, the repo now has real history:
+1. `cfcf7ad` — the untouched vendored `opencap-processing` files (everything listed under "Files
+   NOT modified" above), as a clean baseline referencing the upstream commit hash.
+2. `3a568fb` — the Synergy-specific overlay on top: `xsens_to_opensim.py`, `utils_UCM.py`,
+   `utilsKinematics_UCM.py`, `getMarkers.py`, `Examples/gaitAnalysis-UCM.py`, `tests/`, this file,
+   README.md, `.gitignore`. `context/`, `Data/`, `*.mvnx`, `*.xlsx` remain gitignored and were
+   confirmed via `git status --ignored` to never have been staged.
+
+**`Examples/gaitAnalysis-UCM.py` rewritten (commercial-viability / quality-review pass).** Full
+rationale is in the file's own module docstring now (kept there, not duplicated here, to avoid the
+two drifting apart) — summary:
+- Removed ~810 lines of fully inactive, commented-out GDI (Gait Deviation Index) scoring code.
+  Never reachable, depended on `matrix.csv`/`perGaitCycle.csv`/`controlCalc.csv` files that don't
+  exist in this repo, and was internally inconsistent (checked for `matrix.csv`, opened
+  `matrix_ms_reduced.csv`). Recoverable from git history (the commit before this rewrite) if ever
+  needed.
+- Fixed: left-leg individual gait curves were computed and their scalars printed, but never
+  written to CSV — only the right leg was saved. Both are now saved. **Unexercised, unverified**
+  — this needs a real run against real data to confirm the left-leg CSV is numerically sane.
+- Fixed: the 'E' (evaluate downloaded data) menu path never set `subjid`/`savpath` at all (only
+  'Z' did) — first-action 'E' would NameError; 'E' after a prior 'Z' would silently reuse the
+  wrong save location. Also fixed 'E''s `baseFolder` reconstruction, which re-derived the already-
+  known selected folder via the same `rfind("_")` slicing 'Z' uses — broken for UUID session IDs,
+  which contain no underscores.
+- Session-ID / subject-ID / zip-root parsing rewritten from chained `str.find`/`rfind` slicing to
+  explicit regex against OpenCap's own `OpenCapData_<uuid>` naming, addressing README's
+  "Session ID parsing is inconsistent" known issue directly.
+- `dataFolder` fixed to resolve inside the repo root (`<repo>/Data`) instead of the repo's parent
+  — matches `.gitignore`'s `Data/*` entry, which only makes sense if `Data/` lives in the repo.
+- The whole file used to run its interactive prompt loop immediately at import time (module-level
+  code, no `if __name__ == '__main__':` guard) — nothing in it was importable or unit-testable, and
+  importing it for any reason would hang a process waiting on `input()`. Now split into functions
+  behind a real entry point, with the `gait_analysis_UCM`/`opensim`/`utils` imports deferred into
+  the functions that actually need them (same pattern `xsens_to_opensim.py` already uses) — so
+  path parsing, trial discovery, and the CSV export shape are all testable without OpenSim
+  installed and without `gait_analysis_UCM.py` existing. See
+  `tests/test_gaitAnalysis_UCM_rewrite.py` (13 new tests, all passing).
+- Added a non-interactive batch mode (`--zip`/`--data-dir` plus `--trial`/`--all-trials`) — this
+  is the automation this project's own README asks for ("loop through a batch of recordings ...
+  without hand-driving every step"), which the interactive-only version never provided.
+- The foot-progression-angle math itself (`compute_foot_progression_angles`, formerly `getpelvis`)
+  is **UNCHANGED** — same operations, same order, same +/-5° per-foot offset (still undocumented,
+  still not re-derived, just preserved and named as `FOOT_ROTATION_OFFSET_DEG`). This could not be
+  re-verified against the pre-rewrite version's numeric output this session — do that (real
+  OpenSim run, real session data, diff the `.mot`/CSV output against a pre-rewrite run) before
+  trusting this over the original for anything clinical.
+- **Still blocked**: `gait_analysis_UCM.py` is still missing (see "Critical gap" above) — this
+  rewrite makes everything *around* that dependency correct and testable, but the file itself
+  still needs to be supplied before the pipeline can run end to end.
+
+Full test suite after the rewrite: `26 passed` (13 pre-existing + 13 new), run via
+`C:\Users\cladi\miniconda3\python.exe -m pytest C:\Users\cladi\synergy\tests -v`.
