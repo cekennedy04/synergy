@@ -134,6 +134,7 @@ REQUIREMENTS
 import argparse
 import math
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -667,19 +668,54 @@ def main():
 
     sto_path = args.sto_path or (Path(args.mvnx_file).stem + "_orientations.sto")
 
+    # Wall-clock timing per stage. Nothing about how long this pipeline takes
+    # was recorded anywhere until 2026-08-18 -- the only evidence of the first
+    # real end-to-end run's ~5-minute duration was reconstructed after the
+    # fact from output-file timestamps. Recording it directly here means that
+    # never has to happen again.
+    timings = {}
+    run_start = time.perf_counter()
+
     print(f"[1/3] Parsing {args.mvnx_file} -> {sto_path} (source={args.source})")
+    t = time.perf_counter()
     build_orientations_sto(args.mvnx_file, sto_path, SEGMENT_TO_IMU_FRAME, source=args.source)
+    timings["parse_and_write_sto_s"] = time.perf_counter() - t
+    print(f"       done in {timings['parse_and_write_sto_s']:.1f}s")
 
     print(f"[2/3] Calibrating {args.model_file} against frame 0 of {sto_path}")
+    t = time.perf_counter()
     calibrated_model = calibrate_model(
         args.model_file, sto_path, args.base_imu, args.base_heading_axis
     )
-    print(f"       -> {calibrated_model}")
+    timings["calibrate_model_s"] = time.perf_counter() - t
+    print(f"       -> {calibrated_model} ({timings['calibrate_model_s']:.1f}s)")
 
     print(f"[3/3] Running IMU inverse kinematics -> {args.results_dir}/")
+    t = time.perf_counter()
     run_imu_ik(calibrated_model, sto_path, args.start_time, args.end_time,
                args.results_dir)
-    print("Done.")
+    timings["run_imu_ik_s"] = time.perf_counter() - t
+    print(f"       done in {timings['run_imu_ik_s']:.1f}s")
+
+    timings["total_s"] = time.perf_counter() - run_start
+    print(
+        f"Done in {timings['total_s']:.1f}s total "
+        f"(parse+write {timings['parse_and_write_sto_s']:.1f}s, "
+        f"calibrate {timings['calibrate_model_s']:.1f}s, "
+        f"IK {timings['run_imu_ik_s']:.1f}s)."
+    )
+
+    timing_log = Path(args.results_dir) / "timing.txt"
+    timing_log.parent.mkdir(parents=True, exist_ok=True)
+    with open(timing_log, "w") as f:
+        f.write(f"mvnx_file: {args.mvnx_file}\n")
+        f.write(f"model_file: {args.model_file}\n")
+        f.write(f"source: {args.source}\n")
+        f.write(f"start_time: {args.start_time}\n")
+        f.write(f"end_time: {args.end_time}\n")
+        for key, seconds in timings.items():
+            f.write(f"{key}: {seconds:.3f}\n")
+    print(f"Timing recorded to {timing_log}")
 
 
 if __name__ == "__main__":

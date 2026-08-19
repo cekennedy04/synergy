@@ -339,6 +339,15 @@ this clinical use case. Not a code-correctness question at that point, a biomech
 Full-trial run log and outputs are in scratchpad (not the repo — derived-but-still-subject-linked
 outputs shouldn't live in git any more than the source data should).
 
+**Timing was never recorded during this run** — the ~5-minute total (parse+write ~1s,
+calibrate <1s, IMU IK ~4m58s, i.e. ~115ms/frame) was reconstructed after the fact from output-file
+timestamps, not measured directly. Fixed 2026-08-18: `xsens_to_opensim.py`'s `main()` now times
+each of the three stages with `time.perf_counter()`, prints them, and writes them to
+`<results-dir>/timing.txt` alongside the IK output on every run, so this doesn't need forensic
+reconstruction again. Verified with a smoke test (stage functions replaced with fast stand-ins) and
+the existing 26-test suite; not re-verified against a real 5-minute run since the original run's
+uncalibrated scaled model isn't available in this session to redo it cheaply.
+
 **Full 43-second/2609-frame trial: also completed successfully, exit code 0** — mechanically, this
 is a real, working, end-to-end pipeline now. But the full-trial orientation-error summary is a more
 important result than the "it ran" headline, and it's not uniformly good:
