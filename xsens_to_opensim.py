@@ -84,25 +84,33 @@ SOURCES THIS WAS BUILT FROM (2026-08-17 research)
   and an arXiv paper on bridging Xsens MVN to ROS -- all agree on the same
   23-segment order.
 
-WHAT THIS SCRIPT DOES NOT DO YET (be honest about the gap)
+STATUS (updated 2026-08-19 -- see VENDORING.md for the full history)
 ---------------------------------------------------------------------------
-- The OpenSim-dependent half (writing the real .sto via
-  STOFileAdapterQuaternion, IMUPlacer, IMUInverseKinematicsTool) has still
-  never been run -- OpenSim isn't installed on this machine yet. Only the
-  .mvnx-parsing half is tested (synthetic fixture + the structural facts
-  above, confirmed against the real file). This is source-grounded, not
-  guessed, but "grounded" isn't the same as "verified end to end."
-- It assumes Xsens's per-SEGMENT orientation (already sensor-fused and
-  biomechanically constrained by Xsens's own MVN engine) is the right input
-  to OpenSense, rather than the raw per-sensor orientation
-  (<sensorOrientation>, confirmed present in the real file too: 17 sensors,
-  separate from the 23 segments). Whether that's actually the more accurate
-  choice for a full-body suit is a real open question -- see the
-  conversation this script came out of for the reasoning; short version is
-  segment orientation is ready to use now (order is well-sourced), while
-  sensor orientation would be architecturally cleaner but needs the
-  sensor-to-segment mapping confirmed from a non-stripped .mvnx export or
-  your MVN Analyze hardware configuration, which this file doesn't contain.
+The OpenSim-dependent half (STOFileAdapterQuaternion, IMUPlacer,
+IMUInverseKinematicsTool) HAS been run end to end, repeatedly, against real
+clinical data -- not just the .mvnx-parsing half. Real bugs this surfaced and
+fixed along the way: two Python-binding API mismatches (RowVectorQuaternion
+has no __setitem__; Model.print() is Model.printToXML() in Python), a missing
+mkdir before writing the .sto, and -- the big one -- a wrong default
+`base_heading_axis` ('z', copied from OpenSim's Rajagopal reference example)
+that produced a 95.8 degree heading-correction anomaly and effectively froze
+knee flexion in the output. Fixed by switching the default to 'x' (confirmed
+empirically: 5.8 degree correction vs. 84-174 degrees for every other axis
+option). Full numbers and the diagnostic process are in VENDORING.md.
+
+WHAT'S STILL OPEN (be honest about the gap)
+---------------------------------------------------------------------------
+- Some tracking error remains even with the corrected heading axis
+  (femur_r, calcn_r/l, and the arm segments specifically) -- not yet
+  explained. See VENDORING.md's 2026-08-19 entries for the current numbers
+  and untested next hypotheses (T-pose vs. model-default-pose mismatch for
+  arms; alternate `base_imu`).
+- source="sensor" (raw per-sensor orientation, <sensorOrientation>) is
+  still experimental, not a verified alternative to the default
+  source="segment": the sensor-to-segment slot-order mapping is inferred
+  from a parallel Excel export's structure, not independently proven for
+  the .mvnx binary compact form. Treat source="segment" as the supported
+  path.
 - SEGMENT_TO_IMU_FRAME's Xsens-side keys are now real (STANDARD_23_SEGMENT_ORDER,
   confirmed above). Its OpenSim-side values are still a stand-in from
   OpenSim's official Rajagopal example -- they depend on which OpenSim model
@@ -120,7 +128,7 @@ USAGE
         # SEGMENT_TO_IMU_FRAME below for your subject/model.
 
     python xsens_to_opensim.py capture.mvnx generic_model.osim \
-        --base-imu pelvis_imu --base-heading-axis z \
+        --base-imu pelvis_imu --base-heading-axis x \
         --start-time 7.25 --end-time 15.0 \
         --results-dir IKResults
 
@@ -177,6 +185,43 @@ STANDARD_23_SEGMENT_ORDER = [
 # which wasn't independently re-confirmed for 0_Bed_to_ShowerChair_M.mvnx
 # specifically (different trial than the Excel file this was checked
 # against).
+# Standard Xsens full-body 22-joint order for the <jointAngle> element (66
+# values/frame = 22 joints x 3 DOF). Used as a fallback ONLY when a parsed
+# .mvnx has no joint label list of its own -- true for every real file seen
+# so far (same "frames-only" export shape with no <segments> list either;
+# see STANDARD_23_SEGMENT_ORDER above).
+#
+# Not guessed: 23 segments in a tree rooted at Pelvis means exactly 22
+# parent-child edges, i.e. one joint per non-root segment -- so this is
+# STANDARD_23_SEGMENT_ORDER's own traversal order with the root dropped,
+# each entry renamed to Xsens's "j<Parent><Child>"-style joint-naming
+# convention. Confirmed directly, not just structurally inferred: this exact
+# order (and the per-DOF order below) was read out of
+# context/S01-001.xlsx's "Joint Angles ZXY" sheet -- a real parallel export
+# for this same subject/suit -- via its literal column headers ("L5S1
+# Lateral Bending", "L5S1 Axial Bending", "L5S1 Flexion/Extension", "L4L3
+# ...", ..., "hip_add_r", "hip_rot_r", "hip_flex_r", ..., "ballfoot_flex_l"),
+# 2026-08-19. All 22 joints, in this order, confirmed present with exactly
+# 3 columns each.
+STANDARD_22_JOINT_ORDER = [
+    "jL5S1", "jL4L3", "jL1T12", "jT9T8", "jT1C7", "jC1Head",
+    "jRightC7Shoulder", "jRightShoulder", "jRightElbow", "jRightWrist",
+    "jLeftC7Shoulder", "jLeftShoulder", "jLeftElbow", "jLeftWrist",
+    "jRightHip", "jRightKnee", "jRightAnkle", "jRightBallFoot",
+    "jLeftHip", "jLeftKnee", "jLeftAnkle", "jLeftBallFoot",
+]
+
+# The 3 values per joint in <jointAngle>, in order. Also confirmed against
+# context/S01-001.xlsx's real column headers (2026-08-19), not assumed --
+# notably flexion/extension is the THIRD value, not the first, for every
+# joint checked (e.g. "hip_add_r, hip_rot_r, hip_flex_r"; "Right Shoulder
+# Abduction/Adduction, ...Internal/External Rotation, ...Flexion/Extension").
+# Some joints use synonymous naming in the raw export (elbow/wrist/ankle use
+# "dev"/"pro" instead of "add"/"rot") but the same 3-axis order throughout.
+JOINT_ANGLE_DOF_NAMES = (
+    "abduction_adduction", "internal_external_rotation", "flexion_extension",
+)
+
 SENSOR_EQUIPPED_SEGMENTS = [
     "Pelvis", "T8", "Head",
     "RightShoulder", "RightUpperArm", "RightForeArm", "RightHand",
@@ -328,6 +373,16 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
 
     n_segments = len(segments)
 
+    # Unlike n_segments (validated upfront, since every real file so far has
+    # had <orientation> data for every frame), joint_names is only actually
+    # exercised if a frame turns out to have <jointAngle> data -- validated
+    # lazily in the per-frame loop below instead of raising here, so files
+    # with a non-standard segmentCount used only for segment-orientation
+    # testing (no jointAngle data at all) aren't rejected over a joint count
+    # that's irrelevant to what they're actually being parsed for.
+    joint_names = list(STANDARD_22_JOINT_ORDER)
+    n_joints = len(joint_names)
+
     def _frame_child_values(frame, tag_name):
         for child in frame:
             if _strip_ns(child.tag) == tag_name and child.text:
@@ -369,6 +424,10 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
 
     times = []
     orientations = []
+    joint_angles = []  # list (per frame) of lists (per joint) of (add/abd,
+    # int/ext rotation, flex/ext) tuples in STANDARD_22_JOINT_ORDER order --
+    # None for a frame with no <jointAngle> element.
+    center_of_mass = []  # list (per frame) of (x, y, z) tuples, or None.
     sensor_orientations_raw = []  # flat float lists, not yet reshaped/labeled --
     # see build_orientations_sto's sensor path for validation against
     # SENSOR_EQUIPPED_SEGMENTS. Kept separate from `orientations` validation
@@ -394,6 +453,35 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
         sensor_values = _frame_child_values(frame, "sensorOrientation")
         sensor_orientations_raw.append(sensor_values)
 
+        # Xsens's own joint-angle computation (see STANDARD_22_JOINT_ORDER
+        # and JOINT_ANGLE_DOF_NAMES above) -- an independent source of joint
+        # kinematics that doesn't go through this script's IMUPlacer/
+        # IMUInverseKinematicsTool conversion at all. Not every .mvnx
+        # necessarily has this element, so treat absence as "no data" rather
+        # than an error.
+        joint_angle_values = _frame_child_values(frame, "jointAngle")
+        if joint_angle_values is not None:
+            expected_joint = n_joints * 3
+            if len(joint_angle_values) != expected_joint:
+                raise ValueError(
+                    f"{mvnx_path}: frame has {len(joint_angle_values)} "
+                    f"<jointAngle> values, expected {expected_joint} "
+                    f"({n_joints} joints x 3 DOF)."
+                )
+            joint_angles.append(
+                [tuple(joint_angle_values[i : i + 3]) for i in range(0, len(joint_angle_values), 3)]
+            )
+        else:
+            joint_angles.append(None)
+
+        com_values = _frame_child_values(frame, "centerOfMass")
+        if com_values is not None and len(com_values) != 3:
+            raise ValueError(
+                f"{mvnx_path}: frame has {len(com_values)} <centerOfMass> values, "
+                "expected 3 (x, y, z)."
+            )
+        center_of_mass.append(tuple(com_values) if com_values else None)
+
         time_attr = frame.attrib.get("time")
         if time_attr is not None:
             times.append(float(time_attr) / 1000.0)  # ms -> s, confirmed against
@@ -411,9 +499,12 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
 
     return {
         "segments": segments,
+        "joint_names": joint_names,
         "frame_rate": frame_rate,
         "times": times,
         "orientations": orientations,
+        "joint_angles": joint_angles,
+        "center_of_mass": center_of_mass,
         "sensor_orientations_raw": sensor_orientations_raw,
         "calibration_orientation": calibration_orientation,
         "calibration_sensor_orientation_raw": calibration_sensor_orientation_raw,
@@ -434,6 +525,15 @@ def list_segments(mvnx_path):
         print("WARNING: no tpose/npose frame found in this file. Calibration will "
               "fall back to the first motion frame, which may not be a clean "
               "static pose -- check this before trusting the result.")
+
+    has_joint_angles = any(ja is not None for ja in parsed["joint_angles"])
+    has_com = any(com is not None for com in parsed["center_of_mass"])
+    if has_joint_angles:
+        print(f"\nThis file also has Xsens's own <jointAngle> data for all "
+              f"{len(parsed['joint_names'])} joints -- an independent source of "
+              "joint kinematics that doesn't need the IMUPlacer/IK conversion at all.")
+    if has_com:
+        print("This file also has Xsens's own <centerOfMass> per frame.")
 
 
 def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="segment"):
@@ -580,6 +680,7 @@ def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="se
             continue  # a motion frame with no sensorOrientation data (source='sensor' only)
         _append(t, frame_data)
 
+    Path(sto_path).parent.mkdir(parents=True, exist_ok=True)
     osim.STOFileAdapterQuaternion.write(table, str(sto_path))
     return sto_path
 
@@ -615,12 +716,25 @@ def calibrate_model(model_file, orientations_sto, base_imu_label, base_heading_a
 
 
 def run_imu_ik(calibrated_model_file, orientations_sto, start_time, end_time,
-               results_dir):
+               results_dir, output_motion_filename=None):
     """opensim.IMUInverseKinematicsTool: joint angles directly from IMU
-    orientations, no markers. Mirrors OpenSense_OrientationTracking.m exactly."""
+    orientations, no markers. Mirrors OpenSense_OrientationTracking.m exactly.
+
+    Returns the output .mot file's full path (not just results_dir) so
+    callers -- e.g. main()'s optional marker/.trc stage -- can chain off it
+    without having to guess IMUInverseKinematicsTool's default naming
+    convention or list the results directory afterward.
+
+    output_motion_filename overrides the default "ik_<sto stem>.mot" naming
+    -- needed when writing directly into an existing OpenCap session's
+    OpenSimData/Kinematics/ folder, where utilsKinematics.py's `kinematics`
+    class (see resolve_session_output_paths) expects the file to be named
+    exactly "<trialName>.mot", no prefix.
+    """
     import opensim as osim
 
     Path(results_dir).mkdir(parents=True, exist_ok=True)
+    output_motion_file = output_motion_filename or ("ik_" + Path(orientations_sto).stem + ".mot")
 
     imu_ik = osim.IMUInverseKinematicsTool()
     imu_ik.set_model_file(str(calibrated_model_file))
@@ -630,9 +744,194 @@ def run_imu_ik(calibrated_model_file, orientations_sto, start_time, end_time,
         imu_ik.set_time_range(0, start_time)
         imu_ik.set_time_range(1, end_time)
     imu_ik.set_results_directory(str(results_dir))
+    imu_ik.set_output_motion_file(output_motion_file)
 
     imu_ik.run(False)
-    return results_dir
+    return str(Path(results_dir) / output_motion_file)
+
+
+def _trc_header(trc_path, frame_rate, n_frames, n_markers, marker_names):
+    """Build the standard 5-line TRC header as a list of lines (no trailing
+    newlines) -- factored out from the writer so its exact format is
+    independently checkable without needing OpenSim or real marker data."""
+    lines = [
+        "PathFileType\t4\t(X/Y/Z)\t" + Path(trc_path).name,
+        "DataRate\tCameraRate\tNumFrames\tNumMarkers\tUnits\tOrigDataRate\tOrigDataStartFrame\tOrigNumFrames",
+        f"{frame_rate}\t{frame_rate}\t{n_frames}\t{n_markers}\tm\t{frame_rate}\t1\t{n_frames}",
+    ]
+    label_row = "Frame#\tTime"
+    sublabel_row = "\t"
+    for i, name in enumerate(marker_names):
+        label_row += f"\t{name}\t\t"
+        sublabel_row += f"\tX{i + 1}\tY{i + 1}\tZ{i + 1}"
+    lines.append(label_row)
+    lines.append(sublabel_row)
+    return lines
+
+
+def write_trc(trc_path, times, marker_names, positions, frame_rate):
+    """Write a TRC (marker trajectory) file.
+
+    `positions` is a list (one entry per frame, same length as `times`) of
+    lists of (x, y, z) tuples, one per marker, in `marker_names` order --
+    i.e. the pure-Python file-writing half of get_marker_trajectory, kept
+    separate so it's testable without OpenSim or a real model.
+    """
+    if len(times) != len(positions):
+        raise ValueError(
+            f"write_trc: {len(times)} times but {len(positions)} position frames -- "
+            "these must match 1:1. zip() would otherwise silently truncate to the "
+            "shorter one and the .trc header's NumFrames would disagree with the "
+            "actual row count."
+        )
+    lines = _trc_header(trc_path, frame_rate, len(times), len(marker_names), marker_names)
+    for frame_idx, (t, frame_positions) in enumerate(zip(times, positions), start=1):
+        row = [str(frame_idx), f"{t:.6f}"]
+        for x, y, z in frame_positions:
+            row += [f"{x:.6f}", f"{y:.6f}", f"{z:.6f}"]
+        lines.append("\t".join(row))
+    Path(trc_path).write_text("\n".join(lines) + "\n")
+    return trc_path
+
+
+def get_marker_trajectory(model_file, mot_file):
+    """Drive `model_file` through `mot_file`'s joint angles (frame by frame,
+    forward kinematics only -- no dynamics, no muscle equilibrium) and read
+    back each Marker's global position at every frame.
+
+    This is the OpenSim-dependent half of "write a .trc from our IK output"
+    -- the piece OpenCap's own downstream code needs (its gait-event
+    detection reads marker trajectories, not raw joint angles; see
+    getMarkers.py and README.md's "No direct motion-file import" issue).
+    Deliberately NOT a port of getMarkers.py's version of this: that script
+    applies np.radians() to every column indiscriminately, including the
+    translational pelvis_tx/ty/tz columns (meters, not degrees), then papers
+    over it with an ad hoc "+= pelvis_tx/ty" correction on the marker
+    position that only covers two of the three translational coordinates.
+    This version instead reads each coordinate's actual MotionType
+    (Rotational vs Translational) from the model and only converts degrees
+    to radians where that's actually correct, and sets each coordinate by
+    name (matched against the .mot's own column labels) rather than by
+    positional index -- avoiding the manual "rowSkip" bookkeeping
+    getMarkers.py needs to keep index-based alignment working around
+    constrained (e.g. patella '_beta') coordinates.
+
+    Returns (times, marker_names, positions) -- positions is a list (one
+    per frame) of lists of (x, y, z) tuples, one per marker, in
+    marker_names order. Matches write_trc's expected input directly.
+    """
+    import opensim as osim
+
+    model = osim.Model(str(model_file))
+    state = model.initSystem()
+
+    marker_set = model.getMarkerSet()
+    markers = [marker_set.get(i) for i in range(marker_set.getSize())]
+    marker_names = [m.getName() for m in markers]
+    if not markers:
+        raise ValueError(f"{model_file}: model has no markers -- can't write a .trc.")
+
+    table = osim.TimeSeriesTable(str(mot_file))
+    times = list(table.getIndependentColumn())
+    column_labels = list(table.getColumnLabels())
+
+    in_degrees = True
+    if table.hasTableMetaDataKey("inDegrees"):
+        in_degrees = str(table.getTableMetaDataString("inDegrees")).strip().lower() == "yes"
+
+    coordinate_set = model.updCoordinateSet()
+    # (coordinate, column_index, needs_degrees_to_radians) for every .mot
+    # column that names an independent (non-constrained) model coordinate.
+    # Skips columns with no matching coordinate and coordinates the model
+    # itself says are dependent (e.g. patella '_beta' coordinates driven by
+    # a CoordinateCouplerConstraint on knee flexion) -- setting those
+    # directly is meaningless; the constraint recomputes them on realize.
+    drivable = []
+    for col_idx, label in enumerate(column_labels):
+        if not coordinate_set.contains(label):
+            continue
+        coordinate = coordinate_set.get(label)
+        if coordinate.isDependent(state):
+            continue
+        # Confirmed against the real Python bindings (2026-08-19, opensim 4.5):
+        # the enum members are osim.Coordinate.Rotational / .Translational,
+        # not MotionType_Rotational as the C++ enum name might suggest.
+        is_rotational = coordinate.getMotionType() == osim.Coordinate.Rotational
+        drivable.append((coordinate, col_idx, is_rotational and in_degrees))
+
+    positions = []
+    for row_idx in range(len(times)):
+        row = table.getRowAtIndex(row_idx)
+        for coordinate, col_idx, needs_conversion in drivable:
+            value = row[col_idx]
+            if needs_conversion:
+                value = math.radians(value)
+            coordinate.setValue(state, value, False)
+        model.realizePosition(state)
+        positions.append([tuple(m.getLocationInGround(state).to_numpy()) for m in markers])
+
+    return times, marker_names, positions
+
+
+def write_markers_trc(model_file, mot_file, trc_path):
+    """get_marker_trajectory + write_trc, for use as pipeline stage 4."""
+    times, marker_names, positions = get_marker_trajectory(model_file, mot_file)
+    frame_rate = round(1.0 / (times[1] - times[0])) if len(times) > 1 else 0.0
+    return write_trc(trc_path, times, marker_names, positions, frame_rate)
+
+
+def resolve_session_output_paths(session_dir, trial_name, model_file=None):
+    """Compute output paths matching an OpenCap session's layout, so this
+    script's output is directly consumable by the existing OpenCap-derived
+    analysis code (utilsKinematics.py's `kinematics` class, which
+    gait_analysis_UCM.py subclasses) without renaming anything by hand.
+
+    Read directly out of utilsKinematics.py's `kinematics.__init__` (model +
+    motion path construction) and `get_marker_dict` (marker path
+    construction), 2026-08-19, not guessed:
+
+        model:   <session_dir>/OpenSimData/Model/<name>.osim
+        motion:  <session_dir>/OpenSimData/Kinematics/<trial_name>.mot
+        markers: <session_dir>/MarkerData/<trial_name>.trc
+
+    Does NOT replicate utilsKinematics.py's "mono session" handling (models
+    stored in a per-trial subfolder of OpenSimData/Model/) or its
+    metadata-file-based model name lookup -- if a session uses either of
+    those, pass model_file explicitly rather than relying on auto-discovery
+    here. Auto-discovery only handles the plain case: exactly one .osim
+    directly inside OpenSimData/Model/.
+
+    Returns a dict: model_file, results_dir, output_motion_filename,
+    trc_path, sto_path. sto_path isn't part of utilsKinematics.py's own
+    layout -- nothing downstream reads the intermediate orientations file --
+    it's placed alongside the .mot in Kinematics/ purely so a session's
+    Xsens-derived files stay together, not because anything requires that
+    location.
+    """
+    session_dir = Path(session_dir)
+    kinematics_dir = session_dir / "OpenSimData" / "Kinematics"
+    marker_dir = session_dir / "MarkerData"
+
+    if model_file is None:
+        model_dir = session_dir / "OpenSimData" / "Model"
+        osim_files = sorted(model_dir.glob("*.osim")) if model_dir.exists() else []
+        if len(osim_files) != 1:
+            raise ValueError(
+                f"{model_dir}: expected exactly one .osim file for model "
+                f"auto-discovery, found {len(osim_files)} "
+                f"({[f.name for f in osim_files]}). Pass model_file explicitly "
+                "instead (e.g. for a 'mono' session with per-trial model "
+                "subfolders, which this auto-discovery doesn't handle)."
+            )
+        model_file = str(osim_files[0])
+
+    return {
+        "model_file": model_file,
+        "results_dir": str(kinematics_dir),
+        "output_motion_filename": f"{trial_name}.mot",
+        "trc_path": str(marker_dir / f"{trial_name}.trc"),
+        "sto_path": str(kinematics_dir / f"{trial_name}_orientations.sto"),
+    }
 
 
 def main():
@@ -643,30 +942,89 @@ def main():
                          help="Print segment id/label pairs and exit (no opensim needed)")
     parser.add_argument("--base-imu", default="pelvis_imu",
                          help="IMU frame name to use for heading correction (default: pelvis_imu)")
-    parser.add_argument("--base-heading-axis", default="z",
-                         help="Heading axis of the base IMU: x, -x, y, -y, z, -z (default: z)")
+    parser.add_argument("--base-heading-axis", default="x",
+                         help="Heading axis of the base IMU: x, -x, y, -y, z, -z (default: x -- "
+                              "confirmed empirically 2026-08-19 against real data: 'z', the "
+                              "OpenSense reference example's value and this script's old default, "
+                              "produces a 95.8 degree heading correction for this file/model, "
+                              "while 'x' produces 5.8 degrees; every other option produces 84-174 "
+                              "degrees. A large heading correction here is a red flag, not just a "
+                              "number -- it fixed the knee flatness bug reported earlier, see "
+                              "VENDORING.md. For a negative axis, use '=' (e.g. "
+                              "--base-heading-axis=-x) -- a space-separated '-x' is parsed as an "
+                              "unrecognized option by argparse, not a value.)")
     parser.add_argument("--start-time", type=float, default=None)
     parser.add_argument("--end-time", type=float, default=None)
-    parser.add_argument("--results-dir", default="IKResults")
+    parser.add_argument("--session-dir", default=None,
+                         help="An existing OpenCap session folder. Combined with --trial-name, "
+                              "output paths (model, .mot, .trc) are auto-resolved to match that "
+                              "session's own layout (see resolve_session_output_paths) so the "
+                              "result is directly usable by the existing OpenCap-derived analysis "
+                              "code, not just this script. Explicit --results-dir/--sto-path/"
+                              "--trc-path/model_file still override individual paths if given.")
+    parser.add_argument("--trial-name", default=None,
+                         help="Trial name to use for output filenames when --session-dir is "
+                              "given (produces <session-dir>/OpenSimData/Kinematics/"
+                              "<trial-name>.mot and <session-dir>/MarkerData/<trial-name>.trc).")
+    parser.add_argument("--results-dir", default=None,
+                         help="Where IMUInverseKinematicsTool writes its output "
+                              "(default: 'IKResults', or <session-dir>/OpenSimData/Kinematics "
+                              "if --session-dir/--trial-name are given).")
     parser.add_argument("--sto-path", default=None,
                          help="Where to write the intermediate orientations .sto "
-                              "(default: <mvnx_file stem>_orientations.sto)")
+                              "(default: <mvnx_file stem>_orientations.sto, or alongside the "
+                              ".mot if --session-dir/--trial-name are given).")
     parser.add_argument("--source", choices=["segment", "sensor"], default="segment",
                          help="'segment' (default): Xsens's biomechanically-solved "
                               "per-segment orientation. 'sensor': raw per-sensor "
                               "orientation -- only for segments in "
                               "SENSOR_EQUIPPED_SEGMENTS. See build_orientations_sto's "
                               "docstring for the accuracy tradeoff.")
+    parser.add_argument("--trc-path", default=None,
+                         help="Where to write marker positions (stage 4, runs automatically -- "
+                              "drives the calibrated model through the IK output and writes a "
+                              ".trc, which is what lets OpenCap's own downstream gait-event-"
+                              "detection code, which reads marker trajectories rather than raw "
+                              "joint angles, consume Xsens-derived motion; see "
+                              "get_marker_trajectory's docstring). Default: "
+                              "<results-dir>/<mvnx_file stem>_markers.trc.")
+    parser.add_argument("--no-trc", action="store_true",
+                         help="Skip stage 4 (marker/.trc export) and only produce the .mot.")
     args = parser.parse_args()
 
     if args.list_segments:
         list_segments(args.mvnx_file)
         return
 
-    if not args.model_file:
-        parser.error("model_file is required unless --list-segments is given")
+    session_mode = bool(args.session_dir and args.trial_name)
+    if bool(args.session_dir) != bool(args.trial_name):
+        parser.error("--session-dir and --trial-name must be given together")
 
-    sto_path = args.sto_path or (Path(args.mvnx_file).stem + "_orientations.sto")
+    session_paths = None
+    if session_mode:
+        session_paths = resolve_session_output_paths(
+            args.session_dir, args.trial_name, model_file=args.model_file
+        )
+    elif not args.model_file:
+        parser.error(
+            "model_file is required unless --list-segments is given, or "
+            "--session-dir/--trial-name are given for model auto-discovery"
+        )
+
+    model_file = args.model_file or (session_paths["model_file"] if session_paths else None)
+    results_dir = args.results_dir or (
+        session_paths["results_dir"] if session_paths else "IKResults"
+    )
+    output_motion_filename = session_paths["output_motion_filename"] if session_paths else None
+    sto_path = args.sto_path or (
+        session_paths["sto_path"] if session_paths
+        else Path(args.mvnx_file).stem + "_orientations.sto"
+    )
+    run_trc_stage = not args.no_trc
+    trc_path = args.trc_path or (
+        session_paths["trc_path"] if session_paths
+        else str(Path(results_dir) / (Path(args.mvnx_file).stem + "_markers.trc"))
+    )
 
     # Wall-clock timing per stage. Nothing about how long this pipeline takes
     # was recorded anywhere until 2026-08-18 -- the only evidence of the first
@@ -675,44 +1033,58 @@ def main():
     # never has to happen again.
     timings = {}
     run_start = time.perf_counter()
+    n_stages = 4 if run_trc_stage else 3
 
-    print(f"[1/3] Parsing {args.mvnx_file} -> {sto_path} (source={args.source})")
+    print(f"[1/{n_stages}] Parsing {args.mvnx_file} -> {sto_path} (source={args.source})")
     t = time.perf_counter()
     build_orientations_sto(args.mvnx_file, sto_path, SEGMENT_TO_IMU_FRAME, source=args.source)
     timings["parse_and_write_sto_s"] = time.perf_counter() - t
     print(f"       done in {timings['parse_and_write_sto_s']:.1f}s")
 
-    print(f"[2/3] Calibrating {args.model_file} against frame 0 of {sto_path}")
+    print(f"[2/{n_stages}] Calibrating {model_file} against frame 0 of {sto_path}")
     t = time.perf_counter()
     calibrated_model = calibrate_model(
-        args.model_file, sto_path, args.base_imu, args.base_heading_axis
+        model_file, sto_path, args.base_imu, args.base_heading_axis
     )
     timings["calibrate_model_s"] = time.perf_counter() - t
     print(f"       -> {calibrated_model} ({timings['calibrate_model_s']:.1f}s)")
 
-    print(f"[3/3] Running IMU inverse kinematics -> {args.results_dir}/")
+    print(f"[3/{n_stages}] Running IMU inverse kinematics -> {results_dir}/")
     t = time.perf_counter()
-    run_imu_ik(calibrated_model, sto_path, args.start_time, args.end_time,
-               args.results_dir)
+    mot_path = run_imu_ik(calibrated_model, sto_path, args.start_time, args.end_time,
+                           results_dir, output_motion_filename=output_motion_filename)
     timings["run_imu_ik_s"] = time.perf_counter() - t
-    print(f"       done in {timings['run_imu_ik_s']:.1f}s")
+    print(f"       -> {mot_path} ({timings['run_imu_ik_s']:.1f}s)")
+
+    if run_trc_stage:
+        print(f"[4/{n_stages}] Writing marker positions -> {trc_path}")
+        t = time.perf_counter()
+        Path(trc_path).parent.mkdir(parents=True, exist_ok=True)
+        write_markers_trc(calibrated_model, mot_path, trc_path)
+        timings["write_markers_trc_s"] = time.perf_counter() - t
+        print(f"       done in {timings['write_markers_trc_s']:.1f}s")
 
     timings["total_s"] = time.perf_counter() - run_start
-    print(
-        f"Done in {timings['total_s']:.1f}s total "
-        f"(parse+write {timings['parse_and_write_sto_s']:.1f}s, "
+    summary = (
+        f"parse+write {timings['parse_and_write_sto_s']:.1f}s, "
         f"calibrate {timings['calibrate_model_s']:.1f}s, "
-        f"IK {timings['run_imu_ik_s']:.1f}s)."
+        f"IK {timings['run_imu_ik_s']:.1f}s"
     )
+    if run_trc_stage:
+        summary += f", markers {timings['write_markers_trc_s']:.1f}s"
+    print(f"Done in {timings['total_s']:.1f}s total ({summary}).")
 
-    timing_log = Path(args.results_dir) / "timing.txt"
+    timing_log = Path(results_dir) / "timing.txt"
     timing_log.parent.mkdir(parents=True, exist_ok=True)
     with open(timing_log, "w") as f:
         f.write(f"mvnx_file: {args.mvnx_file}\n")
-        f.write(f"model_file: {args.model_file}\n")
+        f.write(f"model_file: {model_file}\n")
         f.write(f"source: {args.source}\n")
         f.write(f"start_time: {args.start_time}\n")
         f.write(f"end_time: {args.end_time}\n")
+        f.write(f"session_dir: {args.session_dir}\n")
+        f.write(f"trial_name: {args.trial_name}\n")
+        f.write(f"trc_path: {trc_path if run_trc_stage else None}\n")
         for key, seconds in timings.items():
             f.write(f"{key}: {seconds:.3f}\n")
     print(f"Timing recorded to {timing_log}")

@@ -348,6 +348,24 @@ reconstruction again. Verified with a smoke test (stage functions replaced with 
 the existing 26-test suite; not re-verified against a real 5-minute run since the original run's
 uncalibrated scaled model isn't available in this session to redo it cheaply.
 
+## Update 2026-08-19: re-ran against the real trial with real timing, results reproducible
+
+Re-extracted `LaiUhlrich2022_scaled.osim` (the same real scaled model from the OpenCap session zip,
+`OpenSimData/Model/LaiUhlrich2022_scaled.osim`) and re-ran `xsens_to_opensim.py` against the same
+real trial (`0_Bed_to_ShowerChair_M.mvnx`) to get a genuine, script-recorded timing instead of the
+timestamp-reconstructed estimate above.
+
+**Per-segment orientation error is identical to the 2026-08-17 table above, to the decimal place** —
+the pipeline is deterministic and reproducible against the same inputs.
+
+**Timing came out very different this time: 61.8s total** (parse+write 3.1s, calibrate 0.9s, IK
+57.8s) versus the ~5 minute figure reconstructed on 2026-08-17 (IK alone was ~4m58s then). No
+confirmed cause for the ~5x difference — possibly machine load or one-time overhead (antivirus
+scan, disk cache, OpenSim library load) on that first-ever real run, not diagnosed further. Take the
+~5-minute number as unreliable and this run's 61.8s, produced by the script's own `timing.txt`
+logging rather than reconstructed after the fact, as the better data point — but note it's still
+only two data points on one machine, not a benchmark.
+
 **Full 43-second/2609-frame trial: also completed successfully, exit code 0** — mechanically, this
 is a real, working, end-to-end pipeline now. But the full-trial orientation-error summary is a more
 important result than the "it ran" headline, and it's not uniformly good:
@@ -436,3 +454,330 @@ two drifting apart) — summary:
 
 Full test suite after the rewrite: `26 passed` (13 pre-existing + 13 new), run via
 `C:\Users\cladi\miniconda3\python.exe -m pytest C:\Users\cladi\synergy\tests -v`.
+
+## Update 2026-08-19: response to your supervisor's critique of `xsens_to_opensim.py`
+
+Your supervisor's notes on the original pipeline description ("New: Xsens .mvnx -> [this script]
+-> orientations file (.sto) -> [opensim.IMUPlacer, **one static calibration frame**] -> calibrated
+model -> [opensim.IMUInverseKinematicsTool] -> .mot directly, **no markers at all**") raised two
+concrete gaps and flagged the calibration approach itself. This update addresses the first two
+directly and turns the calibration concern into a quantified, evidence-backed finding rather than
+an open question.
+
+### 1. Marker/`.trc` output -- "can we save marker positions in a sto file then take markers and
+put into trc"
+
+`xsens_to_opensim.py` gained a 4th, optional pipeline stage: `get_marker_trajectory()` +
+`write_trc()` (wired together as `write_markers_trc()`, enabled via `--trc-path`). It drives the
+calibrated model through the IK `.mot` output frame by frame (forward kinematics only, no muscle
+dynamics) and reads back every `Marker` in the model's `MarkerSet`, writing a standard `.trc` file
+-- the format OpenCap's own gait-event-detection code actually consumes (per README's "No direct
+motion-file import" issue and `getMarkers.py`'s existing manual version of this).
+
+**Deliberately not a port of `getMarkers.py`.** That script has a real unit bug: it calls
+`np.radians()` on every coordinate column indiscriminately, including the translational
+`pelvis_tx/ty/tz` columns (meters, not degrees), then papers over it with an ad hoc `+=
+pelvis_tx`/`+= pelvis_ty` correction on the resulting marker position that only covers two of the
+three translational coordinates (`pelvis_tz` is never corrected). The new version instead reads
+each `Coordinate`'s real `MotionType` (`osim.Coordinate.Rotational` vs `.Translational` -- verified
+against the actual Python bindings, not assumed) and only converts degrees to radians where that's
+actually correct, and matches `.mot` columns to model coordinates by name rather than positional
+index, so it doesn't need `getMarkers.py`'s manual "skip a slot for constrained coordinates"
+bookkeeping (`coordinate.isDependent(state)` is checked directly instead).
+
+Verified against real data: ran the full 4-stage pipeline against `0_Bed_to_ShowerChair_M.mvnx`,
+produced a real `.trc` with all 43 markers in OpenCap's own `_study` naming convention, 300 frames,
+no NaNs, coordinate values in a plausible +/-0.7 to 1.5 m range. 3 new unit tests cover the
+pure-Python `.trc` writer (header format, row values, frame-rate derivation); the OpenSim-dependent
+half (`get_marker_trajectory`) is only verified by that real run, same pattern as
+`build_orientations_sto`/`calibrate_model`/`run_imu_ik` above.
+
+### 2. Xsens's own joint kinematics -- "Joint kinematics are given by xsens already - dont need
+more pipeline to do this"
+
+True, and now used: the real `.mvnx` already carries Xsens's own `<jointAngle>` (66 = 22 joints x 3
+DOF per frame) and `<centerOfMass>` (3 values/frame) -- computed by Xsens's own engine, independent
+of this script's IMUPlacer/IK conversion entirely. `parse_mvnx` now extracts both.
+
+The 22-joint order and the per-joint 3-DOF axis order were **not guessed**: structurally, 23
+segments in a tree rooted at Pelvis implies exactly 22 parent-child joints (matching the file's own
+`jointCount="22"`), giving `STANDARD_23_SEGMENT_ORDER` minus the root as a well-justified default --
+then confirmed directly against `context/S01-001.xlsx`'s real "Joint Angles ZXY" sheet for this
+exact subject/suit: its literal column headers ("L5S1 Lateral Bending", ..., "hip_add_r,
+hip_rot_r, hip_flex_r", ..., "ballfoot_flex_l") match this order exactly, all 22 joints, 3 columns
+each. Also confirmed the per-DOF order is **[abduction/adduction, internal/external rotation,
+flexion/extension]** -- flexion is the *third* value per joint, not the first, which would have been
+an easy wrong guess. New constants: `STANDARD_22_JOINT_ORDER`, `JOINT_ANGLE_DOF_NAMES`. 4 new tests
+cover extraction, DOF-order, the missing-element-yields-None case, and the wrong-length error case.
+
+### 3. The calibration concern, quantified: leg-tracking error scales with distance from the
+calibration pose
+
+Your supervisor's own framing ("one static calibration frame") turns out to name the actual
+mechanism behind the femur/tibia tracking-error finding from 2026-08-17 (20-32 deg RMS, worst of
+any segment), not just a design choice worth flagging. Used the newly-added Xsens joint-angle data
+to test it directly, against the real full 43-second trial:
+
+- Correlation between Xsens's own `jRightKnee` flexion angle and this pipeline's `tibia_r_imu`
+  orientation tracking error, over time: **0.97**. For `femur_r_imu`: **0.94**.
+- When Xsens's own data says the knee is nearly straight (bottom quartile, <32 deg flexion): mean
+  tibia tracking error is 12 deg.
+- When Xsens's own data says the knee is well bent (top quartile, >70 deg flexion): mean tibia
+  tracking error is 36 deg -- three times worse.
+
+Ruled out simpler explanations first: the raw Xsens segment-orientation data fed into the `.sto`
+file (the same data Xsens's own `jointAngle` is computed from) shows 12-97 deg of real relative
+femur/tibia rotation over the trial, so the signal isn't missing upstream. `femur_r_imu` and
+`tibia_r_imu` are correctly separate, correctly attached frames in the calibrated model (checked
+directly in the XML), with nearly-identical calibration offsets from each other -- exactly what
+you'd expect from calibrating on a standing, straight-leg T-pose, not a mixup. `knee_angle_r`'s
+coordinate range is 0-140 deg, not locked or clamped in a way that would explain it sitting at
+0.03-8.8 deg throughout.
+
+**What's left standing:** a single static calibration frame anchors the model well when the real
+pose is near that reference (straight leg) -- consistent with torso/pelvis (the calibration
+reference itself) tracking almost perfectly throughout. The further the real knee moves from that
+reference, the less a fixed calibration offset plus a flexion-only knee DOF can explain the true 3D
+relative rotation between the two IMUs, and the correlation above shows that degradation is not
+subtle. For a bed-to-shower-chair transfer specifically -- large intentional knee excursion -- this
+is close to a worst case for a single static-pose calibration.
+
+This reframes the earlier "leg accuracy is questionable, ask a biomechanist" finding into a
+specific, testable one: **error should track deviation from the calibration pose, not just anatomical
+location.** That's something a domain expert can act on (e.g. deciding whether a functional/dynamic
+calibration, or a mid-range calibration pose, is worth pursuing) rather than an unexplained number.
+No code fix attempted here -- picking a different calibration strategy is a methodological decision,
+not a bug fix, and shouldn't be made unilaterally in code.
+
+### Still open from your supervisor's notes: internal joint torques ("look into internal joint
+torque inside of knee and hip")
+
+Not started. `opensim.InverseDynamicsTool` is the right tool for this, but it typically needs
+ground-reaction-force data to produce physically meaningful torques for a weight-bearing task like
+this transfer, and no force-plate/GRF data exists anywhere in this project's data as of this
+writing. Needs a decision: is GRF data available or planned, or is this meant to run without it
+(e.g. for the non-weight-bearing portions of a transfer, or as a rough estimate accepting that
+limitation)?
+
+## Update 2026-08-19 (later): output paths made session-compatible, proven against the real
+`kinematics` class -- plus a real login-coupling discovery
+
+Two things prompted this: the `.trc` stage needed to be automatic (was opt-in via `--trc-path`,
+now always runs unless `--no-trc`), and the output paths needed to actually match what the
+older, unmodified OpenCap-derived code expects, not just live wherever this script felt like
+writing them.
+
+**New: `resolve_session_output_paths(session_dir, trial_name, model_file=None)`.** Read directly
+out of `utilsKinematics.py`'s `kinematics.__init__` (model + motion path construction) and
+`get_marker_dict` (marker path construction) -- not guessed -- to get the exact layout:
+
+- model: `<session_dir>/OpenSimData/Model/<name>.osim` (auto-discovered if exactly one `.osim`
+  is there; pass `model_file` explicitly for a "mono" session with per-trial model subfolders,
+  which this doesn't replicate)
+- motion: `<session_dir>/OpenSimData/Kinematics/<trial_name>.mot`
+- markers: `<session_dir>/MarkerData/<trial_name>.trc`
+
+Wired into `main()` as `--session-dir`/`--trial-name` (used together; explicit `--results-dir`/
+`--sto-path`/`--trc-path`/`model_file` still override individual paths if given). 5 new tests
+cover the pure-path-construction logic (correct layout, explicit-model-file bypass, zero/multiple
+`.osim` files raising).
+
+**Real bug this surfaced and fixed:** `build_orientations_sto` never created its own output
+directory before writing the `.sto` file. Never mattered before because every prior run's
+`--sto-path` pointed at a directory that already existed by coincidence (cwd, or a scratch folder
+created for something else). Running in session mode against a fresh mock session
+(`OpenSimData/Kinematics/` not yet created) failed immediately with `IMUPlacer`'s C++ layer
+throwing "File ... does not exist" -- a real, reproducible bug, not a hypothetical. Fixed with one
+`Path(sto_path).parent.mkdir(parents=True, exist_ok=True)` line before the write.
+
+**Proven, not just path-matched:** built a mock OpenCap session folder (using the real
+`LaiUhlrich2022_scaled.osim` extracted earlier from the actual session zip), ran this pipeline
+against it in session mode, then loaded the result with the actual, unmodified
+`utilsKinematics.kinematics` class -- the same class `gait_analysis_UCM.py` subclasses. It worked:
+35 coordinates x 301 frames from the `.mot`, 43 correctly-named markers from the `.trc`. This is
+the first time any output from this pipeline has been consumed by the older OpenCap-derived code,
+not just produced and inspected standalone.
+
+**Real discovery made along the way: importing `utilsKinematics` forces an OpenCap login, even for
+purely local analysis.** `utils.py` (unmodified, stock) runs `API_TOKEN = get_token()` at *module
+import time* (not lazily, not only when an API call is actually needed). `get_token()` falls back
+to `getpass.getpass()` -- an interactive terminal prompt -- when no `API_TOKEN` is set via
+environment variable or `.env` file. Since `utilsKinematics.py` unconditionally does `import
+utils`, and `gait_analysis_UCM.py` inherits from `kinematics`, **merely importing
+`gait_analysis_UCM` blocks on a credential prompt**, even though nothing in `kinematics.__init__`,
+`get_coordinate_values`, or `get_marker_dict` ever makes a network call. This is very likely the
+concrete mechanism behind the "have to log in every time" complaint in the original project notes
+-- not a vague inconvenience, a specific line of code (`utils.py:41`). Worked around here for
+testing by setting a dummy `API_TOKEN` env var (bypasses the prompt without needing a real token,
+since nothing exercised here actually calls the API) -- not a fix, since these are the coworker's
+files ("only make copies" still applies); flagging for a real decision on whether this coupling
+should be loosened for the Xsens-only, no-download use case.
+
+**Also noted:** `gait_analysis_UCM.py`'s `__init__` doesn't forward a `modelName` override to
+`kinematics.__init__` -- it only passes `lowpass_cutoff_frequency_for_coordinate_values`. So
+without a real OpenCap session's own metadata file (which supplies the model name automatically),
+`gait_analysis_UCM` can't be instantiated directly against a synthetic/mock session the way the
+lower-level `kinematics` class can. Not a blocker for real usage (a genuine downloaded OpenCap
+session already has this metadata; Xsens-derived output written into an existing real session,
+per README's original plan, would too) -- just not exercised by the mock session used for this
+test.
+
+### What's kept vs. what this pipeline makes unnecessary
+
+**Kept, still doing real work:**
+- `utilsKinematics.py`'s `kinematics` class -- proven compatible above, unmodified.
+- `gait_analysis_UCM.py`'s actual gait-cycle/scalar-computation logic -- once instantiated, this
+  is the real analysis; nothing here replaces it.
+- The OpenCap session directory convention itself (`OpenSimData/Model|Kinematics`, `MarkerData`)
+  -- this pipeline now writes into it rather than working around it.
+
+**Superseded, for the Xsens path specifically:**
+- `getMarkers.py`'s forward-kinematics marker-synthesis loop -- `get_marker_trajectory`/
+  `write_markers_trc` (2026-08-19, earlier this session) does the same job without the
+  `np.radians()`-on-translational-coordinates bug.
+- The MATLAB joint-mapping step -- `build_orientations_sto` + `IMUPlacer` +
+  `IMUInverseKinematicsTool` (2026-08-17) replace it entirely.
+
+**Still real gaps, not yet resolved:**
+- The import-time login coupling above.
+- `gait_analysis_UCM.py` still needs `pandas`/`scipy`/`matplotlib`/`requests`/`pyyaml`/
+  `python-decouple`/`maskpass` installed in whatever environment runs it -- installed in the
+  `opencap-processing` conda env during this session's testing (pinned to `numpy==1.23.5`,
+  `scipy==1.10.0`, `pandas==2.0.3`, `matplotlib==3.7.3` -- an unpinned `pip install pandas scipy`
+  silently upgraded numpy to 2.x mid-session and broke the OpenSim bindings entirely; fixed by
+  reinstalling everything pinned together in one transaction. Worth remembering if installing
+  anything else into this env later: always pin numpy explicitly alongside it).
+
+## Update 2026-08-19 (evening): found and fixed the actual root cause of the leg-accuracy problem
+-- `base_heading_axis` default was wrong
+
+Your supervisor's benchmark (a working Xsens-to-OpenSim translation should show only a few degrees
+of error) was the right pushback -- the earlier framing of the 2026-08-17 leg-tracking-error
+finding as "a real limitation of single-frame IMU calibration, needs a domain expert's judgment"
+undersold it. Most of it was a wrong default value, not an inherent limitation.
+
+`calibrate_model`'s `base_heading_axis` defaulted to `'z'` -- the axis used in OpenSim's own
+official Rajagopal OpenSense reference example, which is where this script's calibration call was
+modeled from. It's specific to that example's sensor mounting convention, not a universal default.
+For this file/model, `'z'` produces a **95.8 degree heading correction** during calibration -- a
+number flagged as suspicious back on 2026-08-17 but never actually chased down. Tested all 6 axis
+options directly against the real trial:
+
+| axis | heading correction |
+|---|---|
+| `x` | **5.8 deg** |
+| `-x` | -174.2 deg |
+| `y` | -90.0 deg |
+| `-y` | 90.0 deg |
+| `z` (old default) | 95.8 deg |
+| `-z` | -84.2 deg |
+
+`x` is the obvious outlier -- every other option is 84-174 degrees, a huge, physically implausible
+correction for a calibration pose that's just "stand roughly facing some direction." Changed the
+default to `x` and re-ran the full 43-second trial:
+
+- **`knee_angle_r` now ranges 0.1-100.7 degrees** (was 0.03-8.8 degrees) -- matching Xsens's own
+  jointAngle range (2.6-97.5 degrees) closely for the first time. This is the actual fix for the
+  "knee stays flat" finding from earlier today, not just a related observation.
+- Overall RMS tracking error across all 14 IMUs: **20.7 -> 16.4 degrees**. Pelvis (the calibration
+  reference) improved from 7.8 to 0.1 degrees. Tibia improved the most (tibia_r: 28.2 -> 9.3 deg;
+  tibia_l: 24.0 -> 5.3 deg).
+- **Not fully resolved**: femur_r (20.4 deg) and calcn_r/calcn_l (24.8/7.1 deg -- calcn_r actually
+  got worse, 15.5 -> 24.8) are still elevated, and arm segments (humerus/radius/hand) barely moved
+  (17-29 deg range both before and after) -- heading-axis was one real bug, evidently not the only
+  contributor. The T-pose-vs-model-default-pose mismatch flagged earlier (calibration pose has arms
+  out; this model's default pose has arms down) is a plausible separate contributor specifically
+  for the arms, not yet tested.
+
+Changed `--base-heading-axis`'s default from `'z'` to `'x'` in `xsens_to_opensim.py`. Also fixed a
+real CLI bug surfaced while testing every axis option: `--base-heading-axis -x` (space-separated)
+is parsed by argparse as an unrecognized `-x` option, not a value -- negative axes need
+`--base-heading-axis=-x` (`=` syntax). Documented in the flag's own help text rather than fixed in
+argparse itself, to avoid a bigger parsing rework for a one-line workaround.
+
+**Still open:** femur_r/calcn_r/calcn_l/arms remain elevated. Worth testing next: whether the
+T-pose calibration frame (vs. npose) explains the arm error specifically, and whether `base_imu`
+other than `pelvis_imu` changes the leg picture. Both are cheap to test (same pattern as the axis
+sweep above) but not done yet this session.
+
+## Update 2026-08-19 (later still): independent second opinion from Codex on file-by-file usability
+
+Ran `/codex` (OpenAI Codex, an independent model with no memory of this session's earlier work)
+against the whole repo, asked specifically what's usable, what needs changes, and what's dead
+weight. Full findings below; three real bugs in `xsens_to_opensim.py` fixed immediately since they
+were cheap and unambiguous. Findings about `gait_analysis_UCM.py` and `Examples/gaitAnalysis-UCM.py`
+are reported, not fixed -- `gait_analysis_UCM.py` is the coworker's file (same "only make copies"
+rule as `getMarkers.py`/`utils_UCM.py`), and none of this was requested as a fix yet.
+
+**Fixed immediately (our own code, cheap, unambiguous):**
+- `write_trc()` didn't validate `times` and `positions` were the same length -- `zip()` would
+  silently truncate to the shorter one, leaving the `.trc` header's `NumFrames` disagreeing with
+  the actual row count. Now raises. New test:
+  `test_write_trc_rejects_mismatched_lengths`.
+- `parse_mvnx`'s `<centerOfMass>` extraction accepted any nonempty length instead of validating
+  exactly 3 values (x, y, z). Now raises on anything else. New test:
+  `test_wrong_center_of_mass_length_raises`.
+- The module docstring's "WHAT THIS SCRIPT DOES NOT DO YET" section was stale -- still said the
+  OpenSim-dependent half "has still never been run," written before the extensive real runs
+  documented above. Rewritten to a current STATUS section pointing at this file for the full
+  history, plus a shorter, accurate "still open" list (remaining tracking error, `source="sensor"`
+  still experimental).
+
+Full test suite: 40 passed (was 38).
+
+**Reported, not fixed -- `gait_analysis_UCM.py` (coworker's file, not yet reviewed by anyone
+before this):**
+- **Not actually safe for unattended batch runs**, which matters directly for
+  `Examples/gaitAnalysis-UCM.py --all-trials`: a failed event-order check calls `input()`
+  (line 968), and manual event entry prompts 4 more times (lines 783-786). Either will hang a
+  batch run waiting on stdin that nothing is providing.
+- **The foot-progression-angle inputs are computed but functionally unused.** `fpa_r`/`fpa_l` are
+  inserted into the coordinate dataframe (lines 68-69) but nothing downstream reads either column
+  -- the driver's own scalar/export list excludes them (driver lines 128-141). The FPA computation
+  step runs for no effect on any reported metric.
+- Auto-trim recovery can `IndexError` on short recordings (lines 940-944) and its retry loop has
+  no real termination condition on persistent failure (lines 998-1005).
+- If no gait-event peaks are found, auto-leg-selection indexes `rHS[-1]`/`lHS[-1]` (lines
+  1030-1035) before checking whether either list is actually empty.
+- `compute_correlations()` is broken at its own default: `cols_to_compare=None` becomes
+  `df1.columns` while `df1` is still empty at that point, so it collects nothing and divides by
+  zero (lines 567-568, 607). Separately, it claims to interpolate to 101 rows but only fills
+  missing values -- it doesn't resample (lines 580-581).
+- Center of mass is computed twice with different filters: the columns inserted into
+  `coordinateValues` use a 10 Hz low-pass (lines 99-103), while `comValues()` uses whatever
+  filter was passed in, no forced default (lines 107-115) -- the exported COM and any metric
+  computed from `comValues()` can silently disagree with each other.
+- `sys.path` is modified relative to the caller's current working directory (lines 21-22) --
+  works today only because the rewritten driver happens to set cwd correctly first; fragile if
+  the class is ever imported directly.
+- Confirmed positive: it imports the stock, working `utilsKinematics` (line 30), not the inert
+  `_UCM` fork -- consistent with the import-mismatch finding from 2026-08-14.
+
+**Reported, not fixed -- `Examples/gaitAnalysis-UCM.py`:**
+- `--data-dir` batch mode still isn't actually offline: it forces an OpenCap API lookup/download
+  for every trial, even ones already downloaded locally (lines 494-504) -- meaning it still hits
+  the import-time login coupling documented above, defeating the point of a local batch mode.
+- `discover_trials()` recursively picks up any `.mot` anywhere under the selected folder (lines
+  208-216) instead of scoping to `OpenSimData/Kinematics` -- risk of picking up an unrelated or
+  stale `.mot` from elsewhere in a session folder.
+- Its own docstring/comments are stale -- still say `gait_analysis_UCM.py` is missing (lines
+  80-86, 320-323), true when written, not true since it was supplied this session.
+
+**Dead weight, confirmed independently (matches this session's own earlier analysis):**
+- `getMarkers.py` -- fully superseded by `get_marker_trajectory()`/`write_markers_trc()`, and
+  independently confirmed unsafe: wrong documented array shape vs. actual usage (lines 18-24,
+  54-56), a hardcoded 10-trial batch with machine-specific `X:` paths that runs at import time
+  (lines 61-70), and the `np.radians()`-on-translational-coordinates bug with its incomplete
+  `pelvis_tx`/`pelvis_ty`-only correction (not `pelvis_tz`) called out earlier (lines 132, 136).
+- `utils_UCM.py` -- confirmed a byte-for-byte duplicate of stock `utils.py` (matches the
+  2026-08-14 finding), and nothing imports it.
+- `utilsKinematics_UCM.py` -- confirmed inert: `gait_analysis_UCM.py` imports stock
+  `utilsKinematics` (line 30), not this fork, so its edits (the direct-angular-velocity
+  `get_body_angular_velocity` implementation, no marker-name remapping) never actually run.
+  Behind current upstream and missing `get_body_orientation`. Recommendation: delete, or keep
+  purely as reference with a comment explaining it's unused -- retaining it live invites someone
+  wiring it in later and accidentally regressing behavior nobody's tested.
+
+**Not acted on yet:** whether to actually delete the three dead-weight files, and whether/when to
+fix the `gait_analysis_UCM.py` bugs above (blocking real batch-mode use, but it's the coworker's
+file) are both open decisions, not made unilaterally here.
