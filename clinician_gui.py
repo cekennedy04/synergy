@@ -43,6 +43,7 @@ _XSENS_TO_OPENSIM_PATH = os.path.join(REPO_ROOT, "xsens_to_opensim.py")
 _GAIT_ANALYSIS_UCM_FIXED_PATH = os.path.join(REPO_ROOT, "gait_analysis_UCM_fixed.py")
 _GAIT_ANALYSIS_EXAMPLE_PATH = os.path.join(REPO_ROOT, "Examples", "gaitAnalysis-UCM.py")
 _JOINT_CONFIDENCE_PATH = os.path.join(REPO_ROOT, "joint_confidence.py")
+_REPORT_EXPORT_PATH = os.path.join(REPO_ROOT, "report_export.py")
 
 # opensense heading-correction defaults, matching xsens_to_opensim.py's own
 # main()/argparse defaults (see that file's --base-imu/--base-heading-axis
@@ -115,6 +116,22 @@ def _load_joint_confidence():
     stages (KTD9's pattern applied to U4's own display-shaping seam)."""
     spec = importlib.util.spec_from_file_location(
         "joint_confidence_for_clinician_gui", _JOINT_CONFIDENCE_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_report_export():
+    """Load report_export.py (U5) by absolute path, matching this file's
+    other _load_* loaders' convention. Like joint_confidence.py, this
+    module has no opensim/tkinter dependency chain -- loaded the same way
+    anyway for consistency, and so this file (and tests exercising its
+    export button handler) can swap in a fake module the same way
+    run_pipeline's/shape_results_for_display's own dependency-injection
+    seams do (KTD9's pattern)."""
+    spec = importlib.util.spec_from_file_location(
+        "report_export_for_clinician_gui", _REPORT_EXPORT_PATH
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -738,6 +755,41 @@ def shape_results_for_display(result, xsens_module=None, joint_confidence_module
     return {"metadata": metadata, "curves": curves, "metrics": metrics, "confidence": confidence}
 
 
+def build_curve_figure(curve):
+    """Builds a matplotlib Figure for one shaped joint-angle curve dict
+    (one value of shape_joint_curves_for_display's return dict), or returns
+    None if the curve is unavailable.
+
+    Factored out of ClinicianGUI._render_curves so the exact same
+    Figure-building logic backs both the on-screen FigureCanvasTkAgg widget
+    (U4) and U5's PDF export -- report_export.export_report_to_pdf reuses
+    the same Figure objects ClinicianGUI._render_curves builds (via
+    self._current_figures) rather than re-plotting from scratch (KTD2).
+
+    No Tk dependency -- takes/returns plain matplotlib objects, so it's
+    callable from tests without instantiating any widget.
+    """
+    if not curve.get("available"):
+        return None
+
+    figure = Figure(figsize=(3, 2.2), dpi=100)
+    axis = figure.add_subplot(111)
+    axis.plot(curve["x"], curve["mean"])
+    if curve.get("sd"):
+        mean_values = curve["mean"]
+        sd_values = curve["sd"]
+        axis.fill_between(
+            curve["x"],
+            [m - s for m, s in zip(mean_values, sd_values)],
+            [m + s for m, s in zip(mean_values, sd_values)],
+            alpha=0.2,
+        )
+    axis.set_xlabel("% gait cycle")
+    axis.set_ylabel("deg")
+    figure.tight_layout()
+    return figure
+
+
 def _format_metric_value(entry):
     if not entry["available"]:
         return entry.get("status", "not available")
@@ -773,6 +825,12 @@ class ClinicianGUI:
         self._pipeline_thread = None
         self._results_frame = None
         self._tier_styles_ready = set()
+        # U5: the same Figure objects built for on-screen display, keyed by
+        # curve label (matching shaped_results["curves"]'s keys) -- reused
+        # by the Export button's PDF export instead of re-plotting (KTD2).
+        # Repopulated by _render_curves on every run; None for an
+        # unavailable curve.
+        self._current_figures = {}
 
         self._build_widgets()
         self._revalidate()
@@ -818,6 +876,13 @@ class ClinicianGUI:
         ttk.Label(frame, textvariable=self.progress_var, wraplength=400).grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
+
+        # U5: only enabled once a result has been successfully rendered
+        # (self.last_shaped/self.last_result set -- see _on_pipeline_result).
+        self.export_button = ttk.Button(
+            frame, text="Export to PDF", state="disabled", command=self._on_export_clicked
+        )
+        self.export_button.grid(row=7, column=0, columnspan=2, pady=(6, 0))
 
     def _pick_session_dir(self):
         # Mirrors Examples/gaitAnalysis-UCM.py's
@@ -894,11 +959,51 @@ class ClinicianGUI:
         self.last_shaped = shaped
         self.progress_var.set("Done.")
         self._render_results(shaped)
+        # U5: only enable Export once a result has actually been rendered
+        # (self.last_shaped/self.last_result are both set at this point).
+        self.export_button.configure(state="normal")
 
     def _on_pipeline_error(self, message):
         self.progress_var.set("")
         self._revalidate()
         messagebox.showerror("Run failed", message)
+
+    # -- U5: one-action PDF export --------------------------------------
+
+    def _on_export_clicked(self):
+        # Defensive: the button is only enabled once last_result/last_shaped
+        # are both set (see _on_pipeline_result), but guard here too in case
+        # this is ever wired to fire before that (e.g. a stray callback).
+        if self.last_result is None or self.last_shaped is None:
+            return
+
+        trial_name = self.last_shaped["metadata"].get("trial_name") or "trial"
+        save_path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Export report to PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            # The PDF carries real clinical data -- default to the session
+            # directory the clinician is already reviewing, not an
+            # arbitrary OS default location.
+            initialdir=self.session_dir or None,
+            initialfile=f"{trial_name}_report.pdf",
+        )
+        if not save_path:
+            return
+
+        report_export = _load_report_export()
+        try:
+            export_info = report_export.export_report_to_pdf(
+                save_path, self.last_shaped, self._current_figures
+            )
+        except Exception as exc:  # noqa: BLE001 -- centralized mapping (KTD10) is the point here.
+            messagebox.showerror("Export failed", map_error_to_message(exc))
+            return
+
+        messagebox.showinfo(
+            "Export complete", f"Report saved to:\n{export_info['pdf_path']}"
+        )
 
     # -- U4: results review display (widget-building; Tk-only, no logic --
     # see the module-level shape_*_for_display functions above for the
@@ -921,6 +1026,11 @@ class ClinicianGUI:
 
         self._results_frame = ttk.Frame(self.root, padding=12)
         self._results_frame.grid(row=1, column=0, sticky="nsew")
+
+        # Reset per-run: re-running a trial (KTD8) rebuilds every curve's
+        # Figure from scratch, so a stale Figure from a prior run is never
+        # left behind for U5's export to pick up.
+        self._current_figures = {}
 
         self._render_metadata(self._results_frame, shaped["metadata"])
         self._render_curves(self._results_frame, shaped["curves"], shaped["confidence"])
@@ -969,25 +1079,12 @@ class ClinicianGUI:
             cell.grid(row=row, column=col, padx=6, pady=6, sticky="n")
             ttk.Label(cell, text=label).pack()
 
-            if not curve.get("available"):
+            figure = build_curve_figure(curve)
+            self._current_figures[label] = figure
+
+            if figure is None:
                 ttk.Label(cell, text="Not available", foreground="gray").pack()
                 continue
-
-            figure = Figure(figsize=(3, 2.2), dpi=100)
-            axis = figure.add_subplot(111)
-            axis.plot(curve["x"], curve["mean"])
-            if curve.get("sd"):
-                mean_values = curve["mean"]
-                sd_values = curve["sd"]
-                axis.fill_between(
-                    curve["x"],
-                    [m - s for m, s in zip(mean_values, sd_values)],
-                    [m + s for m, s in zip(mean_values, sd_values)],
-                    alpha=0.2,
-                )
-            axis.set_xlabel("% gait cycle")
-            axis.set_ylabel("deg")
-            figure.tight_layout()
 
             canvas = FigureCanvasTkAgg(figure, master=cell)
             canvas.draw()
