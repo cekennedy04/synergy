@@ -24,13 +24,25 @@ import queue
 import threading
 import tkinter as tk
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+
+# U4: matplotlib is already a hard dependency of this repo (KTD1/KTD2 --
+# tkinter + matplotlib.backends.backend_pdf are stdlib/already-required, no
+# new dependency added). Imported at module level, not lazily like the
+# opensim-dependent stages below, because neither of these imports touches
+# opensim/utils.py or does any real work at import time -- they're safe for
+# every existing test that loads this whole module via
+# importlib.util.spec_from_file_location, same as the tkinter import above.
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _XSENS_TO_OPENSIM_PATH = os.path.join(REPO_ROOT, "xsens_to_opensim.py")
 _GAIT_ANALYSIS_UCM_FIXED_PATH = os.path.join(REPO_ROOT, "gait_analysis_UCM_fixed.py")
 _GAIT_ANALYSIS_EXAMPLE_PATH = os.path.join(REPO_ROOT, "Examples", "gaitAnalysis-UCM.py")
+_JOINT_CONFIDENCE_PATH = os.path.join(REPO_ROOT, "joint_confidence.py")
 
 # opensense heading-correction defaults, matching xsens_to_opensim.py's own
 # main()/argparse defaults (see that file's --base-imu/--base-heading-axis
@@ -87,6 +99,22 @@ def _load_gait_analysis_example():
     opensim.AnalyzeTool)."""
     spec = importlib.util.spec_from_file_location(
         "gait_analysis_example_for_clinician_gui", _GAIT_ANALYSIS_EXAMPLE_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_joint_confidence():
+    """Load joint_confidence.py (U3) by absolute path, matching this file's
+    other _load_* loaders' convention. Unlike those, joint_confidence.py has
+    no opensim/utils.py dependency chain at all (pure numpy) -- loaded the
+    same way anyway for consistency, and so tests can inject a fake module
+    through shape_results_for_display's own joint_confidence_module
+    parameter the same way run_pipeline's callers inject fake pipeline
+    stages (KTD9's pattern applied to U4's own display-shaping seam)."""
+    spec = importlib.util.spec_from_file_location(
+        "joint_confidence_for_clinician_gui", _JOINT_CONFIDENCE_PATH
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -355,6 +383,377 @@ def validate_inputs(session_dir, mvnx_path):
     return True, ""
 
 
+# ---------------------------------------------------------------------------
+# U4: results review display -- pure, Tk-free data-shaping functions.
+#
+# These turn a completed run_pipeline() result (plus a fresh parse_mvnx()
+# call and each leg's own compute_scalars()/get_coordinates_normalized_time()/
+# coordinateValues) into plain dict/list structures ready for widget
+# rendering. No tkinter, no matplotlib Figure objects, no file I/O beyond
+# the same parse_mvnx()/os.path.getmtime() calls U1/U2 already make
+# elsewhere in this file. ClinicianGUI's _render_* methods (below the class
+# definition) are the only code that turns these structures into widgets --
+# that split is what tests/test_clinician_gui_display.py exercises directly,
+# per the plan's Verification note that Tk widget rendering itself is a
+# manual smoke check, not a unit test.
+# ---------------------------------------------------------------------------
+
+# Duplicated (not imported) from Examples/gaitAnalysis-UCM.py's SCALAR_NAMES
+# constant (as of 2026-08-20, lines 148-152) -- same "duplicate a hyphenated,
+# non-import-able script's constant" rule joint_confidence.py's
+# MOT_COORDINATE_NAMES_USED follows (KTD5). Kept as an ordered list here
+# (that file defines it as a set) so the metrics grid renders in a stable,
+# deterministic order rather than whatever order set iteration happens to
+# produce.
+GAIT_METRIC_NAMES = [
+    "gait_speed",
+    "stride_length",
+    "step_width",
+    "cadence",
+    "single_support_time",
+    "double_support_time",
+    "step_length_symmetry",
+    "foot_progression_angle",
+]
+
+# Key joints plotted for R7 -- hip/knee/ankle flexion, both legs. Coordinate
+# names are real OpenSim .mot column names (confirmed against
+# Examples/gaitAnalysis-UCM.py's JOINT_NAMES and joint_confidence.py's
+# MOT_COORDINATE_NAMES_USED, both already grounded in the same real model).
+# "leg" picks which of gait_r/gait_l's own get_coordinates_normalized_time()
+# result to read the curve from -- each leg's normalization is over that
+# leg's own ipsilateral gait cycle, so a right-side joint's curve should come
+# from gait_r's normalization and a left-side joint's from gait_l's, not
+# both from the same instance.
+KEY_JOINT_PLOTS = [
+    {"label": "Hip Flexion (R)", "coordinate_name": "hip_flexion_r", "leg": "r"},
+    {"label": "Knee Flexion (R)", "coordinate_name": "knee_angle_r", "leg": "r"},
+    {"label": "Ankle Flexion (R)", "coordinate_name": "ankle_angle_r", "leg": "r"},
+    {"label": "Hip Flexion (L)", "coordinate_name": "hip_flexion_l", "leg": "l"},
+    {"label": "Knee Flexion (L)", "coordinate_name": "knee_angle_l", "leg": "l"},
+    {"label": "Ankle Flexion (L)", "coordinate_name": "ankle_angle_l", "leg": "l"},
+]
+
+# Fixed visual encoding for confidence tiers (U4 Approach step 4). Every
+# state (including "not_scored", used both for joint_confidence.py's own
+# not_scored segments and for a mapped coordinate with no confidence data at
+# all) gets an explicit, distinguishable color pair -- never an unstyled
+# fallback.
+TIER_COLORS = {
+    "high": {"bg": "#d4edda", "fg": "#155724"},
+    "medium": {"bg": "#fff3cd", "fg": "#856404"},
+    "low": {"bg": "#f8d7da", "fg": "#721c24"},
+    "not_scored": {"bg": "#e2e3e5", "fg": "#383d41"},
+}
+
+_TIER_WORDS = {"high": "High", "medium": "Medium", "low": "Low", "not_scored": "Not scored"}
+
+
+def tier_colors(tier):
+    """Pure lookup, never raises -- an unrecognized/None tier is treated the
+    same as 'not_scored' (gray), never left unstyled."""
+    return TIER_COLORS.get(tier, TIER_COLORS["not_scored"])
+
+
+def confidence_label_text(tier):
+    """The clinician-facing label text for a confidence tier. Always
+    includes 'agreement with the suit's own onboard estimate' per KTD5 --
+    this indicator is not a claim of ground-truth accuracy, and that framing
+    must survive wherever the score is surfaced (see joint_confidence.py's
+    own module docstring)."""
+    word = _TIER_WORDS.get(tier, _TIER_WORDS["not_scored"])
+    return f"{word} agreement with the suit's own onboard estimate"
+
+
+def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None):
+    """U4 Approach step 1: subject/session ID and trial name come from the
+    inputs the clinician already picked (U1), not from parse_mvnx (which has
+    no subject/trial/date fields of its own); date comes from the .mvnx
+    file's OS modification time; duration and sensor coverage come from
+    parse_mvnx's own frame data (`times`, `frame_rate`, `segments`).
+
+    xsens_module is the same dependency-injection seam run_pipeline uses
+    (default None loads the real xsens_to_opensim.py lazily) so tests can
+    pass a fake module exposing parse_mvnx() instead of needing a real
+    .mvnx file with real timestamps.
+    """
+    xsens = xsens_module if xsens_module is not None else _load_xsens_to_opensim()
+    parsed = xsens.parse_mvnx(mvnx_path)
+
+    times = parsed.get("times") or []
+    frame_rate = parsed.get("frame_rate")
+    n_segments = len(parsed.get("segments") or {})
+    n_frames = len(times)
+    duration_seconds = (times[-1] - times[0]) if len(times) >= 2 else 0.0
+
+    mtime = os.path.getmtime(mvnx_path)
+    date_display = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
+    minutes, seconds = divmod(duration_seconds, 60)
+    duration_display = f"{int(minutes)}:{seconds:04.1f}" if minutes else f"{seconds:.1f} s"
+
+    sensor_coverage = f"{n_segments} tracked segments"
+    if frame_rate:
+        sensor_coverage += f" at {frame_rate:.0f} Hz"
+
+    return {
+        "subject_session_id": Path(session_dir).name,
+        "trial_name": Path(mvnx_path).stem,
+        "date": date_display,
+        "duration_seconds": duration_seconds,
+        "duration_display": duration_display,
+        "sensor_coverage": sensor_coverage,
+        "frame_count": n_frames,
+    }
+
+
+def shape_joint_curves_for_display(gait_r, gait_l, joint_specs=None):
+    """U4 Approach step 2: build display-ready gait-cycle curves (x = 0-100%
+    of gait cycle, mean +/- sd) for each key joint in `joint_specs` (default
+    KEY_JOINT_PLOTS), reading each joint's curve from the matching leg's own
+    get_coordinates_normalized_time() result.
+
+    Pure data only -- no matplotlib Figure objects here (those are built by
+    ClinicianGUI._render_curves, which consumes this function's output).
+    A joint whose coordinate isn't present in that leg's curves (e.g. an
+    unscaled/incomplete model) is reported as unavailable rather than
+    raising a KeyError.
+    """
+    if joint_specs is None:
+        joint_specs = KEY_JOINT_PLOTS
+
+    normalized_by_leg = {}
+    curves = {}
+    for spec in joint_specs:
+        leg = spec["leg"]
+        coordinate_name = spec["coordinate_name"]
+        gait_obj = gait_r if leg == "r" else gait_l
+
+        if leg not in normalized_by_leg:
+            normalized_by_leg[leg] = gait_obj.get_coordinates_normalized_time()
+        normalized = normalized_by_leg[leg]
+        mean_df = normalized.get("mean")
+        sd_df = normalized.get("sd")
+
+        if mean_df is None or coordinate_name not in mean_df.columns:
+            curves[spec["label"]] = {
+                "coordinate_name": coordinate_name,
+                "leg": leg,
+                "available": False,
+                "reason": f"'{coordinate_name}' is not present in this trial's gait-cycle curves.",
+                "x": None,
+                "mean": None,
+                "sd": None,
+            }
+            continue
+
+        curves[spec["label"]] = {
+            "coordinate_name": coordinate_name,
+            "leg": leg,
+            "available": True,
+            "reason": None,
+            "x": list(range(0, 101)),
+            "mean": mean_df[coordinate_name].tolist(),
+            "sd": (
+                sd_df[coordinate_name].tolist()
+                if sd_df is not None and coordinate_name in sd_df.columns
+                else None
+            ),
+        }
+
+    return curves
+
+
+def _shape_scalar_entry(entry):
+    if entry is None:
+        return {"available": False, "status": "not available", "value": None, "units": None}
+    return {
+        "available": True,
+        "status": "ok",
+        "value": entry.get("value"),
+        "units": entry.get("units"),
+    }
+
+
+def _compute_symmetry_entry(r_entry, l_entry):
+    if not r_entry["available"] or not l_entry["available"]:
+        return {
+            "available": False,
+            "status": "not available",
+            "value": None,
+            "units": None,
+            "reason": "not available",
+        }
+
+    r_val, l_val = r_entry["value"], l_entry["value"]
+    if not isinstance(r_val, (int, float)) or not isinstance(l_val, (int, float)):
+        return {
+            "available": False,
+            "status": "not available",
+            "value": None,
+            "units": None,
+            "reason": "not applicable for this metric",
+        }
+    if l_val == 0:
+        return {
+            "available": False,
+            "status": "not available",
+            "value": None,
+            "units": None,
+            "reason": "left-side value is zero",
+        }
+
+    return {
+        "available": True,
+        "status": "ok",
+        "value": (r_val / l_val) * 100.0,
+        "units": "% (R/L)",
+        "reason": None,
+    }
+
+
+def shape_gait_metrics_for_display(scalars_r, scalars_l, metric_names=None):
+    """U4 Approach step 3: render both legs' compute_scalars(...) dicts as a
+    label-grid-ready structure, plus an explicit symmetry figure per metric
+    computed by comparing scalars_r/scalars_l (KTD3's two-leg instantiation
+    is what makes this comparison possible at all -- a single instance
+    cannot produce it).
+
+    scalars_r/scalars_l may each be None or missing a given metric name
+    entirely (a real, possible shape -- not every compute_* call is
+    guaranteed to have run) -- reported as "not available" for that leg and
+    for symmetry, never raised.
+    """
+    if metric_names is None:
+        metric_names = GAIT_METRIC_NAMES
+
+    rows = {}
+    for name in metric_names:
+        r_entry = _shape_scalar_entry((scalars_r or {}).get(name))
+        l_entry = _shape_scalar_entry((scalars_l or {}).get(name))
+        rows[name] = {
+            "r": r_entry,
+            "l": l_entry,
+            "symmetry": _compute_symmetry_entry(r_entry, l_entry),
+        }
+    return rows
+
+
+def shape_confidence_for_display(confidence_result):
+    """U4 Approach step 4: turn joint_confidence.score_confidence()'s result
+    into display-ready rows, applying the fixed tier -> color encoding
+    (TIER_COLORS) and the clinician-facing label text
+    (confidence_label_text) up front, so ClinicianGUI's rendering code never
+    has to know about tiers/colors itself.
+
+    When the whole trial is confidence-unavailable (score_confidence's own
+    `available: False`), returns a single banner instead of N per-segment
+    rows (U3 Approach step 2 / this unit's own test scenario).
+    """
+    if not confidence_result.get("available", False):
+        return {
+            "available": False,
+            "banner": (
+                confidence_result.get("reason")
+                or "Confidence indicator is not available for this recording."
+            ),
+            "segments": {},
+            "by_coordinate": {},
+        }
+
+    segments_out = {}
+    by_coordinate = {}
+    for segment_name, seg in confidence_result.get("segments", {}).items():
+        display_tier = seg.get("tier") if seg.get("status") == "scored" else "not_scored"
+        row = {
+            "status": seg.get("status"),
+            "tier": seg.get("tier"),
+            "display_tier": display_tier,
+            "coordinate_name": seg.get("coordinate_name"),
+            "rms_deg": seg.get("rms_deg"),
+            "n_aligned_samples": seg.get("n_aligned_samples"),
+            "reason": seg.get("reason"),
+            "colors": tier_colors(display_tier),
+            "label_text": confidence_label_text(display_tier),
+        }
+        segments_out[segment_name] = row
+        if row["coordinate_name"]:
+            by_coordinate[row["coordinate_name"]] = row
+
+    return {"available": True, "banner": None, "segments": segments_out, "by_coordinate": by_coordinate}
+
+
+def _mot_series_from_coordinate_values(coordinate_values):
+    """Extracts (mot_times, mot_coordinates) from a gait_analysis instance's
+    own already-loaded `coordinateValues` DataFrame -- a plain DataFrame
+    with a 'time' column plus one column per OpenSim coordinate name, in
+    degrees (see utilsKinematics.kinematics.get_coordinate_values(), which
+    gait_analysis_UCM_fixed.py's __init__ calls and stores as
+    self.coordinateValues). This is the real, already-available `.mot`
+    time-series data source the plan's Sources/Research section pointed at
+    -- reused here rather than writing a new `.mot` file reader, since
+    run_pipeline already has this loaded via gait_r/gait_l.
+    """
+    mot_times = coordinate_values["time"].to_numpy()
+    mot_coordinates = {
+        column: coordinate_values[column].to_numpy()
+        for column in coordinate_values.columns
+        if column != "time"
+    }
+    return mot_times, mot_coordinates
+
+
+def shape_results_for_display(result, xsens_module=None, joint_confidence_module=None):
+    """Orchestrates all four U4 content areas from one run_pipeline() result
+    dict. Pure w.r.t. Tk (no widgets built here); ClinicianGUI._render_results
+    is the only caller that turns this function's output into widgets.
+
+    xsens_module/joint_confidence_module are the same kind of
+    dependency-injection seam run_pipeline's xsens_module/gait_fixed_module/
+    foot_progression_module parameters are (KTD9's pattern) -- tests pass
+    fakes instead of driving the real, heavier modules.
+    """
+    xsens = xsens_module if xsens_module is not None else _load_xsens_to_opensim()
+    joint_confidence = (
+        joint_confidence_module if joint_confidence_module is not None else _load_joint_confidence()
+    )
+
+    gait_r = result["gait_r"]
+    gait_l = result["gait_l"]
+
+    metadata = shape_metadata_for_display(result["session_dir"], result["mvnx_path"], xsens_module=xsens)
+    curves = shape_joint_curves_for_display(gait_r, gait_l)
+
+    scalars_r = gait_r.compute_scalars(GAIT_METRIC_NAMES)
+    scalars_l = gait_l.compute_scalars(GAIT_METRIC_NAMES)
+    metrics = shape_gait_metrics_for_display(scalars_r, scalars_l)
+
+    parsed = xsens.parse_mvnx(result["mvnx_path"])
+    mot_times, mot_coordinates = _mot_series_from_coordinate_values(gait_r.coordinateValues)
+    confidence_raw = joint_confidence.score_confidence(
+        parsed["joint_angles"], parsed["times"], mot_coordinates, mot_times,
+    )
+    confidence = shape_confidence_for_display(confidence_raw)
+
+    return {"metadata": metadata, "curves": curves, "metrics": metrics, "confidence": confidence}
+
+
+def _format_metric_value(entry):
+    if not entry["available"]:
+        return entry.get("status", "not available")
+    value = entry["value"]
+    units = entry.get("units") or ""
+    if isinstance(value, (int, float)):
+        return f"{value:.2f} {units}".strip()
+    return f"{value} {units}".strip()
+
+
+def _format_symmetry_value(entry):
+    if not entry["available"]:
+        return entry.get("reason", "not available")
+    return f"{entry['value']:.1f} {entry['units']}"
+
+
 class ClinicianGUI:
     """The persistent tkinter main window. Construction builds real Tk
     widgets, so tests must not instantiate this class -- they exercise
@@ -369,8 +768,11 @@ class ClinicianGUI:
         self.session_dir = ""
         self.mvnx_path = ""
         self.last_result = None
+        self.last_shaped = None
         self._pipeline_queue = None
         self._pipeline_thread = None
+        self._results_frame = None
+        self._tier_styles_ready = set()
 
         self._build_widgets()
         self._revalidate()
@@ -473,15 +875,155 @@ class ClinicianGUI:
 
     def _on_pipeline_result(self, result):
         self.last_result = result
-        self.progress_var.set("Done.")
         # Re-enable Run (re-validated, in case inputs changed mid-run) now
         # that a result reached the queue (KTD4's Approach step 2).
         self._revalidate()
+
+        # U4: shape the result for display and render it. Shaping failures
+        # (e.g. a malformed .mot/.mvnx surviving long enough for the
+        # pipeline stages to "succeed" but not this stage) are routed
+        # through the same centralized mapper as every other caught failure
+        # (KTD10) rather than crashing the GUI or showing a raw traceback.
+        try:
+            shaped = shape_results_for_display(result)
+        except Exception as exc:  # noqa: BLE001 -- centralized mapping (KTD10) is the point here.
+            self.progress_var.set("")
+            messagebox.showerror("Could not display results", map_error_to_message(exc))
+            return
+
+        self.last_shaped = shaped
+        self.progress_var.set("Done.")
+        self._render_results(shaped)
 
     def _on_pipeline_error(self, message):
         self.progress_var.set("")
         self._revalidate()
         messagebox.showerror("Run failed", message)
+
+    # -- U4: results review display (widget-building; Tk-only, no logic --
+    # see the module-level shape_*_for_display functions above for the
+    # actual data-shaping, which is what's unit-tested). ---------------
+
+    def _tier_style_name(self, tier):
+        style_name = f"Tier{tier}.TLabel"
+        if style_name not in self._tier_styles_ready:
+            colors = tier_colors(tier)
+            ttk.Style().configure(style_name, background=colors["bg"], foreground=colors["fg"])
+            self._tier_styles_ready.add(style_name)
+        return style_name
+
+    def _render_results(self, shaped):
+        # Re-running a trial (KTD8: overwrites the prior trial's output)
+        # should also replace the prior trial's displayed results, not stack
+        # a second copy underneath it.
+        if self._results_frame is not None:
+            self._results_frame.destroy()
+
+        self._results_frame = ttk.Frame(self.root, padding=12)
+        self._results_frame.grid(row=1, column=0, sticky="nsew")
+
+        self._render_metadata(self._results_frame, shaped["metadata"])
+        self._render_curves(self._results_frame, shaped["curves"], shaped["confidence"])
+        self._render_metrics(self._results_frame, shaped["metrics"])
+
+    def _render_metadata(self, parent, metadata):
+        frame = ttk.LabelFrame(parent, text="Trial metadata", padding=8)
+        frame.grid(row=0, column=0, sticky="we", pady=(0, 8))
+
+        rows = [
+            ("Subject / session", metadata["subject_session_id"]),
+            ("Trial", metadata["trial_name"]),
+            ("Date", metadata["date"]),
+            ("Duration", metadata["duration_display"]),
+            ("Sensor coverage", metadata["sensor_coverage"]),
+        ]
+        for row_index, (label, value) in enumerate(rows):
+            ttk.Label(frame, text=f"{label}:").grid(row=row_index, column=0, sticky="w")
+            ttk.Label(frame, text=str(value)).grid(
+                row=row_index, column=1, sticky="w", padx=(6, 0)
+            )
+
+    def _render_curves(self, parent, curves, confidence):
+        frame = ttk.LabelFrame(parent, text="Joint-angle curves (% gait cycle)", padding=8)
+        frame.grid(row=1, column=0, sticky="we", pady=(0, 8))
+
+        row_offset = 0
+        if not confidence.get("available", False):
+            # Whole-trial confidence-unavailable: one banner, not N
+            # per-segment tiles (U4 Approach step 4 / U3's no-data
+            # fallback).
+            ttk.Label(
+                frame,
+                text=confidence.get("banner", "Confidence indicator is not available."),
+                foreground=TIER_COLORS["low"]["fg"],
+                wraplength=620,
+            ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+            row_offset = 1
+
+        by_coordinate = confidence.get("by_coordinate", {})
+        columns = 3
+        for index, (label, curve) in enumerate(curves.items()):
+            col = index % columns
+            row = row_offset + (index // columns) * 2
+            cell = ttk.Frame(frame)
+            cell.grid(row=row, column=col, padx=6, pady=6, sticky="n")
+            ttk.Label(cell, text=label).pack()
+
+            if not curve.get("available"):
+                ttk.Label(cell, text="Not available", foreground="gray").pack()
+                continue
+
+            figure = Figure(figsize=(3, 2.2), dpi=100)
+            axis = figure.add_subplot(111)
+            axis.plot(curve["x"], curve["mean"])
+            if curve.get("sd"):
+                mean_values = curve["mean"]
+                sd_values = curve["sd"]
+                axis.fill_between(
+                    curve["x"],
+                    [m - s for m, s in zip(mean_values, sd_values)],
+                    [m + s for m, s in zip(mean_values, sd_values)],
+                    alpha=0.2,
+                )
+            axis.set_xlabel("% gait cycle")
+            axis.set_ylabel("deg")
+            figure.tight_layout()
+
+            canvas = FigureCanvasTkAgg(figure, master=cell)
+            canvas.draw()
+            canvas.get_tk_widget().pack()
+
+            tier_row = by_coordinate.get(curve["coordinate_name"])
+            display_tier = tier_row["display_tier"] if tier_row else "not_scored"
+            label_text = tier_row["label_text"] if tier_row else confidence_label_text("not_scored")
+            ttk.Label(
+                cell, text=label_text, style=self._tier_style_name(display_tier),
+                wraplength=190, anchor="center",
+            ).pack(fill="x", pady=(4, 0))
+
+    def _render_metrics(self, parent, metrics):
+        frame = ttk.LabelFrame(parent, text="Gait-cycle metrics", padding=8)
+        frame.grid(row=2, column=0, sticky="we")
+
+        headers = ["Metric", "Right", "Left", "Symmetry (R/L)"]
+        for col, text in enumerate(headers):
+            ttk.Label(frame, text=text, font=("TkDefaultFont", 9, "bold")).grid(
+                row=0, column=col, sticky="w", padx=4, pady=(0, 4)
+            )
+
+        for row_index, (name, row) in enumerate(metrics.items(), start=1):
+            ttk.Label(frame, text=name.replace("_", " ")).grid(
+                row=row_index, column=0, sticky="w", padx=4
+            )
+            ttk.Label(frame, text=_format_metric_value(row["r"])).grid(
+                row=row_index, column=1, sticky="w", padx=4
+            )
+            ttk.Label(frame, text=_format_metric_value(row["l"])).grid(
+                row=row_index, column=2, sticky="w", padx=4
+            )
+            ttk.Label(frame, text=_format_symmetry_value(row["symmetry"])).grid(
+                row=row_index, column=3, sticky="w", padx=4
+            )
 
 
 def main():
