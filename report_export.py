@@ -34,24 +34,28 @@ from matplotlib.figure import Figure
 PAGE_SIZE = (8.5, 11)  # inches -- US Letter, matches PdfPages' own default assumption of one Figure per page.
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_MODULE_LOADING_PATH = os.path.join(_REPO_ROOT, "module_loading.py")
 _REPORT_FORMATTING_PATH = os.path.join(_REPO_ROOT, "report_formatting.py")
 
 
-def _load_report_formatting():
-    """Loads report_formatting.py by absolute path (matching this repo's
-    module-loading convention -- see clinician_gui.py's _load_* helpers),
-    the shared, pure metric/symmetry text-formatting rules this module and
-    clinician_gui.py's on-screen metrics grid both use, so there's exactly
-    one place that decides how a shaped metric entry renders as text."""
+def _bootstrap_load_module_loading():
+    # One-off bootstrap for module_loading.py itself, matching
+    # clinician_gui.py's own bootstrap -- it can't load itself via its own
+    # not-yet-loaded function. Shares module_loading.py's mechanism (not its
+    # runtime cache, since this is a separate load of that file from
+    # clinician_gui.py's own) so both files' loaders read from one
+    # implementation instead of two independently-maintained copies.
     spec = importlib.util.spec_from_file_location(
-        "report_formatting_for_report_export", _REPORT_FORMATTING_PATH
+        "module_loading_for_report_export", _MODULE_LOADING_PATH
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-_report_formatting = _load_report_formatting()
+_report_formatting = _bootstrap_load_module_loading().load_module_by_path(
+    "report_formatting_for_report_export", _REPORT_FORMATTING_PATH
+)
 
 
 def _new_text_page():

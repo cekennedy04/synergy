@@ -88,6 +88,18 @@ def test_gait_analysis_failed_error_names_gait_event_detection(mod):
     assert "Details:" in message
 
 
+def test_foot_progression_analysis_error_names_foot_progression(mod):
+    exc = mod.FootProgressionAnalysisError(
+        "AnalyzeTool failed: no valid gait cycle found in this trial."
+    )
+
+    message = mod.map_error_to_message(exc)
+
+    assert "foot progression" in message.lower()
+    assert "unexpected error" not in message.lower()
+    assert "Details:" in message
+
+
 @pytest.mark.parametrize("exc", [
     RuntimeError("some totally unrelated internal failure"),
     KeyError("unexpected_key"),
@@ -109,6 +121,7 @@ def test_mapper_never_raises_and_never_returns_empty(mod):
         mod.ModelResolutionError(""),
         mod.MvnxParsingError(""),
         mod.GaitAnalysisFailedError(""),
+        mod.FootProgressionAnalysisError(""),
         Exception(""),
         ValueError(),
     ]:

@@ -251,6 +251,75 @@ def test_malformed_mvnx_maps_to_readable_error_on_queue(mod, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# An .mvnx that becomes unreadable (deleted/permission error) between
+# validate_inputs' check and the Run click also maps to the same specific
+# .mvnx-could-not-be-read message, not the generic fallback (found in code
+# review: the original except clause only caught ValueError/ET.ParseError).
+# ---------------------------------------------------------------------------
+
+def test_mvnx_becoming_unreadable_maps_to_the_same_specific_error(mod, tmp_path):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    resolve_paths = _resolve_paths_for(session_dir)
+
+    fake_xsens = _make_fake_xsens_module(
+        resolve_paths=resolve_paths,
+        build_error=FileNotFoundError(f"[Errno 2] No such file or directory: '{mvnx_path}'"),
+    )
+
+    result_queue = queue.Queue()
+    thread = mod.start_pipeline_thread(
+        str(session_dir), str(mvnx_path), result_queue, xsens_module=fake_xsens,
+    )
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    error_messages = [payload for kind, payload in _drain_all(result_queue) if kind == "error"]
+    assert len(error_messages) == 1
+    assert "could not be read" in error_messages[0]
+    assert "Traceback" not in error_messages[0]
+
+
+# ---------------------------------------------------------------------------
+# compute_foot_progression_angles raising (it runs a real osim.AnalyzeTool
+# pass per the plan's own Risks section) -> its own specific, readable
+# message reaches the queue, not the generic "unexpected error" fallback
+# (found in code review: this call wasn't wrapped at all before).
+# ---------------------------------------------------------------------------
+
+def test_foot_progression_angle_failure_maps_to_its_own_specific_error(mod, tmp_path):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    resolve_paths = _resolve_paths_for(session_dir)
+
+    fake_xsens = _make_fake_xsens_module(resolve_paths=resolve_paths)
+
+    def _raising_compute_foot_progression_angles(session_dir, trial_name):
+        raise RuntimeError("AnalyzeTool failed: no valid gait cycle found in this trial.")
+
+    fake_fp = types.SimpleNamespace(
+        compute_foot_progression_angles=_raising_compute_foot_progression_angles
+    )
+
+    result_queue = queue.Queue()
+    thread = mod.start_pipeline_thread(
+        str(session_dir), str(mvnx_path), result_queue,
+        xsens_module=fake_xsens, foot_progression_module=fake_fp,
+    )
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    error_messages = [payload for kind, payload in _drain_all(result_queue) if kind == "error"]
+    assert len(error_messages) == 1
+    payload = error_messages[0]
+    assert "foot progression" in payload.lower()
+    assert "unexpected error" not in payload.lower()
+    assert "Traceback" not in payload
+
+
+# ---------------------------------------------------------------------------
 # gait_analysis_UCM_fixed raising under allow_manual_entry=False (mocked,
 # per KTD9) -> a readable message reaches the queue instead of a hang.
 # ---------------------------------------------------------------------------

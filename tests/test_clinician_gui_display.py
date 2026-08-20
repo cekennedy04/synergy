@@ -187,10 +187,15 @@ def test_full_results_shape_for_display_without_error(mod, tmp_path):
 
     metrics = shaped["metrics"]
     assert set(metrics.keys()) == set(mod.GAIT_METRIC_NAMES)
-    for row in metrics.values():
+    for name, row in metrics.items():
         assert row["r"]["available"] is True
         assert row["l"]["available"] is True
-        assert row["symmetry"]["available"] is True
+        if name in mod.ALREADY_SYMMETRY_METRICS:
+            # Already an R/L ratio per-instance -- see
+            # test_step_length_symmetry_is_not_re_derived_or_silently_picked.
+            assert row["symmetry"]["available"] is False
+        else:
+            assert row["symmetry"]["available"] is True
 
     confidence = shaped["confidence"]
     assert confidence["available"] is True
@@ -255,24 +260,32 @@ def test_symmetry_is_computed_from_both_legs_not_one_alone(mod):
     assert metrics_a["cadence"]["symmetry"]["value"] != metrics_b["cadence"]["symmetry"]["value"]
 
 
-def test_step_length_symmetry_is_reported_as_is_not_re_derived(mod):
+def test_step_length_symmetry_is_not_re_derived_or_silently_picked(mod):
     # gait_analysis_UCM_fixed.py's compute_step_length_symmetry() already
-    # returns an R/L ratio percentage computed from a single instance --
-    # scalars_r/scalars_l both carry that same already-symmetric value here.
+    # returns an R/L ratio percentage computed from a single instance.
     # Applying the generic r/l*100 symmetry formula to it a second time
-    # would produce a meaningless "symmetry of symmetry" figure (a real bug
-    # found during a simplify pass); this proves the reported symmetry
-    # value is the metric's own value, not (value/value)*100.
+    # would produce a meaningless "symmetry of symmetry" figure (a bug found
+    # during a simplify pass). A follow-up code-review pass then found that
+    # gait_r and gait_l each anchor gait-cycle detection on a different leg,
+    # so their two step_length_symmetry values are NOT guaranteed to agree
+    # on a real trial -- silently reporting one and discarding the other
+    # would hide a real disagreement. This proves neither happens: the
+    # Right/Left columns still carry each instance's own (possibly
+    # different) value, and the Symmetry column is marked not-applicable
+    # rather than re-deriving or picking a "winner."
     scalars_r = {"step_length_symmetry": {"value": 87.5, "units": "% (R/L)"}}
-    scalars_l = {"step_length_symmetry": {"value": 87.5, "units": "% (R/L)"}}
+    scalars_l = {"step_length_symmetry": {"value": 91.0, "units": "% (R/L)"}}
 
     metrics = mod.shape_gait_metrics_for_display(
         scalars_r, scalars_l, metric_names=["step_length_symmetry"]
     )
 
-    symmetry = metrics["step_length_symmetry"]["symmetry"]
-    assert symmetry["available"] is True
-    assert symmetry["value"] == pytest.approx(87.5)
+    row = metrics["step_length_symmetry"]
+    assert row["r"]["value"] == pytest.approx(87.5)
+    assert row["l"]["value"] == pytest.approx(91.0)
+    assert row["symmetry"]["available"] is False
+    assert row["symmetry"]["value"] is None
+    assert "Right/Left" in row["symmetry"]["reason"]
 
 
 # ---------------------------------------------------------------------------

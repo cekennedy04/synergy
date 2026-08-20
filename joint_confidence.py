@@ -120,6 +120,16 @@ XSENS_TO_MOT_COORDINATE = {
     "jLeftElbow": ("elbow_flex_l", "flexion_extension"),
 }
 
+# Drift guard: MOT_COORDINATE_NAMES_USED exists to document that every
+# coordinate name above was grounded against the real model (see its own
+# comment), but a comment alone can't catch the mapping being edited out
+# from under it later (found in code review -- previously nothing actually
+# read this list). Fails loudly at import time instead.
+assert {coord for coord, _dof in XSENS_TO_MOT_COORDINATE.values()} <= set(MOT_COORDINATE_NAMES_USED), (
+    "XSENS_TO_MOT_COORDINATE references a coordinate name not listed in "
+    "MOT_COORDINATE_NAMES_USED -- update MOT_COORDINATE_NAMES_USED to match."
+)
+
 # ---------------------------------------------------------------------------
 # Tiering thresholds -- PROVISIONAL, per KTD5/U3 Approach step 4.
 # ---------------------------------------------------------------------------

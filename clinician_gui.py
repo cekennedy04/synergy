@@ -45,6 +45,22 @@ _GAIT_ANALYSIS_EXAMPLE_PATH = os.path.join(REPO_ROOT, "Examples", "gaitAnalysis-
 _JOINT_CONFIDENCE_PATH = os.path.join(REPO_ROOT, "joint_confidence.py")
 _REPORT_EXPORT_PATH = os.path.join(REPO_ROOT, "report_export.py")
 _REPORT_FORMATTING_PATH = os.path.join(REPO_ROOT, "report_formatting.py")
+_MODULE_LOADING_PATH = os.path.join(REPO_ROOT, "module_loading.py")
+
+
+def _bootstrap_load_module_loading():
+    # One-off bootstrap for module_loading.py itself, by the same
+    # by-path mechanism it then provides for everything else -- it can't
+    # load itself via its own not-yet-loaded function.
+    spec = importlib.util.spec_from_file_location(
+        "module_loading_for_clinician_gui", _MODULE_LOADING_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_load_module_by_path = _bootstrap_load_module_loading().load_module_by_path
 
 # opensense heading-correction defaults, matching xsens_to_opensim.py's own
 # main()/argparse defaults (see that file's --base-imu/--base-heading-axis
@@ -52,32 +68,6 @@ _REPORT_FORMATTING_PATH = os.path.join(REPO_ROOT, "report_formatting.py")
 # correct here -- confirmed empirically against real data).
 DEFAULT_BASE_IMU_LABEL = "pelvis_imu"
 DEFAULT_BASE_HEADING_AXIS = "x"
-
-
-_LOADED_MODULE_CACHE = {}
-
-
-def _load_module_by_path(register_name, path):
-    """Shared body for every _load_* loader below: load a sibling repo-root
-    module by absolute path (matching this repo's own test-loading
-    convention, see tests/test_xsens_to_opensim_session_paths.py) rather
-    than a normal `import`, so this file works regardless of how/where it's
-    launched from.
-
-    Cached per path (not per call): a real pipeline run touches
-    xsens_to_opensim.py from validate_inputs, run_pipeline, and
-    shape_results_for_display independently, and this window is persistent
-    across multiple trials in one session -- without caching, that means
-    every dependent module (some transitively importing opensim/utils.py)
-    would be re-parsed and re-executed from scratch on every single call,
-    every single run.
-    """
-    if path not in _LOADED_MODULE_CACHE:
-        spec = importlib.util.spec_from_file_location(register_name, path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _LOADED_MODULE_CACHE[path] = module
-    return _LOADED_MODULE_CACHE[path]
 
 
 def _load_xsens_to_opensim():
@@ -166,6 +156,13 @@ class GaitAnalysisFailedError(Exception):
     stdin (R5)."""
 
 
+class FootProgressionAnalysisError(Exception):
+    """Wraps compute_foot_progression_angles raising -- it runs a real
+    osim.AnalyzeTool pass (flagged as a real risk in the plan's Risks &
+    Dependencies section) that can fail on its own, independent of the
+    later gait_analysis stage (R5)."""
+
+
 def map_error_to_message(exc):
     """Centralized, pure error-to-message mapper (KTD10, governs R5).
 
@@ -201,6 +198,14 @@ def map_error_to_message(exc):
             "can happen with a very short recording, non-walking motion, or "
             "noisy/incomplete tracking data. Try a longer or cleaner "
             "recording of the same activity."
+        )
+    elif isinstance(exc, FootProgressionAnalysisError):
+        message = (
+            "Foot progression angle analysis failed for this trial. This "
+            "step runs an OpenSim analysis pass against the converted "
+            "motion and can fail on very short recordings or trials with "
+            "incomplete tracking data. Try a longer or cleaner recording "
+            "of the same activity."
         )
     else:
         message = (
@@ -261,7 +266,13 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
         xsens.build_orientations_sto(
             mvnx_path, paths["sto_path"], xsens.SEGMENT_TO_IMU_FRAME, source="segment"
         )
-    except (ValueError, ET.ParseError) as exc:
+    # ValueError/ET.ParseError: parse_mvnx's own malformed-structure and
+    # invalid-XML cases. OSError (covers FileNotFoundError, PermissionError,
+    # etc.): the .mvnx could be deleted or become unreadable between
+    # validate_inputs' check and this Run click -- without this, that case
+    # fell through to the generic "unexpected error" fallback instead of
+    # this stage's specific, more helpful message (found in code review).
+    except (ValueError, ET.ParseError, OSError) as exc:
         raise MvnxParsingError(str(exc)) from exc
 
     _progress("Calibrating model against IMU orientations...")
@@ -281,7 +292,15 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
         foot_progression_module if foot_progression_module is not None
         else _load_gait_analysis_example()
     )
-    fpa_r, fpa_l = foot_progression.compute_foot_progression_angles(session_dir, trial_name)
+    # The plan's own Risks section flags this call as running a real
+    # osim.AnalyzeTool pass that can fail -- wrapped so a failure here gets
+    # this stage's own specific message instead of falling through to
+    # map_error_to_message's generic "unexpected error" fallback (found in
+    # code review).
+    try:
+        fpa_r, fpa_l = foot_progression.compute_foot_progression_angles(session_dir, trial_name)
+    except Exception as exc:
+        raise FootProgressionAnalysisError(str(exc)) from exc
 
     gait_fixed = gait_fixed_module if gait_fixed_module is not None else _load_gait_analysis_ucm_fixed()
     model_name = Path(paths["model_file"]).name
@@ -673,12 +692,23 @@ def shape_gait_metrics_for_display(scalars_r, scalars_l, metric_names=None):
     for name in metric_names:
         r_entry = _shape_scalar_entry((scalars_r or {}).get(name))
         l_entry = _shape_scalar_entry((scalars_l or {}).get(name))
-        if name in ALREADY_SYMMETRY_METRICS and r_entry["available"] and l_entry["available"]:
-            # Already an R/L ratio (see ALREADY_SYMMETRY_METRICS) -- report
-            # it as-is rather than dividing it by itself again. Availability
-            # still follows the same "both legs present" rule as every other
-            # metric; only the value itself is exempt from re-deriving.
-            symmetry_entry = r_entry
+        if name in ALREADY_SYMMETRY_METRICS:
+            # gait_r/gait_l each compute this as an R/L ratio from their own
+            # instance -- and each instance anchors gait-cycle detection on
+            # a different leg (self.gaitEvents['ipsilateralLeg']), so the two
+            # values are NOT guaranteed to agree on a real trial. Reporting
+            # one and silently discarding the other would hide a real
+            # disagreement from the clinician; the Right/Left columns above
+            # already show each instance's own value, so the Symmetry column
+            # is marked not-applicable here rather than re-deriving or
+            # picking a "winner."
+            symmetry_entry = {
+                "available": False,
+                "status": "not available",
+                "value": None,
+                "units": None,
+                "reason": "already an R/L ratio -- see Right/Left columns",
+            }
         else:
             symmetry_entry = _compute_symmetry_entry(r_entry, l_entry)
         rows[name] = {"r": r_entry, "l": l_entry, "symmetry": symmetry_entry}
@@ -939,6 +969,13 @@ class ClinicianGUI:
             return
 
         self.run_button.configure(state="disabled")
+        # Disable Export the moment a new run starts, not just while it's
+        # in flight: if this run fails, last_shaped still points at a PRIOR
+        # trial's results, and leaving Export enabled would let the
+        # clinician export that stale report while believing it reflects
+        # the trial they just attempted (found in code review). Export is
+        # re-enabled only by this run's own success, in _on_pipeline_result.
+        self.export_button.configure(state="disabled")
         self.progress_var.set("Starting...")
         self._pipeline_queue = queue.Queue()
         self._pipeline_thread = start_pipeline_thread(
