@@ -44,6 +44,7 @@ _GAIT_ANALYSIS_UCM_FIXED_PATH = os.path.join(REPO_ROOT, "gait_analysis_UCM_fixed
 _GAIT_ANALYSIS_EXAMPLE_PATH = os.path.join(REPO_ROOT, "Examples", "gaitAnalysis-UCM.py")
 _JOINT_CONFIDENCE_PATH = os.path.join(REPO_ROOT, "joint_confidence.py")
 _REPORT_EXPORT_PATH = os.path.join(REPO_ROOT, "report_export.py")
+_REPORT_FORMATTING_PATH = os.path.join(REPO_ROOT, "report_formatting.py")
 
 # opensense heading-correction defaults, matching xsens_to_opensim.py's own
 # main()/argparse defaults (see that file's --base-imu/--base-heading-axis
@@ -53,89 +54,94 @@ DEFAULT_BASE_IMU_LABEL = "pelvis_imu"
 DEFAULT_BASE_HEADING_AXIS = "x"
 
 
+_LOADED_MODULE_CACHE = {}
+
+
+def _load_module_by_path(register_name, path):
+    """Shared body for every _load_* loader below: load a sibling repo-root
+    module by absolute path (matching this repo's own test-loading
+    convention, see tests/test_xsens_to_opensim_session_paths.py) rather
+    than a normal `import`, so this file works regardless of how/where it's
+    launched from.
+
+    Cached per path (not per call): a real pipeline run touches
+    xsens_to_opensim.py from validate_inputs, run_pipeline, and
+    shape_results_for_display independently, and this window is persistent
+    across multiple trials in one session -- without caching, that means
+    every dependent module (some transitively importing opensim/utils.py)
+    would be re-parsed and re-executed from scratch on every single call,
+    every single run.
+    """
+    if path not in _LOADED_MODULE_CACHE:
+        spec = importlib.util.spec_from_file_location(register_name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _LOADED_MODULE_CACHE[path] = module
+    return _LOADED_MODULE_CACHE[path]
+
+
 def _load_xsens_to_opensim():
-    """Load xsens_to_opensim.py by absolute path, matching this repo's own
-    test-loading convention (see tests/test_xsens_to_opensim_session_paths.py)
-    rather than a normal `import xsens_to_opensim`, so this module works
-    regardless of how/where it's launched from."""
-    spec = importlib.util.spec_from_file_location(
-        "xsens_to_opensim_for_clinician_gui", _XSENS_TO_OPENSIM_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _load_module_by_path("xsens_to_opensim_for_clinician_gui", _XSENS_TO_OPENSIM_PATH)
 
 
 def _load_gait_analysis_ucm_fixed():
-    """Load gait_analysis_UCM_fixed.py (KTD3: the bug-fixed copy, not the
-    original gait_analysis_UCM.py -- see that file's own module docstring
-    for the full list of fixes, including allow_manual_entry=False turning
-    a blocking input() prompt into a catchable exception). Loaded lazily, by
-    absolute path, only when a real pipeline run needs it -- this module
-    transitively imports opensim and utils.py (via utilsKinematics.py), so
-    importing clinician_gui.py itself never requires either to be
-    installed/configured.
+    """KTD3: the bug-fixed copy, not the original gait_analysis_UCM.py --
+    see that file's own module docstring for the full list of fixes,
+    including allow_manual_entry=False turning a blocking input() prompt
+    into a catchable exception. Loaded lazily, only when a real pipeline
+    run needs it -- this module transitively imports opensim and utils.py
+    (via utilsKinematics.py), so importing clinician_gui.py itself never
+    requires either to be installed/configured.
 
     U2's own tests (KTD9) never call this for real -- they monkeypatch it
     (or pass a fake module directly to run_pipeline's gait_fixed_module
     parameter) instead of driving the real gait_analysis class through
     synthetic marker data."""
-    spec = importlib.util.spec_from_file_location(
+    return _load_module_by_path(
         "gait_analysis_ucm_fixed_for_clinician_gui", _GAIT_ANALYSIS_UCM_FIXED_PATH
     )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _load_gait_analysis_example():
-    """Load Examples/gaitAnalysis-UCM.py by absolute path, for
-    compute_foot_progression_angles (the only function of that module this
-    GUI calls -- see its docstring around line 230). NOTE: importing this
-    module runs its own module-level os.chdir() to the repo root (harmless
-    here since clinician_gui.py already lives at the repo root) -- tests
-    that don't need the real function monkeypatch this loader instead of
-    calling it, both to avoid that side effect and to avoid needing a real
-    OpenSim install (compute_foot_progression_angles itself needs
-    opensim.AnalyzeTool)."""
-    spec = importlib.util.spec_from_file_location(
+    """For compute_foot_progression_angles (the only function of
+    Examples/gaitAnalysis-UCM.py this GUI calls -- see its docstring around
+    line 230). NOTE: importing this module runs its own module-level
+    os.chdir() to the repo root (harmless here since clinician_gui.py
+    already lives at the repo root) -- tests that don't need the real
+    function monkeypatch this loader instead of calling it, both to avoid
+    that side effect and to avoid needing a real OpenSim install
+    (compute_foot_progression_angles itself needs opensim.AnalyzeTool)."""
+    return _load_module_by_path(
         "gait_analysis_example_for_clinician_gui", _GAIT_ANALYSIS_EXAMPLE_PATH
     )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _load_joint_confidence():
-    """Load joint_confidence.py (U3) by absolute path, matching this file's
-    other _load_* loaders' convention. Unlike those, joint_confidence.py has
-    no opensim/utils.py dependency chain at all (pure numpy) -- loaded the
-    same way anyway for consistency, and so tests can inject a fake module
-    through shape_results_for_display's own joint_confidence_module
-    parameter the same way run_pipeline's callers inject fake pipeline
-    stages (KTD9's pattern applied to U4's own display-shaping seam)."""
-    spec = importlib.util.spec_from_file_location(
-        "joint_confidence_for_clinician_gui", _JOINT_CONFIDENCE_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """joint_confidence.py (U3) has no opensim/utils.py dependency chain at
+    all (pure numpy) -- loaded the same way anyway for consistency, and so
+    tests can inject a fake module through shape_results_for_display's own
+    joint_confidence_module parameter the same way run_pipeline's callers
+    inject fake pipeline stages (KTD9's pattern applied to U4's own
+    display-shaping seam)."""
+    return _load_module_by_path("joint_confidence_for_clinician_gui", _JOINT_CONFIDENCE_PATH)
 
 
 def _load_report_export():
-    """Load report_export.py (U5) by absolute path, matching this file's
-    other _load_* loaders' convention. Like joint_confidence.py, this
-    module has no opensim/tkinter dependency chain -- loaded the same way
-    anyway for consistency, and so this file (and tests exercising its
-    export button handler) can swap in a fake module the same way
-    run_pipeline's/shape_results_for_display's own dependency-injection
-    seams do (KTD9's pattern)."""
-    spec = importlib.util.spec_from_file_location(
-        "report_export_for_clinician_gui", _REPORT_EXPORT_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """report_export.py (U5), like joint_confidence.py, has no
+    opensim/tkinter dependency chain -- loaded the same way anyway for
+    consistency, and so this file (and tests exercising its export button
+    handler) can swap in a fake module the same way run_pipeline's/
+    shape_results_for_display's own dependency-injection seams do (KTD9's
+    pattern)."""
+    return _load_module_by_path("report_export_for_clinician_gui", _REPORT_EXPORT_PATH)
+
+
+def _load_report_formatting():
+    """report_formatting.py holds the metric/symmetry text-formatting rules
+    shared between this file's on-screen metrics grid and report_export.py's
+    PDF metrics table, so there is exactly one place that decides how a
+    shaped metric entry renders as text."""
+    return _load_module_by_path("report_formatting_for_clinician_gui", _REPORT_FORMATTING_PATH)
 
 
 class ModelResolutionError(Exception):
@@ -387,7 +393,7 @@ def validate_inputs(session_dir, mvnx_path):
     # trial_name doesn't affect model auto-discovery/raising -- any
     # placeholder derived from the .mvnx filename is fine here since this
     # function only cares about resolving the .osim model.
-    trial_name = Path(mvnx_path).stem or "trial"
+    trial_name = _resolve_trial_name(mvnx_path)
     try:
         xsens_to_opensim.resolve_session_output_paths(session_dir, trial_name)
     except ValueError as exc:
@@ -482,7 +488,7 @@ def confidence_label_text(tier):
     return f"{word} agreement with the suit's own onboard estimate"
 
 
-def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None):
+def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None, parsed_mvnx=None):
     """U4 Approach step 1: subject/session ID and trial name come from the
     inputs the clinician already picked (U1), not from parse_mvnx (which has
     no subject/trial/date fields of its own); date comes from the .mvnx
@@ -493,9 +499,18 @@ def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None):
     (default None loads the real xsens_to_opensim.py lazily) so tests can
     pass a fake module exposing parse_mvnx() instead of needing a real
     .mvnx file with real timestamps.
+
+    parsed_mvnx, when supplied, is used instead of calling parse_mvnx again --
+    shape_results_for_display already parses the trial once for the
+    confidence indicator and passes that same result here, so a real trial's
+    .mvnx (real XML parsing over its full frame list) is never parsed twice
+    for one display render.
     """
-    xsens = xsens_module if xsens_module is not None else _load_xsens_to_opensim()
-    parsed = xsens.parse_mvnx(mvnx_path)
+    if parsed_mvnx is not None:
+        parsed = parsed_mvnx
+    else:
+        xsens = xsens_module if xsens_module is not None else _load_xsens_to_opensim()
+        parsed = xsens.parse_mvnx(mvnx_path)
 
     times = parsed.get("times") or []
     frame_rate = parsed.get("frame_rate")
@@ -592,6 +607,16 @@ def _shape_scalar_entry(entry):
     }
 
 
+# gait_analysis_UCM_fixed.py's compute_step_length_symmetry() already
+# returns an R/L ratio percentage computed from a single instance (it reads
+# both feet's marker data internally) -- calling scalars_r/scalars_l on
+# EITHER leg's gait_analysis instance returns the same already-symmetric
+# value. Re-applying the generic r_val/l_val*100 symmetry formula to that
+# value would be a "symmetry of symmetry" figure with no real meaning, so
+# this metric is reported directly instead (see shape_gait_metrics_for_display).
+ALREADY_SYMMETRY_METRICS = {"step_length_symmetry"}
+
+
 def _compute_symmetry_entry(r_entry, l_entry):
     if not r_entry["available"] or not l_entry["available"]:
         return {
@@ -648,11 +673,15 @@ def shape_gait_metrics_for_display(scalars_r, scalars_l, metric_names=None):
     for name in metric_names:
         r_entry = _shape_scalar_entry((scalars_r or {}).get(name))
         l_entry = _shape_scalar_entry((scalars_l or {}).get(name))
-        rows[name] = {
-            "r": r_entry,
-            "l": l_entry,
-            "symmetry": _compute_symmetry_entry(r_entry, l_entry),
-        }
+        if name in ALREADY_SYMMETRY_METRICS and r_entry["available"] and l_entry["available"]:
+            # Already an R/L ratio (see ALREADY_SYMMETRY_METRICS) -- report
+            # it as-is rather than dividing it by itself again. Availability
+            # still follows the same "both legs present" rule as every other
+            # metric; only the value itself is exempt from re-deriving.
+            symmetry_entry = r_entry
+        else:
+            symmetry_entry = _compute_symmetry_entry(r_entry, l_entry)
+        rows[name] = {"r": r_entry, "l": l_entry, "symmetry": symmetry_entry}
     return rows
 
 
@@ -738,14 +767,19 @@ def shape_results_for_display(result, xsens_module=None, joint_confidence_module
     gait_r = result["gait_r"]
     gait_l = result["gait_l"]
 
-    metadata = shape_metadata_for_display(result["session_dir"], result["mvnx_path"], xsens_module=xsens)
+    # Parsed once and threaded through -- shape_metadata_for_display would
+    # otherwise call parse_mvnx a second time on the same file.
+    parsed = xsens.parse_mvnx(result["mvnx_path"])
+
+    metadata = shape_metadata_for_display(
+        result["session_dir"], result["mvnx_path"], xsens_module=xsens, parsed_mvnx=parsed
+    )
     curves = shape_joint_curves_for_display(gait_r, gait_l)
 
     scalars_r = gait_r.compute_scalars(GAIT_METRIC_NAMES)
     scalars_l = gait_l.compute_scalars(GAIT_METRIC_NAMES)
     metrics = shape_gait_metrics_for_display(scalars_r, scalars_l)
 
-    parsed = xsens.parse_mvnx(result["mvnx_path"])
     mot_times, mot_coordinates = _mot_series_from_coordinate_values(gait_r.coordinateValues)
     confidence_raw = joint_confidence.score_confidence(
         parsed["joint_angles"], parsed["times"], mot_coordinates, mot_times,
@@ -788,22 +822,6 @@ def build_curve_figure(curve):
     axis.set_ylabel("deg")
     figure.tight_layout()
     return figure
-
-
-def _format_metric_value(entry):
-    if not entry["available"]:
-        return entry.get("status", "not available")
-    value = entry["value"]
-    units = entry.get("units") or ""
-    if isinstance(value, (int, float)):
-        return f"{value:.2f} {units}".strip()
-    return f"{value} {units}".strip()
-
-
-def _format_symmetry_value(entry):
-    if not entry["available"]:
-        return entry.get("reason", "not available")
-    return f"{entry['value']:.1f} {entry['units']}"
 
 
 class ClinicianGUI:
@@ -971,10 +989,10 @@ class ClinicianGUI:
     # -- U5: one-action PDF export --------------------------------------
 
     def _on_export_clicked(self):
-        # Defensive: the button is only enabled once last_result/last_shaped
-        # are both set (see _on_pipeline_result), but guard here too in case
-        # this is ever wired to fire before that (e.g. a stray callback).
-        if self.last_result is None or self.last_shaped is None:
+        # Defensive: the button is only enabled once last_shaped is set (see
+        # _on_pipeline_result), but guard here too in case this is ever
+        # wired to fire before that (e.g. a stray callback).
+        if self.last_shaped is None:
             return
 
         trial_name = self.last_shaped["metadata"].get("trial_name") or "trial"
@@ -1074,7 +1092,7 @@ class ClinicianGUI:
         columns = 3
         for index, (label, curve) in enumerate(curves.items()):
             col = index % columns
-            row = row_offset + (index // columns) * 2
+            row = row_offset + (index // columns)
             cell = ttk.Frame(frame)
             cell.grid(row=row, column=col, padx=6, pady=6, sticky="n")
             ttk.Label(cell, text=label).pack()
@@ -1099,6 +1117,7 @@ class ClinicianGUI:
             ).pack(fill="x", pady=(4, 0))
 
     def _render_metrics(self, parent, metrics):
+        report_formatting = _load_report_formatting()
         frame = ttk.LabelFrame(parent, text="Gait-cycle metrics", padding=8)
         frame.grid(row=2, column=0, sticky="we")
 
@@ -1112,13 +1131,13 @@ class ClinicianGUI:
             ttk.Label(frame, text=name.replace("_", " ")).grid(
                 row=row_index, column=0, sticky="w", padx=4
             )
-            ttk.Label(frame, text=_format_metric_value(row["r"])).grid(
+            ttk.Label(frame, text=report_formatting.format_metric_value(row["r"])).grid(
                 row=row_index, column=1, sticky="w", padx=4
             )
-            ttk.Label(frame, text=_format_metric_value(row["l"])).grid(
+            ttk.Label(frame, text=report_formatting.format_metric_value(row["l"])).grid(
                 row=row_index, column=2, sticky="w", padx=4
             )
-            ttk.Label(frame, text=_format_symmetry_value(row["symmetry"])).grid(
+            ttk.Label(frame, text=report_formatting.format_symmetry_value(row["symmetry"])).grid(
                 row=row_index, column=3, sticky="w", padx=4
             )
 

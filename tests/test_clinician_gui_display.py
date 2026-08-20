@@ -255,6 +255,26 @@ def test_symmetry_is_computed_from_both_legs_not_one_alone(mod):
     assert metrics_a["cadence"]["symmetry"]["value"] != metrics_b["cadence"]["symmetry"]["value"]
 
 
+def test_step_length_symmetry_is_reported_as_is_not_re_derived(mod):
+    # gait_analysis_UCM_fixed.py's compute_step_length_symmetry() already
+    # returns an R/L ratio percentage computed from a single instance --
+    # scalars_r/scalars_l both carry that same already-symmetric value here.
+    # Applying the generic r/l*100 symmetry formula to it a second time
+    # would produce a meaningless "symmetry of symmetry" figure (a real bug
+    # found during a simplify pass); this proves the reported symmetry
+    # value is the metric's own value, not (value/value)*100.
+    scalars_r = {"step_length_symmetry": {"value": 87.5, "units": "% (R/L)"}}
+    scalars_l = {"step_length_symmetry": {"value": 87.5, "units": "% (R/L)"}}
+
+    metrics = mod.shape_gait_metrics_for_display(
+        scalars_r, scalars_l, metric_names=["step_length_symmetry"]
+    )
+
+    symmetry = metrics["step_length_symmetry"]["symmetry"]
+    assert symmetry["available"] is True
+    assert symmetry["value"] == pytest.approx(87.5)
+
+
 # ---------------------------------------------------------------------------
 # Scenario 4: joint_confidence.score_confidence()'s whole-trial
 # `available: False` result shapes into one banner, not per-segment tiers.

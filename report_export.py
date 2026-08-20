@@ -25,10 +25,33 @@ confidence-unavailable trial) still produces a page/row with a clear "not
 available" note here -- it never raises and never aborts the rest of the
 export.
 """
+import importlib.util
+import os
+
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 
 PAGE_SIZE = (8.5, 11)  # inches -- US Letter, matches PdfPages' own default assumption of one Figure per page.
+
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_REPORT_FORMATTING_PATH = os.path.join(_REPO_ROOT, "report_formatting.py")
+
+
+def _load_report_formatting():
+    """Loads report_formatting.py by absolute path (matching this repo's
+    module-loading convention -- see clinician_gui.py's _load_* helpers),
+    the shared, pure metric/symmetry text-formatting rules this module and
+    clinician_gui.py's on-screen metrics grid both use, so there's exactly
+    one place that decides how a shaped metric entry renders as text."""
+    spec = importlib.util.spec_from_file_location(
+        "report_formatting_for_report_export", _REPORT_FORMATTING_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_report_formatting = _load_report_formatting()
 
 
 def _new_text_page():
@@ -78,26 +101,10 @@ def _build_not_available_page(title, reason=None):
     return figure
 
 
-def _format_metric_cell(entry):
-    if not entry or not entry.get("available"):
-        status = (entry or {}).get("status")
-        return status or "not available"
-    value = entry.get("value")
-    units = entry.get("units") or ""
-    if isinstance(value, (int, float)):
-        return f"{value:.2f} {units}".strip()
-    return f"{value} {units}".strip()
-
-
-def _format_symmetry_cell(entry):
-    if not entry or not entry.get("available"):
-        reason = (entry or {}).get("reason")
-        return reason or "not available"
-    value = entry.get("value")
-    units = entry.get("units") or ""
-    if isinstance(value, (int, float)):
-        return f"{value:.1f} {units}".strip()
-    return f"{value} {units}".strip()
+# _format_metric_cell/_format_symmetry_cell were folded into
+# report_formatting.py's format_metric_value/format_symmetry_value, shared
+# with clinician_gui.py's on-screen metrics grid -- see _load_report_formatting
+# above.
 
 
 def _build_metrics_page(metrics):
@@ -120,9 +127,9 @@ def _build_metrics_page(metrics):
         row = row or {}
         rows.append([
             str(name).replace("_", " "),
-            _format_metric_cell(row.get("r")),
-            _format_metric_cell(row.get("l")),
-            _format_symmetry_cell(row.get("symmetry")),
+            _report_formatting.format_metric_value(row.get("r")),
+            _report_formatting.format_metric_value(row.get("l")),
+            _report_formatting.format_symmetry_value(row.get("symmetry")),
         ])
 
     table = axis.table(cellText=rows, colLabels=columns, loc="center", cellLoc="center")
