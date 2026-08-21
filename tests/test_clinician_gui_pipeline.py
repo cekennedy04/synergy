@@ -57,8 +57,8 @@ def _resolve_paths_for(session_dir, trial_name="trial1"):
 
 
 def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=None,
-                             sleep_before_calibrate=0.0):
-    calls = {"build_orientations_sto": [], "calibrate_model": [], "run_imu_ik": []}
+                             sleep_before_calibrate=0.0, write_trc_error=None):
+    calls = {"build_orientations_sto": [], "calibrate_model": [], "run_imu_ik": [], "write_markers_trc": []}
 
     def resolve_session_output_paths(session_dir, trial_name):
         if resolve_error is not None:
@@ -83,11 +83,22 @@ def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=
         )
         return str(Path(results_dir) / (output_motion_filename or "ik.mot"))
 
+    def write_markers_trc(calibrated_model_file, mot_file, trc_path):
+        calls["write_markers_trc"].append((calibrated_model_file, mot_file, trc_path))
+        if write_trc_error is not None:
+            raise write_trc_error
+        # Real write_markers_trc requires its parent dir to already exist
+        # (run_pipeline's job, per xsens_to_opensim.py's own main() pattern);
+        # assert that contract here so a regression in run_pipeline's mkdir
+        # call fails this fake the same way a missing real directory would.
+        assert Path(trc_path).parent.is_dir(), f"parent dir of {trc_path} does not exist"
+
     return types.SimpleNamespace(
         resolve_session_output_paths=resolve_session_output_paths,
         build_orientations_sto=build_orientations_sto,
         calibrate_model=calibrate_model,
         run_imu_ik=run_imu_ik,
+        write_markers_trc=write_markers_trc,
         SEGMENT_TO_IMU_FRAME={},
         _calls=calls,
     )
@@ -171,6 +182,16 @@ def test_valid_run_completes_both_legs_and_result_reaches_queue(mod, tmp_path):
     assert result_payload["trial_name"] == "trial1"
     assert result_payload["gait_r"] is not None
     assert result_payload["gait_l"] is not None
+
+    # Found in code review: gait_analysis's constructor unconditionally
+    # loads MarkerData/<trial>.trc, so a valid run must actually write it
+    # (via write_markers_trc) before either gait_analysis instantiation --
+    # not just leave resolve_session_output_paths's trc_path unused.
+    assert len(fake_xsens._calls["write_markers_trc"]) == 1
+    calibrated_model_arg, mot_file_arg, trc_path_arg = fake_xsens._calls["write_markers_trc"][0]
+    assert calibrated_model_arg.endswith("_calibrated.osim")  # the calibrated model, not the raw one
+    assert trc_path_arg == resolve_paths["trc_path"]
+    assert Path(trc_path_arg).parent.is_dir()
 
     assert len(fake_gait._calls) == 2, "expected exactly two gait_analysis instantiations (leg='r' and leg='l')"
     legs = {call["leg"] for call in fake_gait._calls}
@@ -279,6 +300,43 @@ def test_mvnx_becoming_unreadable_maps_to_the_same_specific_error(mod, tmp_path)
     assert len(error_messages) == 1
     assert "could not be read" in error_messages[0]
     assert "Traceback" not in error_messages[0]
+
+
+# ---------------------------------------------------------------------------
+# write_markers_trc raising -> its own specific, readable message reaches
+# the queue, not the generic "unexpected error" fallback or a misleading
+# gait-event-detection message (found in code review: run_pipeline never
+# ran this stage at all before, so every real trial would have crashed
+# inside gait_analysis's constructor with a raw, unmapped FileNotFoundError).
+# ---------------------------------------------------------------------------
+
+def test_marker_export_failure_maps_to_its_own_specific_error_not_gait_analysis(mod, tmp_path):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    resolve_paths = _resolve_paths_for(session_dir)
+
+    fake_xsens = _make_fake_xsens_module(
+        resolve_paths=resolve_paths,
+        write_trc_error=RuntimeError("model has no markers -- can't write a .trc."),
+    )
+
+    result_queue = queue.Queue()
+    thread = mod.start_pipeline_thread(
+        str(session_dir), str(mvnx_path), result_queue, xsens_module=fake_xsens,
+    )
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    error_messages = [payload for kind, payload in _drain_all(result_queue) if kind == "error"]
+    assert len(error_messages) == 1
+    payload = error_messages[0]
+    assert "marker" in payload.lower()
+    # Must NOT be mislabeled as a gait-event-detection failure -- that message
+    # actively misdirects the clinician toward re-recording, which doesn't fix this.
+    assert "gait-event" not in payload.lower()
+    assert "unexpected error" not in payload.lower()
+    assert "Traceback" not in payload
 
 
 # ---------------------------------------------------------------------------

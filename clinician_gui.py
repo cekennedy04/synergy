@@ -163,6 +163,16 @@ class FootProgressionAnalysisError(Exception):
     later gait_analysis stage (R5)."""
 
 
+class MarkerExportError(Exception):
+    """Wraps write_markers_trc raising while writing the .trc marker file
+    gait_analysis_UCM_fixed.gait_analysis's constructor unconditionally
+    requires (via get_marker_dict -> trc_2_dict -> MarkerData/<trial>.trc,
+    with no existence check). Found in code review: run_pipeline never ran
+    this stage, so every real trial would fail inside gait_analysis's
+    constructor with a raw FileNotFoundError mapped to the generic fallback
+    (or, worse, misread as a gait-event-detection failure) (R2, R5)."""
+
+
 def map_error_to_message(exc):
     """Centralized, pure error-to-message mapper (KTD10, governs R5).
 
@@ -206,6 +216,13 @@ def map_error_to_message(exc):
             "motion and can fail on very short recordings or trials with "
             "incomplete tracking data. Try a longer or cleaner recording "
             "of the same activity."
+        )
+    elif isinstance(exc, MarkerExportError):
+        message = (
+            "Could not generate marker positions from the converted motion, "
+            "a required step before gait metrics can be computed. This is "
+            "usually a problem with the calibrated model or the .mot file "
+            "from the previous step, not with the recording itself."
         )
     else:
         message = (
@@ -286,6 +303,18 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
         calibrated_model, paths["sto_path"], None, None, paths["results_dir"],
         output_motion_filename=paths["output_motion_filename"],
     )
+
+    # gait_analysis_UCM_fixed.gait_analysis's constructor unconditionally
+    # loads MarkerData/<trial_name>.trc (get_marker_dict -> trc_2_dict, no
+    # existence check) -- without writing it here first, every real trial
+    # fails inside that constructor. Mirrors xsens_to_opensim.py's own
+    # main() stage 4 exactly (found missing in code review).
+    _progress("Writing marker positions...")
+    try:
+        Path(paths["trc_path"]).parent.mkdir(parents=True, exist_ok=True)
+        xsens.write_markers_trc(calibrated_model, mot_path, paths["trc_path"])
+    except Exception as exc:
+        raise MarkerExportError(str(exc)) from exc
 
     _progress("Computing foot progression angles...")
     foot_progression = (

@@ -31,7 +31,7 @@ A GUI that takes an existing OpenCap-style session plus a new Xsens `.mvnx` tria
 **Pipeline execution**
 - R1. The GUI accepts an existing OpenCap-style session directory and a new Xsens `.mvnx` file as the input for a run.
 - R2. The GUI runs `xsens_to_opensim.py`'s OpenSense-based conversion and `gait_analysis_UCM.py`'s gait analysis against that input, writing output into the session directory using the existing `resolve_session_output_paths` layout.
-- R3. The GUI sets a placeholder `API_TOKEN` environment variable before importing anything that imports `utils.py` (including `gait_analysis_UCM.py`), so the import-time OpenCap login prompt never fires.
+- R3. The GUI sets a placeholder `API_TOKEN` environment variable before importing anything that imports `utils.py` (including `gait_analysis_UCM_fixed.py`), so the import-time OpenCap login prompt never fires.
 - R4. The GUI shows visible progress while the pipeline runs.
 - R5. A pipeline failure (bad input, missing model, malformed `.mvnx`) surfaces as a clinician-readable message in the GUI, not a raw traceback or a silent hang.
 
@@ -103,7 +103,7 @@ A GUI that takes an existing OpenCap-style session plus a new Xsens `.mvnx` tria
 ### Sources / Research
 
 - `VENDORING.md` — pipeline history, the login-coupling discovery (`utils.py:41`), the leg-tracking-error-vs-calibration-distance finding (real per-segment RMS-error table), and the `resolve_session_output_paths` output layout.
-- `xsens_to_opensim.py` — existing conversion pipeline; `main()` (937-1090), `resolve_session_output_paths()` (883-934), `build_orientations_sto()` (539-685), `calibrate_model()` (688-715), `run_imu_ik()` (718-750), and `parse_mvnx()` (280-511) with `STANDARD_22_JOINT_ORDER`/`JOINT_ANGLE_DOF_NAMES` already extracting the suit's own joint-angle estimate alongside segment orientations (verified by inspection: no existing reusable comparison/confidence function yet — R9 is new logic on top of that extraction).
+- `xsens_to_opensim.py` — existing conversion pipeline; `main()` (937-1090), `resolve_session_output_paths()` (883-934), `build_orientations_sto()` (539-685), `calibrate_model()` (688-715), `run_imu_ik()` (718-750), `write_markers_trc()`/`get_marker_trajectory()` (797-880, KTD11 — `main()`'s own stage 4, confirmed via its call site at line 1063 including the `mkdir` immediately before it), and `parse_mvnx()` (280-511) with `STANDARD_22_JOINT_ORDER`/`JOINT_ANGLE_DOF_NAMES` already extracting the suit's own joint-angle estimate alongside segment orientations (verified by inspection: no existing reusable comparison/confidence function yet — R9 is new logic on top of that extraction).
 - `gait_analysis_UCM_fixed.py` — the corrected copy of the gait-cycle scalar-metric computation this GUI calls into (see Planning Contract KTD3 for why the fixed copy, not the original `gait_analysis_UCM.py`).
 - `Examples/gaitAnalysis-UCM.py` — `run_gait_analysis()` (line 327) as the existing orchestration template for driving `gait_analysis`; `compute_foot_progression_angles()` (line 230); tkinter file-picker precedent (`_select_zip_interactively`/`_select_extracted_folder_interactively`, lines 499-520).
 - `utils.py:41` / `utilsAuthentication.py:30` — confirmed exact mechanism of the import-time `API_TOKEN` login-prompt coupling.
@@ -113,7 +113,7 @@ A GUI that takes an existing OpenCap-style session plus a new Xsens `.mvnx` tria
 
 ## Planning Contract
 
-**Product Contract preservation:** unchanged. R2/R8's generic references to "`gait_analysis_UCM.py`'s gait analysis" are clarified, not altered, by KTD3 below — the same capability, correctly targeting the fixed copy. A post-review pass also corrected several Planning Contract/Implementation Unit details (unit-to-file-citation errors, a missing two-leg instantiation for R8's symmetry metric, R9's missing no-data fallback, R3's guard moved to the unit that actually creates the file, U6 folded into U2) — none of these touch Product Contract text or R-IDs.
+**Product Contract preservation:** unchanged. R2/R3/R8's generic references to "`gait_analysis_UCM.py`'s gait analysis" are clarified, not altered, by KTD3 below — the same capability, correctly targeting the fixed copy. A post-review pass also corrected several Planning Contract/Implementation Unit details (unit-to-file-citation errors, a missing two-leg instantiation for R8's symmetry metric, R9's missing no-data fallback, R3's guard moved to the unit that actually creates the file, U6 folded into U2) — none of these touch Product Contract text or R-IDs. A second post-implementation review pass (after all units were built and committed) found and fixed one real functional gap: U2's pipeline never wrote the `.trc` marker file `gait_analysis`'s constructor unconditionally requires (see KTD11), and two small shared files created during the simplify pass (`report_formatting.py`, `module_loading.py`) were missing from the Files lists of the units that actually consume them (now added below).
 
 ### Key Technical Decisions
 
@@ -121,12 +121,13 @@ A GUI that takes an existing OpenCap-style session plus a new Xsens `.mvnx` tria
 - KTD2. **PDF export via `matplotlib.backends.backend_pdf.PdfPages`, reusing the same on-screen `Figure` objects.** (session-settled: user-approved — chosen over reportlab/fpdf: matplotlib is already a hard dependency, so this adds nothing to `requirements.txt`; layout is one section per page rather than a fully designed report.) Governs R10.
 - KTD3. **Call `gait_analysis_UCM_fixed.py`'s `gait_analysis` class twice per trial (`leg='r'` and `leg='l'`, both fed the same foot-progression-angle inputs), not the original `gait_analysis_UCM.py`, with `allow_manual_entry=False`.** (session-settled: user-approved — chosen over the original file: `VENDORING.md` documents the original as buggy when imported directly, and the fixed copy is what `Examples/gaitAnalysis-UCM.py`'s own driver actually imports; `allow_manual_entry=False` turns a blocking interactive `input()` prompt on failed gait-event detection into a catchable exception, required for R5. Two instantiations — matching `run_gait_analysis()`'s own pattern — because R8's symmetry metric is defined only by comparing both legs' results; a single instantiation cannot produce it.) Governs R2, R5, R8.
 - KTD4. **Pipeline execution runs on a background `threading.Thread`; progress and results reach the Tk main loop through a `queue.Queue` polled via `root.after(...)`. The Run control is disabled for the duration of the run; no cancel/abort action.** (session-settled: user-approved — chosen over running the pipeline on the main thread: a run can take from seconds to over a minute, including a `compute_foot_progression_angles` pass that itself runs an `osim.AnalyzeTool` call, and blocking the Tk event loop would freeze the window with no way to show progress. Cancel is out of scope for v1 — disabling Run for the run's duration is the simplest correct behavior; see Scope Boundaries.) Governs R2, R4.
-- KTD5. **Confidence indicator: a new Xsens-joint-name-to-OpenSim-coordinate-name mapping (duplicated into `joint_confidence.py` from `Examples/gaitAnalysis-UCM.py`'s `JOINT_NAMES`, not imported from it — see KTD9), scored by angular difference between `parse_mvnx`'s `joint_angles` and the matching `.mot` coordinate after time-base alignment (KTD7), tiered against `VENDORING.md`'s real per-segment RMS-error table.** (session-settled: user-approved, instantiating the Product Contract's confidence-indicator Key Decision — chosen over inventing arbitrary thresholds: grounds the tiers in the one real validation study this repo already has. Note the two measurements are related but not identical — VENDORING.md's table is IMU-orientation RMS error, while this computes onboard-jointAngle-vs-`.mot` difference — so the tiers are an approximation, not a direct fit; revisit cutoffs if real trials show the tiering doesn't track actual leg-tracking quality.) Governs R9.
+- KTD5. **Confidence indicator: a new Xsens-joint-name-to-OpenSim-coordinate-name mapping (duplicated into `joint_confidence.py` from `Examples/gaitAnalysis-UCM.py`'s `JOINT_NAMES`, not imported from it, to avoid a runtime dependency on that hyphenated, non-`import`-able script), scored by angular difference between `parse_mvnx`'s `joint_angles` and the matching `.mot` coordinate after time-base alignment (KTD7), tiered against `VENDORING.md`'s real per-segment RMS-error table.** (session-settled: user-approved, instantiating the Product Contract's confidence-indicator Key Decision — chosen over inventing arbitrary thresholds: grounds the tiers in the one real validation study this repo already has. Note the two measurements are related but not identical — VENDORING.md's table is IMU-orientation RMS error, while this computes onboard-jointAngle-vs-`.mot` difference — so the tiers are an approximation, not a direct fit; revisit cutoffs if real trials show the tiering doesn't track actual leg-tracking quality.) Governs R9.
 - KTD6. **Set a placeholder `API_TOKEN` environment variable at the very top of the GUI's entry-point module (`clinician_gui.py`), before any import that transitively reaches `utils.py`.** (session-settled: user-directed, inheriting the Product Contract's login-coupling Key Decision.) Governs R3.
 - KTD7. **Confidence-indicator time alignment: resample the lower-rate series (typically the `.mot` output) onto the higher-rate series's timestamps via linear interpolation before computing angular difference, rather than comparing by frame index.** Xsens frames are elapsed-milliseconds-indexed; `.mot` rows are indexed by the IK solve's own time step — the two are not guaranteed to share a rate or offset, and comparing by raw index would inject timing noise into every score. Interpolation is the standard, simplest correct fix and needs no new dependency (`numpy.interp`). Governs R9.
 - KTD8. **Re-running a trial against a session directory that already has output overwrites the prior `.mot`/plots/metrics/PDF for that trial name, matching `resolve_session_output_paths`'s existing behavior (it names outputs by trial name, not run timestamp).** No versioning or confirmation prompt in v1. Chosen over silent surprise: the GUI shows the trial name before Run so the clinician sees what will be (re)written; anything more (confirm-before-overwrite, versioned filenames) is deferred — see Scope Boundaries. Governs R2.
 - KTD9. **New tests for U2's gait-analysis stage mock `gait_analysis_UCM_fixed.gait_analysis`'s return value rather than driving the real class through synthetic marker/coordinate data.** No test in this repo has ever exercised `gait_analysis`'s real gait-event peak detection end-to-end, and building fixtures reliable enough to pass it is a nontrivial, separate effort from proving this GUI's own orchestration, error-mapping, and progress-reporting logic. Governs R2, R4, R5.
 - KTD10. **The centralized error-to-message mapper lives inside U2 (the unit that runs the pipeline and can catch its own failures), not as a separate implementation unit.** (session-settled: user-approved — chosen over splitting error-mapping into its own unit: an earlier draft split R5 across two units touching the same file with no real boundary between them; folding them removes duplicated logic and an ambiguous ownership split, per doc review.) Governs R5.
+- KTD11. **U2's pipeline writes the `.trc` marker file (`xsens_to_opensim.write_markers_trc`, matching `main()`'s own stage-4 pattern exactly, including the `Path(trc_path).parent.mkdir(parents=True, exist_ok=True)` call) between `run_imu_ik` and `compute_foot_progression_angles`.** (session-settled: user-approved — found missing in a post-implementation feasibility review: `gait_analysis_UCM_fixed.gait_analysis`'s constructor unconditionally loads `MarkerData/<trial_name>.trc` via `get_marker_dict`/`trc_2_dict`, with no existence check, so every real trial would have crashed inside that constructor — invisible to KTD9's mocked tests, since they never exercise the real class. A dedicated `MarkerExportError` wraps failures here so they aren't misread as a gait-event-detection failure, which would misdirect a clinician toward re-recording instead of the real cause.) Governs R2, R5.
 
 ### High-Level Technical Design
 
@@ -136,10 +137,12 @@ flowchart TB
     B -->|no| A
     B -->|yes, Run clicked| C[Background thread starts - KTD4]
     C --> D[build_orientations_sto / calibrate_model / run_imu_ik]
-    D --> E[compute_foot_progression_angles]
+    D --> T[write_markers_trc - KTD11]
+    T --> E[compute_foot_progression_angles]
     E --> F["gait_analysis x2, leg=r and leg=l - KTD3"]
     F --> H[queue.put result]
     D -.error.-> X[queue.put error, mapped by U2's error mapper]
+    T -.error.-> X
     E -.error.-> X
     F -.error.-> X
     H --> I[Main thread polls via after]
@@ -193,21 +196,23 @@ flowchart TB
 ### U2. Background pipeline execution, centralized error mapping, and progress
 
 - **Goal:** Run the conversion and gait-analysis pipeline in a background thread on Run (disabling Run for the duration, per KTD4), reporting progress, and routing every failure — its own and U4/U5's — through one centralized plain-language message mapper.
-- **Requirements:** R2, R4, R5.
+- **Requirements:** R2, R3, R4, R5.
 - **Dependencies:** U1.
 - **Files:**
   - `clinician_gui.py` (extend)
+  - `module_loading.py` (new — shared by-path module loader, factored out of this unit's and U5's loaders during the simplify pass)
   - `tests/test_clinician_gui_pipeline.py` (new)
   - `tests/test_clinician_gui_errors.py` (new)
 - **Approach:**
-  1. On Run, start a `threading.Thread` running, in order: `build_orientations_sto` -> `calibrate_model` -> `run_imu_ik` (`xsens_to_opensim.py`), then `compute_foot_progression_angles`, then two `gait_analysis_UCM_fixed.gait_analysis(..., allow_manual_entry=False)` instantiations (`leg='r'` and `leg='l'`, both fed the same foot-progression-angle output — KTD3), each passed `modelName=Path(model_file).name` from the `model_file` already discovered by `resolve_session_output_paths` (per the fixed file's own metadata-fallback caveat). Follow `run_gait_analysis()`'s stage order and per-leg pattern as the template.
+  1. On Run, start a `threading.Thread` running, in order: `build_orientations_sto` -> `calibrate_model` -> `run_imu_ik` -> `write_markers_trc` (`xsens_to_opensim.py`, KTD11 — mirror `main()`'s stage 4 exactly, including creating `trc_path`'s parent directory first), then `compute_foot_progression_angles`, then two `gait_analysis_UCM_fixed.gait_analysis(..., allow_manual_entry=False)` instantiations (`leg='r'` and `leg='l'`, both fed the same foot-progression-angle output — KTD3), each passed `modelName=Path(model_file).name` from the `model_file` already discovered by `resolve_session_output_paths` (per the fixed file's own metadata-fallback caveat). Follow `run_gait_analysis()`'s stage order and per-leg pattern as the template. `write_markers_trc` is not optional: `gait_analysis`'s constructor unconditionally loads the `.trc` it produces, with no existence check.
   2. Post progress and the final result (or a mapped error) onto a `queue.Queue`; poll it from the main thread via `root.after(...)` (KTD4). Disable the Run control when the thread starts; re-enable it when a result or error is polled.
-  3. Define one centralized, pure error-to-message mapping function in `clinician_gui.py` that every caught failure — U2's own pipeline stages, and U4/U5's rendering/export errors — routes through before reaching `tkinter.messagebox.showerror`. Map known failure types (missing `.osim`, `resolve_session_output_paths` raises, `parse_mvnx` raises on a malformed `.mvnx`, `gait_analysis_UCM_fixed` raising under `allow_manual_entry=False`) to a specific message naming the likely cause and a suggestion where possible; fall back to a generic-but-readable message for anything unmapped, never a raw traceback.
+  3. Define one centralized, pure error-to-message mapping function in `clinician_gui.py` that every caught failure — U2's own pipeline stages, and U4/U5's rendering/export errors — routes through before reaching `tkinter.messagebox.showerror`. Map known failure types (missing `.osim`, `resolve_session_output_paths` raises, `parse_mvnx` raises on a malformed `.mvnx`, `write_markers_trc` raising (KTD11 — a distinct, correctly-labeled failure, not folded into the gait-analysis message), `gait_analysis_UCM_fixed` raising under `allow_manual_entry=False`) to a specific message naming the likely cause and a suggestion where possible; fall back to a generic-but-readable message for anything unmapped, never a raw traceback.
 - **Patterns to follow:** `xsens_to_opensim.py`'s `main()` (937-1090) for stage sequencing; `Examples/gaitAnalysis-UCM.py`'s `run_gait_analysis()` (line 327) for the two-leg gait-analysis driver shape.
 - **Test scenarios:**
-  - Given a valid session and `.mvnx`, when Run executes, then all stages complete (including both leg instantiations) and a results object reaches the queue.
+  - Given a valid session and `.mvnx`, when Run executes, then all stages complete (including `write_markers_trc` and both leg instantiations) and a results object reaches the queue.
   - Given a session dir missing a `.osim`, when Run executes, then the centralized mapper's "no model found" message reaches the queue, not a raw exception. Covers AE1.
   - Given a malformed `.mvnx`, when Run executes, then the mapper's specific, readable error message reaches the queue. Covers AE1.
+  - Given `write_markers_trc` raising, when Run executes, then a specific, readable message naming the marker-export step reaches the queue — never the generic fallback and never mislabeled as a gait-event-detection failure (KTD11).
   - Given `gait_analysis_UCM_fixed` raising under `allow_manual_entry=False` (KTD9: mock its return/raise, do not drive the real class), when Run executes, then a readable message reaches the queue instead of a hang.
   - Given no `API_TOKEN` set in the OS environment, when the module first imports anything reaching `utils.py`, then no interactive prompt fires and import succeeds. Covers AE2.
   - Given a stage that takes more than a moment (simulated with a slow stub), when it is in progress, then a progress message is posted before the final result, and the Run control is disabled until the result arrives. Covers AE4.
@@ -244,6 +249,7 @@ flowchart TB
 - **Dependencies:** U2, U3.
 - **Files:**
   - `clinician_gui.py` (extend)
+  - `report_formatting.py` (new — shared pure metric/symmetry text-formatter, consumed by both this unit's on-screen metrics grid and U5's PDF export; factored out during the simplify pass to replace duplicated formatting logic)
   - `tests/test_clinician_gui_display.py` (new)
 - **Approach:**
   1. Metadata: subject/session ID from the selected session directory's folder name, trial name from the selected `.mvnx` filename, date from the `.mvnx` file's OS modification time, and duration/sensor coverage from `parse_mvnx`'s frame data (`parse_mvnx` itself has no subject/trial/date fields — these three come from the inputs the clinician already picked in U1, not from parsing the file).
@@ -265,6 +271,8 @@ flowchart TB
 - **Dependencies:** U4.
 - **Files:**
   - `report_export.py` (new)
+  - `report_formatting.py` (shared with U4 — see U4's Files entry)
+  - `module_loading.py` (shared with U1/U2 — see U2's Files entry)
   - `tests/test_report_export.py` (new)
 - **Approach:**
   1. Reuse the same `Figure` objects built for on-screen display in U4 — no re-rendering.

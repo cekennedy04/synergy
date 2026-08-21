@@ -88,6 +88,16 @@ def test_gait_analysis_failed_error_names_gait_event_detection(mod):
     assert "Details:" in message
 
 
+def test_marker_export_error_names_marker_not_gait_event(mod):
+    exc = mod.MarkerExportError("model has no markers -- can't write a .trc.")
+
+    message = mod.map_error_to_message(exc)
+
+    assert "marker" in message.lower()
+    assert "gait-event" not in message.lower()
+    assert "Details:" in message
+
+
 def test_foot_progression_analysis_error_names_foot_progression(mod):
     exc = mod.FootProgressionAnalysisError(
         "AnalyzeTool failed: no valid gait cycle found in this trial."
@@ -122,6 +132,7 @@ def test_mapper_never_raises_and_never_returns_empty(mod):
         mod.MvnxParsingError(""),
         mod.GaitAnalysisFailedError(""),
         mod.FootProgressionAnalysisError(""),
+        mod.MarkerExportError(""),
         Exception(""),
         ValueError(),
     ]:
