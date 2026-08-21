@@ -558,12 +558,141 @@ KEY_JOINT_PLOTS = [
 # not_scored segments and for a mapped coordinate with no confidence data at
 # all) gets an explicit, distinguishable color pair -- never an unstyled
 # fallback.
+#
+# Values match DESIGN.md's light-mode semantic table exactly (2026-08-21
+# design-consultation) -- this is the single source of truth for these
+# colors; DESIGN.md documents them, it doesn't define a second copy.
 TIER_COLORS = {
-    "high": {"bg": "#d4edda", "fg": "#155724"},
-    "medium": {"bg": "#fff3cd", "fg": "#856404"},
-    "low": {"bg": "#f8d7da", "fg": "#721c24"},
-    "not_scored": {"bg": "#e2e3e5", "fg": "#383d41"},
+    "high": {"bg": "#E3F3E8", "fg": "#1F6B3B"},
+    "medium": {"bg": "#FBF0D9", "fg": "#8A5A00"},
+    "low": {"bg": "#FBE4E2", "fg": "#A32E24"},
+    "not_scored": {"bg": "#ECEDEC", "fg": "#565D5A"},
 }
+
+# DESIGN.md tokens (light theme only -- tkinter/ttk has no reliable
+# automatic OS dark-mode hook the way a browser does, and DESIGN.md's dark
+# variant was approved as a preview-page nicety, not a v1 requirement for
+# this native app; revisit if a real need for it shows up).
+DESIGN_BG = "#F4F5F3"
+DESIGN_SURFACE = "#FFFFFF"
+DESIGN_SURFACE_2 = "#F0F1EE"
+DESIGN_BORDER = "#D8DBD7"
+DESIGN_TEXT = "#1F2421"
+DESIGN_TEXT_2 = "#5C6560"
+DESIGN_ACCENT = "#0F6B66"
+DESIGN_ACCENT_HOVER = "#0B4F4B"
+
+# Times New Roman is a standard Windows-installed font (this app's actual
+# deployment target) -- no bundling/install step needed. Cascadia Code
+# (falling back to Consolas, then any monospace) is likewise pre-installed
+# on any machine with VS Code/Windows Terminal, which this dev environment
+# has; a genuinely fresh Windows box without either still gets a real
+# monospace via the "monospace" family-class fallback tkinter honors.
+DESIGN_FONT_BODY = ("Times New Roman", 10)
+DESIGN_FONT_HEADER = ("Times New Roman", 10, "bold")
+# No DESIGN_FONT_TITLE: this window has no in-widget hero heading (the
+# "Display" role) to apply it to -- the only title-like text is
+# root.title(), which is OS window-chrome text tkinter cannot font-style.
+
+
+def _resolve_data_font(root):
+    """Cascadia Code isn't guaranteed present outside a dev machine -- probe
+    with tkinter's own font.families() and fall back through Consolas to
+    the platform monospace class rather than silently rendering data values
+    in the body serif font (which would defeat the point of a distinct,
+    tabular-aligned data typeface). This is the actual data-font source of
+    truth -- there is no separate DESIGN_FONT_DATA constant, since a fixed
+    tuple can't express the availability fallback this function performs."""
+    import tkinter.font as tkfont
+
+    available = set(tkfont.families(root))
+    for family in ("Cascadia Code", "Consolas"):
+        if family in available:
+            return (family, 10)
+    return ("monospace", 10)
+
+
+def apply_design_system(root):
+    """Applies DESIGN.md's color/typography tokens to the whole widget tree
+    via ttk styles (2026-08-21 design-consultation). 'clam' is used as the
+    base ttk theme because Windows' default 'vista'/'xpnative' themes
+    largely ignore background/foreground style options on ttk.Button and
+    ttk.Labelframe -- 'clam' is the standard workaround for actually being
+    able to recolor ttk widgets on Windows.
+
+    Deliberately conservative about what changes: widget geometry/layout
+    (grid positions, padding values already in _build_widgets/_render_*) is
+    untouched -- this only touches color and font, per the DESIGN.md scope
+    the design-consultation skill produced."""
+    style = ttk.Style(root)
+    style.theme_use("clam")
+
+    data_font = _resolve_data_font(root)
+
+    root.configure(background=DESIGN_BG)
+
+    style.configure("TFrame", background=DESIGN_BG)
+    style.configure("TLabel", background=DESIGN_BG, foreground=DESIGN_TEXT, font=DESIGN_FONT_BODY)
+    style.configure(
+        "TLabelframe", background=DESIGN_BG, bordercolor=DESIGN_BORDER, relief="solid", borderwidth=1
+    )
+    style.configure(
+        "TLabelframe.Label", background=DESIGN_BG, foreground=DESIGN_TEXT_2, font=DESIGN_FONT_HEADER
+    )
+    style.configure(
+        "TEntry", fieldbackground=DESIGN_SURFACE, foreground=DESIGN_TEXT, font=DESIGN_FONT_BODY
+    )
+    # 'clam' ships a built-in state map for TEntry's fieldbackground
+    # (readonly/disabled -> its own theme gray) that overrides the plain
+    # configure() above -- both Entry widgets in this window are permanently
+    # readonly (session_dir_var, mvnx_path_var), so without this map the
+    # DESIGN_SURFACE field color above silently never renders (found in
+    # code review: two independent reviewers hit this).
+    style.map(
+        "TEntry",
+        fieldbackground=[("readonly", DESIGN_SURFACE), ("disabled", DESIGN_SURFACE_2)],
+    )
+
+    # Padding values come from DESIGN.md's 8px spacing scale (sm=8, md=12),
+    # not arbitrary pixel counts (found in code review).
+    style.configure(
+        "TButton", background=DESIGN_SURFACE, foreground=DESIGN_TEXT,
+        bordercolor=DESIGN_BORDER, font=DESIGN_FONT_BODY, padding=(12, 8),
+    )
+    style.map("TButton", background=[("active", DESIGN_SURFACE_2)])
+
+    # Run/Export are the two primary actions in this window -- the one place
+    # DESIGN.md's teal accent shows up, matching the approved preview's
+    # "Export PDF Report" primary-button treatment. The "Browse..." buttons
+    # deliberately keep the plain "TButton" style above (bordered, neutral)
+    # -- that IS this window's secondary-button tier per DESIGN.md's
+    # "secondary (bordered, neutral)" component note, not a missing tier.
+    style.configure(
+        "Primary.TButton", background=DESIGN_ACCENT, foreground="white",
+        font=DESIGN_FONT_HEADER, padding=(12, 8),
+    )
+    style.map(
+        "Primary.TButton",
+        background=[("active", DESIGN_ACCENT_HOVER), ("disabled", DESIGN_SURFACE_2)],
+        foreground=[("disabled", DESIGN_TEXT_2)],
+    )
+
+    # Metadata-panel labels (the "k" column in _render_metadata) render in
+    # text-secondary per DESIGN.md's component notes, distinct from the
+    # primary-text-colored value column (found in code review).
+    style.configure("Secondary.TLabel", background=DESIGN_BG, foreground=DESIGN_TEXT_2, font=DESIGN_FONT_BODY)
+
+    # Numeric values (gait metrics grid, data-shaped metadata) get the
+    # monospace data font per DESIGN.md's typography role split -- kept as
+    # a distinct style rather than folded into TLabel so only genuinely
+    # numeric/tabular values opt in, not every label in the window.
+    style.configure("Data.TLabel", background=DESIGN_BG, foreground=DESIGN_TEXT, font=data_font)
+
+    # Tier chips already carry their own bg/fg per-tier (see
+    # ClinicianGUI._tier_style_name) -- only the font needs to come from the
+    # design system here, so tier styles are configured with the data font
+    # afterward, once per tier, in _tier_style_name itself.
+    return data_font
 
 _TIER_WORDS = {"high": "High", "medium": "Medium", "low": "Low", "not_scored": "Not scored"}
 
@@ -937,6 +1066,7 @@ class ClinicianGUI:
     def __init__(self, root=None):
         self.root = root or tk.Tk()
         self.root.title("Clinician Trial Report")
+        self._data_font = apply_design_system(self.root)
 
         self.session_dir = ""
         self.mvnx_path = ""
@@ -983,11 +1113,17 @@ class ClinicianGUI:
         )
 
         self.reason_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.reason_var, foreground="red", wraplength=400).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(10, 0)
-        )
+        # Uses the same tier-low red as the confidence banner (_render_curves)
+        # rather than a hardcoded "red" -- one error/warning color across the
+        # window instead of two unrelated reds.
+        ttk.Label(
+            frame, textvariable=self.reason_var, foreground=TIER_COLORS["low"]["fg"], wraplength=400
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
-        self.run_button = ttk.Button(frame, text="Run", state="disabled", command=self._on_run_clicked)
+        self.run_button = ttk.Button(
+            frame, text="Run", state="disabled", command=self._on_run_clicked,
+            style="Primary.TButton",
+        )
         self.run_button.grid(row=5, column=0, columnspan=2, pady=(10, 0))
 
         # U2: visible progress while the background pipeline thread runs
@@ -1001,7 +1137,8 @@ class ClinicianGUI:
         # U5: only enabled once a result has been successfully rendered
         # (self.last_shaped/self.last_result set -- see _on_pipeline_result).
         self.export_button = ttk.Button(
-            frame, text="Export to PDF", state="disabled", command=self._on_export_clicked
+            frame, text="Export to PDF", state="disabled", command=self._on_export_clicked,
+            style="Primary.TButton",
         )
         self.export_button.grid(row=7, column=0, columnspan=2, pady=(6, 0))
 
@@ -1149,7 +1286,13 @@ class ClinicianGUI:
         style_name = f"Tier{tier}.TLabel"
         if style_name not in self._tier_styles_ready:
             colors = tier_colors(tier)
-            ttk.Style().configure(style_name, background=colors["bg"], foreground=colors["fg"])
+            # Tier chip label text uses the data font (small, monospace,
+            # consistent with every other numeric/status readout in the
+            # window) rather than the body serif -- per DESIGN.md's
+            # component notes for confidence chips.
+            ttk.Style().configure(
+                style_name, background=colors["bg"], foreground=colors["fg"], font=self._data_font
+            )
             self._tier_styles_ready.add(style_name)
         return style_name
 
@@ -1173,7 +1316,11 @@ class ClinicianGUI:
         self._render_metrics(self._results_frame, shaped["metrics"])
 
     def _render_metadata(self, parent, metadata):
-        frame = ttk.LabelFrame(parent, text="Trial metadata", padding=8)
+        # Uppercased per DESIGN.md's section-header scale note ("12-13px
+        # uppercase, letter-spacing ~0.06em") -- ttk has no letter-spacing
+        # option, so casing is the one part of that rule tkinter can express
+        # (found in code review).
+        frame = ttk.LabelFrame(parent, text="TRIAL METADATA", padding=8)
         frame.grid(row=0, column=0, sticky="we", pady=(0, 8))
 
         rows = [
@@ -1184,13 +1331,15 @@ class ClinicianGUI:
             ("Sensor coverage", metadata["sensor_coverage"]),
         ]
         for row_index, (label, value) in enumerate(rows):
-            ttk.Label(frame, text=f"{label}:").grid(row=row_index, column=0, sticky="w")
-            ttk.Label(frame, text=str(value)).grid(
+            ttk.Label(frame, text=f"{label}:", style="Secondary.TLabel").grid(
+                row=row_index, column=0, sticky="w"
+            )
+            ttk.Label(frame, text=str(value), style="Data.TLabel").grid(
                 row=row_index, column=1, sticky="w", padx=(6, 0)
             )
 
     def _render_curves(self, parent, curves, confidence):
-        frame = ttk.LabelFrame(parent, text="Joint-angle curves (% gait cycle)", padding=8)
+        frame = ttk.LabelFrame(parent, text="JOINT-ANGLE CURVES (% GAIT CYCLE)", padding=8)
         frame.grid(row=1, column=0, sticky="we", pady=(0, 8))
 
         row_offset = 0
@@ -1236,28 +1385,34 @@ class ClinicianGUI:
 
     def _render_metrics(self, parent, metrics):
         report_formatting = _load_report_formatting()
-        frame = ttk.LabelFrame(parent, text="Gait-cycle metrics", padding=8)
+        frame = ttk.LabelFrame(parent, text="GAIT-CYCLE METRICS", padding=8)
         frame.grid(row=2, column=0, sticky="we")
 
+        # Value columns (Right/Left/Symmetry) are right-aligned per
+        # DESIGN.md's "value right-aligned (data font, tabular)" component
+        # note -- headers align with their own column's values, not left
+        # like the Metric label column (found in code review).
         headers = ["Metric", "Right", "Left", "Symmetry (R/L)"]
+        header_sticky = ["w", "e", "e", "e"]
         for col, text in enumerate(headers):
-            ttk.Label(frame, text=text, font=("TkDefaultFont", 9, "bold")).grid(
-                row=0, column=col, sticky="w", padx=4, pady=(0, 4)
+            ttk.Label(frame, text=text, font=DESIGN_FONT_HEADER).grid(
+                row=0, column=col, sticky=header_sticky[col], padx=4, pady=(0, 4)
             )
 
         for row_index, (name, row) in enumerate(metrics.items(), start=1):
             ttk.Label(frame, text=name.replace("_", " ")).grid(
                 row=row_index, column=0, sticky="w", padx=4
             )
-            ttk.Label(frame, text=report_formatting.format_metric_value(row["r"])).grid(
-                row=row_index, column=1, sticky="w", padx=4
-            )
-            ttk.Label(frame, text=report_formatting.format_metric_value(row["l"])).grid(
-                row=row_index, column=2, sticky="w", padx=4
-            )
-            ttk.Label(frame, text=report_formatting.format_symmetry_value(row["symmetry"])).grid(
-                row=row_index, column=3, sticky="w", padx=4
-            )
+            ttk.Label(
+                frame, text=report_formatting.format_metric_value(row["r"]), style="Data.TLabel"
+            ).grid(row=row_index, column=1, sticky="e", padx=4)
+            ttk.Label(
+                frame, text=report_formatting.format_metric_value(row["l"]), style="Data.TLabel"
+            ).grid(row=row_index, column=2, sticky="e", padx=4)
+            ttk.Label(
+                frame, text=report_formatting.format_symmetry_value(row["symmetry"]),
+                style="Data.TLabel",
+            ).grid(row=row_index, column=3, sticky="e", padx=4)
 
 
 def main():
