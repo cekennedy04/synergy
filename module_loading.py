@@ -18,11 +18,13 @@ _LOADED_MODULE_CACHE = {}
 
 
 def load_module_by_path(register_name, path):
-    """Loads the Python file at `path` via importlib, registering it under
-    `register_name` in sys.modules, matching this repo's own test-loading
-    convention (see tests/test_xsens_to_opensim_session_paths.py) rather
-    than a normal `import`, so callers work regardless of how/where they're
-    launched from.
+    """Loads the Python file at `path` via importlib and gives it the name
+    `register_name` (via spec_from_file_location), matching this repo's own
+    test-loading convention (see tests/test_xsens_to_opensim_session_paths.py)
+    rather than a normal `import`, so callers work regardless of how/where
+    they're launched from. Cached by `path` in _LOADED_MODULE_CACHE below,
+    not registered in sys.modules -- a caller cannot look the module up via
+    sys.modules[register_name].
 
     Cached per path (not per call): a real pipeline run touches the same
     modules repeatedly (validate_inputs, run_pipeline, shape_results_for_display,

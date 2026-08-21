@@ -183,6 +183,22 @@ class MarkerExportError(Exception):
     (or, worse, misread as a gait-event-detection failure) (R2, R5)."""
 
 
+class ImuKinematicsError(Exception):
+    """Wraps calibrate_model or run_imu_ik raising -- unlike every other
+    pipeline stage, these two had no dedicated wrapping, so a bad IMU
+    orientation/sensor-placement failure here fell through to the generic
+    fallback message instead of a specific, actionable one (found in code
+    review) (R5)."""
+
+
+class ReportExportError(Exception):
+    """Wraps an OSError raised while writing the PDF report file itself
+    (e.g. a Windows PermissionError when the destination file is still open
+    in another program) -- distinct from a shaped-results problem, which
+    would already have surfaced before Export was ever clickable (R10,
+    found in code review)."""
+
+
 def map_error_to_message(exc):
     """Centralized, pure error-to-message mapper (KTD10, governs R5).
 
@@ -233,6 +249,21 @@ def map_error_to_message(exc):
             "a required step before gait metrics can be computed. This is "
             "usually a problem with the calibrated model or the .mot file "
             "from the previous step, not with the recording itself."
+        )
+    elif isinstance(exc, ImuKinematicsError):
+        message = (
+            "Could not calibrate the model against the IMU orientations, or "
+            "could not run inverse kinematics from them. This usually means "
+            "a sensor was misplaced or misoriented during recording, or the "
+            "model's base IMU label/heading axis doesn't match this trial's "
+            "sensor setup."
+        )
+    elif isinstance(exc, ReportExportError):
+        message = (
+            "Could not save the PDF report to the selected location. If the "
+            "file is already open in another program (e.g. a PDF viewer), "
+            "close it and try exporting again. Otherwise, check that the "
+            "destination folder is writable."
         )
     else:
         message = (
@@ -302,17 +333,24 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
     except (ValueError, ET.ParseError, OSError) as exc:
         raise MvnxParsingError(str(exc)) from exc
 
-    _progress("Calibrating model against IMU orientations...")
-    calibrated_model = xsens.calibrate_model(
-        paths["model_file"], paths["sto_path"],
-        DEFAULT_BASE_IMU_LABEL, DEFAULT_BASE_HEADING_AXIS,
-    )
+    # Unlike every other stage below, calibrate_model/run_imu_ik previously
+    # had no dedicated wrapping, so a failure here fell through to
+    # map_error_to_message's generic fallback instead of a specific message
+    # (found in code review).
+    try:
+        _progress("Calibrating model against IMU orientations...")
+        calibrated_model = xsens.calibrate_model(
+            paths["model_file"], paths["sto_path"],
+            DEFAULT_BASE_IMU_LABEL, DEFAULT_BASE_HEADING_AXIS,
+        )
 
-    _progress("Running IMU inverse kinematics...")
-    mot_path = xsens.run_imu_ik(
-        calibrated_model, paths["sto_path"], None, None, paths["results_dir"],
-        output_motion_filename=paths["output_motion_filename"],
-    )
+        _progress("Running IMU inverse kinematics...")
+        mot_path = xsens.run_imu_ik(
+            calibrated_model, paths["sto_path"], None, None, paths["results_dir"],
+            output_motion_filename=paths["output_motion_filename"],
+        )
+    except Exception as exc:
+        raise ImuKinematicsError(str(exc)) from exc
 
     # gait_analysis_UCM_fixed.gait_analysis's constructor unconditionally
     # loads MarkerData/<trial_name>.trc (get_marker_dict -> trc_2_dict, no
@@ -825,8 +863,16 @@ def shape_results_for_display(result, xsens_module=None, joint_confidence_module
     gait_l = result["gait_l"]
 
     # Parsed once and threaded through -- shape_metadata_for_display would
-    # otherwise call parse_mvnx a second time on the same file.
-    parsed = xsens.parse_mvnx(result["mvnx_path"])
+    # otherwise call parse_mvnx a second time on the same file. Wrapped the
+    # same way run_pipeline's own build_orientations_sto call is: the .mvnx
+    # could have been deleted/become unreadable between the pipeline's own
+    # parse and this post-run display parse, and without this the failure
+    # fell through to the generic fallback message instead of the specific
+    # one this exact failure mode already has (found in code review).
+    try:
+        parsed = xsens.parse_mvnx(result["mvnx_path"])
+    except (ValueError, ET.ParseError, OSError) as exc:
+        raise MvnxParsingError(str(exc)) from exc
 
     metadata = shape_metadata_for_display(
         result["session_dir"], result["mvnx_path"], xsens_module=xsens, parsed_mvnx=parsed
@@ -1079,6 +1125,14 @@ class ClinicianGUI:
             export_info = report_export.export_report_to_pdf(
                 save_path, self.last_shaped, self._current_figures
             )
+        # OSError (covers PermissionError): report_export.py's own docstring
+        # says it never raises except for "an unwritable pdf_path" -- e.g. a
+        # Windows PermissionError when the destination file is still open in
+        # another program, a common re-export workflow. Without this it fell
+        # through to the generic fallback message (found in code review).
+        except OSError as exc:
+            messagebox.showerror("Export failed", map_error_to_message(ReportExportError(str(exc))))
+            return
         except Exception as exc:  # noqa: BLE001 -- centralized mapping (KTD10) is the point here.
             messagebox.showerror("Export failed", map_error_to_message(exc))
             return

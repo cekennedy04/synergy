@@ -205,6 +205,27 @@ def test_full_results_shape_for_display_without_error(mod, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# shape_results_for_display's own parse_mvnx call (the one it threads through
+# to shape_metadata_for_display/score_confidence) raising -> wrapped into
+# MvnxParsingError, not left to fall through to the generic mapper fallback
+# (found in code review: the .mvnx could become unreadable between
+# run_pipeline's own parse and this post-run display parse).
+# ---------------------------------------------------------------------------
+
+def test_shape_results_for_display_wraps_parse_mvnx_failure(mod, tmp_path):
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+
+    def broken_parse_mvnx(mvnx_path):
+        raise ValueError(f"{mvnx_path}: root element is <bogus>, expected <mvnx> or <frames>")
+
+    fake_xsens.parse_mvnx = broken_parse_mvnx
+
+    with pytest.raises(mod.MvnxParsingError):
+        mod.shape_results_for_display(result, xsens_module=fake_xsens)
+
+
+# ---------------------------------------------------------------------------
 # Scenario 2: a scalar-metric dict missing one leg's values reports "not
 # available" for that section instead of raising.
 # ---------------------------------------------------------------------------

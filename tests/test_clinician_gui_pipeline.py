@@ -57,7 +57,8 @@ def _resolve_paths_for(session_dir, trial_name="trial1"):
 
 
 def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=None,
-                             sleep_before_calibrate=0.0, write_trc_error=None):
+                             sleep_before_calibrate=0.0, write_trc_error=None,
+                             calibrate_error=None, run_imu_ik_error=None):
     calls = {"build_orientations_sto": [], "calibrate_model": [], "run_imu_ik": [], "write_markers_trc": []}
 
     def resolve_session_output_paths(session_dir, trial_name):
@@ -74,6 +75,8 @@ def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=
         if sleep_before_calibrate:
             time.sleep(sleep_before_calibrate)
         calls["calibrate_model"].append((model_file, sto_path, base_imu_label, base_heading_axis))
+        if calibrate_error is not None:
+            raise calibrate_error
         return str(Path(model_file).with_name(Path(model_file).stem + "_calibrated.osim"))
 
     def run_imu_ik(calibrated_model_file, orientations_sto, start_time, end_time,
@@ -81,6 +84,8 @@ def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=
         calls["run_imu_ik"].append(
             (calibrated_model_file, orientations_sto, start_time, end_time, results_dir, output_motion_filename)
         )
+        if run_imu_ik_error is not None:
+            raise run_imu_ik_error
         return str(Path(results_dir) / (output_motion_filename or "ik.mot"))
 
     def write_markers_trc(calibrated_model_file, mot_file, trc_path):
@@ -335,6 +340,40 @@ def test_marker_export_failure_maps_to_its_own_specific_error_not_gait_analysis(
     # Must NOT be mislabeled as a gait-event-detection failure -- that message
     # actively misdirects the clinician toward re-recording, which doesn't fix this.
     assert "gait-event" not in payload.lower()
+    assert "unexpected error" not in payload.lower()
+    assert "Traceback" not in payload
+
+
+# ---------------------------------------------------------------------------
+# calibrate_model/run_imu_ik raising -> ImuKinematicsError's own specific
+# message reaches the queue, not the generic "unexpected error" fallback
+# (found in code review: unlike every other stage, these two had no
+# dedicated wrapping at all).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kwargs", [
+    {"calibrate_error": RuntimeError("base IMU label 'pelvis_imu' not found.")},
+    {"run_imu_ik_error": RuntimeError("inverse kinematics failed to converge.")},
+])
+def test_imu_kinematics_failure_maps_to_its_own_specific_error(mod, tmp_path, kwargs):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    resolve_paths = _resolve_paths_for(session_dir)
+
+    fake_xsens = _make_fake_xsens_module(resolve_paths=resolve_paths, **kwargs)
+
+    result_queue = queue.Queue()
+    thread = mod.start_pipeline_thread(
+        str(session_dir), str(mvnx_path), result_queue, xsens_module=fake_xsens,
+    )
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    error_messages = [payload for kind, payload in _drain_all(result_queue) if kind == "error"]
+    assert len(error_messages) == 1
+    payload = error_messages[0]
+    assert "calibrate" in payload.lower() or "inverse kinematics" in payload.lower()
     assert "unexpected error" not in payload.lower()
     assert "Traceback" not in payload
 

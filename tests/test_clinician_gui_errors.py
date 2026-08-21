@@ -110,6 +110,27 @@ def test_foot_progression_analysis_error_names_foot_progression(mod):
     assert "Details:" in message
 
 
+def test_imu_kinematics_error_names_calibration_not_gait_event(mod):
+    exc = mod.ImuKinematicsError("base IMU label 'pelvis_imu' not found in orientations_sto.")
+
+    message = mod.map_error_to_message(exc)
+
+    assert "calibrate" in message.lower() or "inverse kinematics" in message.lower()
+    assert "gait-event" not in message.lower()
+    assert "Details:" in message
+
+
+def test_report_export_error_names_the_pdf_file_not_the_recording(mod):
+    exc = mod.ReportExportError("[Errno 13] Permission denied: 'C:/trial_report.pdf'")
+
+    message = mod.map_error_to_message(exc)
+
+    assert "pdf" in message.lower()
+    assert "open in another program" in message.lower()
+    assert "recording" not in message.lower()
+    assert "Details:" in message
+
+
 @pytest.mark.parametrize("exc", [
     RuntimeError("some totally unrelated internal failure"),
     KeyError("unexpected_key"),
@@ -133,6 +154,8 @@ def test_mapper_never_raises_and_never_returns_empty(mod):
         mod.GaitAnalysisFailedError(""),
         mod.FootProgressionAnalysisError(""),
         mod.MarkerExportError(""),
+        mod.ImuKinematicsError(""),
+        mod.ReportExportError(""),
         Exception(""),
         ValueError(),
     ]:
