@@ -781,3 +781,128 @@ before this):**
 **Not acted on yet:** whether to actually delete the three dead-weight files, and whether/when to
 fix the `gait_analysis_UCM.py` bugs above (blocking real batch-mode use, but it's the coworker's
 file) are both open decisions, not made unilaterally here.
+
+## Update 2026-08-20: dead weight deleted; bug-fixed copy of `gait_analysis_UCM.py` created
+
+Both open decisions from the entry above were resolved by direct instruction.
+
+**Deleted:** `getMarkers.py`, `utils_UCM.py`, `utilsKinematics_UCM.py`, and
+`tests/test_utilsKinematics_UCM_modelpath.py` (its own test, now orphaned). Confirmed before
+deleting that nothing else imports any of them (`grep` across `.py` files) — `README.md` had one
+descriptive mention, updated rather than left stale. Full test suite: 38 passed (was 40; the two
+lost were `test_utilsKinematics_UCM_modelpath.py`'s own).
+
+**`gait_analysis_UCM_fixed.py`** — a copy, not an in-place edit (`gait_analysis_UCM.py` stays
+untouched, same rule as `utils.py`/`utilsKinematics.py`). Every edit is documented in the new
+file's own module docstring (so it travels with the code, not just this doc) — summarized here:
+
+1. `sys.path.append('../')`/`'./'` were relative to the caller's cwd. Now derived from `__file__`.
+2. Two blocking `input()` call sites would hang `--all-trials` batch mode: the "enter gait events
+   manually?" prompt and `manual_steps()`'s 4 further prompts. New `allow_manual_entry=True`
+   constructor arg (default preserves today's interactive behavior; `False` raises a clear
+   exception instead of blocking).
+3. `ntrims=round(seshlen/.2)-2` could be ≤0 for a short trial, making `trimarray[0]=-1` raise an
+   opaque `IndexError`. Now raises a clear, descriptive exception.
+4. The auto-trim retry loop's only "termination check" reassigned a variable to its own value —
+   a no-op. The loop could run past the end of `trimarray` and crash uncaught. Now raises clearly
+   once attempts are exhausted.
+5. Auto leg-selection indexed `rHS[-1]`/`lHS[-1]` before checking either was non-empty — a real
+   `IndexError` if peak detection found zero heel-strikes. Now checks first, raises clearly.
+6. `compute_correlations()`'s `cols_to_compare=None` default resolved against a still-empty
+   `df1`, so the default always matched nothing and `len(correlations)` was 0 —
+   `ZeroDivisionError` on literally the first no-argument call. Fixed so `None` means "compare
+   everything." Also fixed a latent bug where `corresponding_col` from a previous iteration could
+   be reused when a column matched neither `_r` nor `_l`, and corrected a docstring/comment that
+   claimed 101-row resampling when `.interpolate()` only fills internal gaps (row counts already
+   matched by construction here, so this was a wrong comment, not a separate numeric bug).
+7. Center of mass was computed twice with two different, undeclared filter settings (hardcoded
+   10 Hz for the exported CSV columns, unfiltered-or-whatever-was-passed for internal use by
+   `compute_gait_speed` etc.) — the exported COM and the COM actually used for gait-speed disagreed
+   with each other. Both now consistently use `self.lowpass_cutoff_frequency_for_coordinate_values`.
+8. `find_nearest(array, value)` was missing `self`/`@staticmethod` — dead code (never called
+   anywhere in this file), fixed for correctness, still unused.
+9. Found by testing, not by the Codex review: `modelName` wasn't forwarded to
+   `kinematics.__init__`. Without it, loading any session lacking a full OpenCap-downloaded
+   metadata file (e.g. one written by `xsens_to_opensim.py --session-dir`) was impossible. Added
+   as a constructor parameter, passed through.
+
+**Deliberately not changed:** the `fpa_r`/`fpa_l` unused-value issue Codex flagged. This file
+correctly stores them as columns; the actual gap is that `Examples/gaitAnalysis-UCM.py`'s own
+scalar/export list never reads them back out. Fixing that means deciding what should consume
+them — a product decision, not something to guess at in a bug-fix pass.
+
+**Verified against real data, not just syntax-checked:**
+- Imports cleanly against the real `opencap-processing` conda env (`opensim`, `pandas`, `scipy`,
+  etc. all present).
+- Instantiated directly against this session's own real pipeline output (the mock OpenCap session
+  with `xsens_to_opensim.py`'s real `.mot`/`.trc`, `modelName="LaiUhlrich2022_scaled"`,
+  `allow_manual_entry=False`) — ran cleanly through kinematics/marker loading, coordinate values,
+  and center-of-mass computation, then hit the new edit-#5 guard with a clear message ("No
+  heel-strike events detected for one or both legs") instead of the original's opaque
+  `IndexError`, because the 5-second bed-transfer clip isn't a walking trial. That's the *expected*
+  outcome for this data — the point was confirming `allow_manual_entry=False` doesn't hang and the
+  failure is legible, both of which it did.
+- `find_nearest` and `compute_correlations()` (called with no arguments, the exact call that used
+  to `ZeroDivisionError`) verified directly: `compute_correlations()` now returns a real computed
+  correlation instead of crashing.
+- **Not covered by the base-env `pytest tests` suite** — same as the original `gait_analysis_UCM.py`
+  and `utilsKinematics.py` before it, this file's import chain needs `opensim`/`requests`/`yaml`/
+  `python-decouple`/`maskpass`, none of which are in the base env the main suite runs under.
+  Verification above was done directly in the `opencap-processing` conda env instead of forcing
+  artificial stubbing into the base suite for marginal benefit.
+
+**Not done:** re-running this against a real walking trial with clean heel-strikes (none exists in
+this project's data yet — only the bed-transfer clip) would be the actual happy-path test. Worth
+doing once real gait data is available.
+
+## Update 2026-08-20 (later): FPA made a real, reported metric — and the driver now actually uses
+the fixed copy
+
+Your instruction: your supervisor did his own calculations for foot progression angle, so it needs
+to stay in the code as a meaningful, reported metric — not silently computed and discarded, which
+is what the FPA finding above described. The underlying math in
+`compute_foot_progression_angles()` (`Examples/gaitAnalysis-UCM.py:230-313`) is **completely
+unchanged** — only what happens to its output after computation changed.
+
+**`gait_analysis_UCM_fixed.py`:** new `compute_foot_progression_angle()` method (10th edit to this
+file, added after the copy was already created for the Codex-review fixes) — mean FPA for the
+ipsilateral leg per gait cycle, in degrees, following the exact same pattern as
+`compute_gait_speed`/`compute_cadence` (whole-cycle mean, then averaged across strides). Reads the
+`fpa_r`/`fpa_l` columns that were already being stored in `coordinateValues` but never read back
+out.
+
+**`Examples/gaitAnalysis-UCM.py`:**
+- `SCALAR_NAMES` gained `'foot_progression_angle'`, so it's now computed and included in
+  `results['scalars_r']`/`results['scalars_l']` by default, same as `gait_speed`/`stride_length`/etc.
+- `JOINT_NAMES` gained `'fpa_r'`, `'fpa_l'`, so the full per-gait-cycle FPA waveform (not just the
+  mean) also lands in the exported per-gait-cycle curves CSV alongside every joint angle.
+
+**Critical fix this surfaced: the driver was still importing the wrong file.**
+`run_gait_analysis()` did `from gait_analysis_UCM import gait_analysis` — the *original*,
+un-fixed file — not `gait_analysis_UCM_fixed`. Every fix from the previous entry (batch-mode
+safety, the `ZeroDivisionError`/`IndexError` fixes, `modelName` passthrough) and this session's new
+FPA scalar would have been silently inert, exactly the same "import-name mismatch" trap that made
+`utilsKinematics_UCM.py` dead weight in the first place (see the 2026-08-14 entry near the top of
+this file). Changed the import to `gait_analysis_UCM_fixed`. **This is the one line that makes
+everything else in these two update entries actually run.**
+
+**Also threaded `allow_manual_entry` all the way through**, since fixing the batch-mode-hang bug
+in `gait_analysis_UCM_fixed.py` is meaningless if nothing in the driver ever passes `False`:
+`run_gait_analysis()` and `process_trial()` both gained an `allow_manual_entry` parameter (default
+`True`, preserving today's interactive behavior). `run_batch()`'s call site now explicitly passes
+`allow_manual_entry=False` — the actual `--all-trials` entry point — and wraps each trial in a
+`try/except` so one trial failing gait-event detection gets logged and skipped rather than
+crashing (or, before this fix, hanging) the whole batch. The interactive call site
+(`run_interactive()`) is unchanged and keeps the default `True`.
+
+**Verified against real data:**
+- `compute_foot_progression_angle()` called directly against a lightweight fake instance with real
+  fpa-shaped data: returns the correct mean value in degrees.
+- `compute_scalars(['foot_progression_angle'])` — the exact call
+  `Examples/gaitAnalysis-UCM.py`'s `SCALAR_NAMES` dispatch makes — correctly resolves to the new
+  method and returns `{'foot_progression_angle': {'value': ..., 'units': 'deg'}}`.
+- Full test suite still 38 passed after all of the above.
+
+**Not done:** an actual end-to-end `run_batch()` call against a real multi-trial session (would
+need real walking data with clean gait cycles, which this project doesn't have yet — see the
+previous entry's "Not done" note).

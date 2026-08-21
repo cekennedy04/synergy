@@ -64,9 +64,15 @@ heel strike).
 - Moved the main trial-selection while-loop so it no longer re-lists/re-prompts on every pass
   when running multiple trials back to back.
 - Vendored the OpenCap `opencap-processing` codebase into this repo and overlaid the
-  Synergy-specific edits (`utils.py`, `utilsKinematics.py`, `Examples/gaitAnalysis-UCM.py`,
-  `getMarkers.py`). See `VENDORING.md` for details and open gaps — notably
-  `ActivityAnalyses/gait_analysis_UCM.py` is referenced but was not provided yet.
+  Synergy-specific edits (`utils.py`, `utilsKinematics.py`, `Examples/gaitAnalysis-UCM.py`).
+- Replaced pipeline step 1 (the manual MATLAB joint-mapping + `getMarkers.py`'s
+  forward-kinematics marker-reconstruction workaround) with `xsens_to_opensim.py`, built on
+  OpenSim's own OpenSense framework. Also writes `.trc` marker files directly (no MATLAB, no
+  marker round-trip) and can write output straight into an existing OpenCap session's own
+  folder layout. `getMarkers.py`, `utils_UCM.py`, and `utilsKinematics_UCM.py` were removed as
+  dead weight once superseded — see `VENDORING.md` for the full history and reasoning.
+- `gait_analysis_UCM.py` (the gait-cycle scoring class) has been supplied. A bug-fixed copy,
+  `gait_analysis_UCM_fixed.py`, addresses issues found in review — see `VENDORING.md`.
 
 ## Status
 
