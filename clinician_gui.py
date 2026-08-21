@@ -21,6 +21,7 @@ os.environ.setdefault("API_TOKEN", "clinician-gui-placeholder-token")
 # Every other import must come after the os.environ.setdefault call above.
 import importlib.util
 import queue
+import sys
 import threading
 import tkinter as tk
 import xml.etree.ElementTree as ET
@@ -51,11 +52,20 @@ _MODULE_LOADING_PATH = os.path.join(REPO_ROOT, "module_loading.py")
 def _bootstrap_load_module_loading():
     # One-off bootstrap for module_loading.py itself, by the same
     # by-path mechanism it then provides for everything else -- it can't
-    # load itself via its own not-yet-loaded function.
-    spec = importlib.util.spec_from_file_location(
-        "module_loading_for_clinician_gui", _MODULE_LOADING_PATH
-    )
+    # load itself via its own not-yet-loaded function. Registered under the
+    # same fixed sys.modules key ("module_loading") that report_export.py's
+    # own bootstrap uses, so both entry points share the exact same module
+    # object -- and therefore the same _LOADED_MODULE_CACHE dict -- instead
+    # of each getting an independent module_loading instance with its own
+    # empty cache (found in code review: that gap meant report_formatting.py
+    # was still loaded and executed twice, once per cache, defeating the
+    # "one process-wide cache" this module's docstring promises).
+    existing = sys.modules.get("module_loading")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("module_loading", _MODULE_LOADING_PATH)
     module = importlib.util.module_from_spec(spec)
+    sys.modules["module_loading"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -665,33 +675,25 @@ def _shape_scalar_entry(entry):
 ALREADY_SYMMETRY_METRICS = {"step_length_symmetry"}
 
 
+def _symmetry_unavailable(reason):
+    return {
+        "available": False,
+        "status": "not available",
+        "value": None,
+        "units": None,
+        "reason": reason,
+    }
+
+
 def _compute_symmetry_entry(r_entry, l_entry):
     if not r_entry["available"] or not l_entry["available"]:
-        return {
-            "available": False,
-            "status": "not available",
-            "value": None,
-            "units": None,
-            "reason": "not available",
-        }
+        return _symmetry_unavailable("not available")
 
     r_val, l_val = r_entry["value"], l_entry["value"]
     if not isinstance(r_val, (int, float)) or not isinstance(l_val, (int, float)):
-        return {
-            "available": False,
-            "status": "not available",
-            "value": None,
-            "units": None,
-            "reason": "not applicable for this metric",
-        }
+        return _symmetry_unavailable("not applicable for this metric")
     if l_val == 0:
-        return {
-            "available": False,
-            "status": "not available",
-            "value": None,
-            "units": None,
-            "reason": "left-side value is zero",
-        }
+        return _symmetry_unavailable("left-side value is zero")
 
     return {
         "available": True,
@@ -731,13 +733,9 @@ def shape_gait_metrics_for_display(scalars_r, scalars_l, metric_names=None):
             # already show each instance's own value, so the Symmetry column
             # is marked not-applicable here rather than re-deriving or
             # picking a "winner."
-            symmetry_entry = {
-                "available": False,
-                "status": "not available",
-                "value": None,
-                "units": None,
-                "reason": "already an R/L ratio -- see Right/Left columns",
-            }
+            symmetry_entry = _symmetry_unavailable(
+                "already an R/L ratio -- see Right/Left columns"
+            )
         else:
             symmetry_entry = _compute_symmetry_entry(r_entry, l_entry)
         rows[name] = {"r": r_entry, "l": l_entry, "symmetry": symmetry_entry}

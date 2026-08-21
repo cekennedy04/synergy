@@ -84,14 +84,14 @@ def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=
         return str(Path(results_dir) / (output_motion_filename or "ik.mot"))
 
     def write_markers_trc(calibrated_model_file, mot_file, trc_path):
+        # The parent-dir-exists contract (run_pipeline's mkdir, per
+        # xsens_to_opensim.py's own main() pattern) is checked by the caller
+        # test itself, not here -- asserting inside a fake gets caught by
+        # run_pipeline's own except-and-wrap and surfaces as a confusing
+        # MarkerExportError instead of a clean AssertionError.
         calls["write_markers_trc"].append((calibrated_model_file, mot_file, trc_path))
         if write_trc_error is not None:
             raise write_trc_error
-        # Real write_markers_trc requires its parent dir to already exist
-        # (run_pipeline's job, per xsens_to_opensim.py's own main() pattern);
-        # assert that contract here so a regression in run_pipeline's mkdir
-        # call fails this fake the same way a missing real directory would.
-        assert Path(trc_path).parent.is_dir(), f"parent dir of {trc_path} does not exist"
 
     return types.SimpleNamespace(
         resolve_session_output_paths=resolve_session_output_paths,
@@ -188,7 +188,7 @@ def test_valid_run_completes_both_legs_and_result_reaches_queue(mod, tmp_path):
     # (via write_markers_trc) before either gait_analysis instantiation --
     # not just leave resolve_session_output_paths's trc_path unused.
     assert len(fake_xsens._calls["write_markers_trc"]) == 1
-    calibrated_model_arg, mot_file_arg, trc_path_arg = fake_xsens._calls["write_markers_trc"][0]
+    calibrated_model_arg, _mot_file_arg, trc_path_arg = fake_xsens._calls["write_markers_trc"][0]
     assert calibrated_model_arg.endswith("_calibrated.osim")  # the calibrated model, not the raw one
     assert trc_path_arg == resolve_paths["trc_path"]
     assert Path(trc_path_arg).parent.is_dir()

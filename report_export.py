@@ -27,6 +27,7 @@ export.
 """
 import importlib.util
 import os
+import sys
 
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
@@ -41,14 +42,18 @@ _REPORT_FORMATTING_PATH = os.path.join(_REPO_ROOT, "report_formatting.py")
 def _bootstrap_load_module_loading():
     # One-off bootstrap for module_loading.py itself, matching
     # clinician_gui.py's own bootstrap -- it can't load itself via its own
-    # not-yet-loaded function. Shares module_loading.py's mechanism (not its
-    # runtime cache, since this is a separate load of that file from
-    # clinician_gui.py's own) so both files' loaders read from one
-    # implementation instead of two independently-maintained copies.
-    spec = importlib.util.spec_from_file_location(
-        "module_loading_for_report_export", _MODULE_LOADING_PATH
-    )
+    # not-yet-loaded function. Registered under the same fixed sys.modules
+    # key ("module_loading") clinician_gui.py's bootstrap uses, so both
+    # files' loaders share the exact same module object -- and therefore the
+    # same _LOADED_MODULE_CACHE dict -- instead of each independently
+    # loading and executing module_loading.py (and, transitively,
+    # report_formatting.py) a second time.
+    existing = sys.modules.get("module_loading")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("module_loading", _MODULE_LOADING_PATH)
     module = importlib.util.module_from_spec(spec)
+    sys.modules["module_loading"] = module
     spec.loader.exec_module(module)
     return module
 
