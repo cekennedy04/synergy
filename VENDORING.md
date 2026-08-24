@@ -1132,3 +1132,83 @@ its cause is unknown. It did not appear in `run_pipeline` (3 runs), `shape_resul
 or any of the 15 matched-pair runs. The only path not exercised is `_render_curves` embedding
 `FigureCanvasTkAgg` into live widgets — the main-thread rendering risk already tracked as
 GitHub issue #1. Edit #12 was originally written believing it fixed this crash; it does not.
+
+### ⚠ IMU output has NO global translation — what this means for the spatial gait metrics
+
+Surfaced 2026-08-24 while testing a proposed "reject trials below a minimum forward velocity"
+guardrail. The guardrail could not be implemented as specified, because **there is no forward
+velocity in this pipeline's output.**
+
+Orientation-only IK cannot recover global translation, and OpenSense does not attempt to. In
+`CK-001.mot` the pelvis translation coordinates are constant:
+
+| coordinate | ours (IMU-driven) | OpenCap (video) |
+|---|---|---|
+| `pelvis_tx` | `0.0000` (range **0.0000**) | −3.9644 … 2.3107 (range **6.2750**) |
+| `pelvis_ty` | `0.9300` (range **0.0000**) | 0.9827 … 1.0709 (range 0.0882) |
+| `pelvis_tz` | `0.0000` (range **0.0000**) | −0.2578 … 0.2124 (range 0.4702) |
+
+The generated `.trc` inherits this: our first marker moves 0.096 m across the trial where
+OpenCap's moves 6.244 m. **The subject walks in place.** The joint-angle validation above is
+unaffected — joint angles are orientation-derived and that is precisely what IMUs measure well —
+but anything spatial needs care.
+
+**How gait speed and stride length are actually being produced.** Both
+`compute_gait_speed` and `compute_stride_length` are displacement-based and both add
+`self.treadmillSpeed`. With translation pinned, the displacement terms are ~0, so the metrics are
+essentially *entirely* the treadmill term. `compute_treadmill_speed` estimates that from the ankle
+marker's velocity during stance (10%–70% of stance), and because a pelvis-fixed frame makes
+overground walking geometrically identical to treadmill walking, that estimate does recover
+something close to true walking speed — it exceeds the 0.3 m/s `overground_speed_threshold`, so
+`gait_style='auto'` silently classifies **every** overground trial as treadmill.
+
+Consequences to state plainly:
+
+- Gait speed is a **stance-foot-velocity proxy**, not a displacement measurement. For CK-001 it
+  reads 1.116 m/s against OpenCap's steady-state pelvis speed of 1.223 m/s — the right ballpark,
+  but this needs proper per-gait-cycle validation across all 15 trials before being quoted.
+- `stride_length ≈ treadmillSpeed × stride_time` by construction, so it is **not independent** of
+  gait speed. The tight left/right agreement reported earlier (0.4% on speed, 2.5% on stride) is
+  therefore *not* two corroborating measurements — it is one estimate appearing twice.
+- `cadence` is derived from gait-event timing only, so it is independent and unaffected.
+- `step_width` and any other global-frame spatial quantity should be treated as unverified.
+
+**Not fixed here.** The options — deriving translation from foot-contact constraints, reporting
+these metrics as treadmill-equivalent, or suppressing the displacement-based ones for IMU input —
+are design decisions, not bugs to patch silently.
+
+### `centerOfMass` truncation tripwire
+
+Reviewer point, adopted with a corrected mechanism. Truncating a 9-value row to its leading 3 is
+only safe while the layout is position|velocity|acceleration; a future MVN revision emitting 9
+values in another arrangement would pass the length check and silently redefine the parsed
+center-of-mass. `_validate_center_of_mass_layout` now rejects that.
+
+Two design notes worth recording, because the obvious implementations are both wrong:
+
+1. **Only 9-value rows are checked.** A 3-value row is used exactly as given, so there is no
+   truncation assumption to defend. A first draft also policed 3-value rows and rejected
+   legitimate fixtures whose CoM sat near the origin.
+2. **The discriminator is the vertical component, not magnitude.** Magnitude cannot separate a
+   position triple (~4 m) from a walking velocity triple (~1–2 m/s) — the ranges overlap, and a
+   first draft using a magnitude threshold failed to catch a stacked-positions fixture. In
+   Xsens's Z-up global frame a position's vertical component is stature-like and well above zero,
+   while a velocity's or acceleration's averages to ~0. That separates them cleanly.
+
+Severity is lower than it first appears: nothing downstream consumes `center_of_mass` (it is
+parsed, returned, and reported by `--list-segments` only), so a bad slice would be latent rather
+than actively corrupting. That is the argument for catching it at parse time rather than at first
+use. Four tests added; **106 pass**; all 15 real files still parse.
+
+### Trial8 magnetic-drift hypothesis: not testable from these exports
+
+Proposed check — inspect Xsens calibration logs for left-shank magnetic drift. **The data is not
+in the HD-reprocessed `.mvnx` files:** zero occurrences of `magneticField`, and no `accuracy=` or
+`quality=` attributes anywhere in `CK-008.mvnx`. Frames carry `orientation`, `position`, and
+`sensorOrientation` only.
+
+The Xsens **`.xlsx`** export format *does* carry a `Sensor Magnetic Field` sheet (confirmed on the
+unrelated S01 export, which also has `Sensor Free Acceleration` and `Sensor Orientation - Quat`).
+So the check becomes possible by re-exporting the CK trials to `.xlsx` from MVN Studio, or by
+enabling sensor-data output in the `.mvnx` export options. The raw `.mvn` files are present but are
+a proprietary binary format this pipeline cannot read.

@@ -428,6 +428,8 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
     # int/ext rotation, flex/ext) tuples in STANDARD_22_JOINT_ORDER order --
     # None for a frame with no <jointAngle> element.
     center_of_mass = []  # list (per frame) of (x, y, z) tuples, or None.
+    center_of_mass_raw = []  # same frames, untruncated -- kept only so the
+    # 9-value layout can be structurally validated after the loop (below).
     sensor_orientations_raw = []  # flat float lists, not yet reshaped/labeled --
     # see build_orientations_sto's sensor path for validation against
     # SENSOR_EQUIPPED_SEGMENTS. Kept separate from `orientations` validation
@@ -490,6 +492,7 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
         # near-zero accelerations. Only position is used downstream, so keep
         # the leading 3 and drop the rest rather than rejecting the file.
         center_of_mass.append(tuple(com_values[:3]) if com_values else None)
+        center_of_mass_raw.append(tuple(com_values) if com_values else None)
 
         time_attr = frame.attrib.get("time")
         if time_attr is not None:
@@ -500,6 +503,8 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
             # the real file: 'ms' holds a huge Unix-epoch-millisecond value).
         else:
             times.append(len(times) / frame_rate if frame_rate else float(len(times)))
+
+    _validate_center_of_mass_layout(mvnx_path, center_of_mass_raw)
 
     if frame_rate is None and len(times) > 1:
         # Not present as an attribute in the frames-only export shape --
@@ -518,6 +523,85 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
         "calibration_orientation": calibration_orientation,
         "calibration_sensor_orientation_raw": calibration_sensor_orientation_raw,
     }
+
+
+# Index of the vertical component in an Xsens global-frame position triple.
+# MVNX's global frame is Z-up (confirmed against a real export: a standing
+# subject's centerOfMass reads ~(-4.0, 0.35, 0.99) -- the third component is
+# the stature-like one, the first two are floor-plane coordinates). Note this
+# differs from OpenSim, which is Y-up; the conversion happens downstream in
+# build_orientations_sto, not here.
+VERTICAL_AXIS_INDEX = 2
+
+
+def _validate_center_of_mass_layout(mvnx_path, com_rows):
+    """Tripwire for the assumption that a 9-value <centerOfMass> row is laid
+    out [px,py,pz, vx,vy,vz, ax,ay,az] and can be truncated to its leading 3.
+
+    That layout was confirmed empirically against a real MVNX v4 export, but
+    truncation is only safe while it holds. A future MVN revision emitting 9
+    values in some other arrangement -- the same CoM in two reference frames,
+    say -- would pass the length check and silently redefine what
+    "center of mass" means in the parsed output. This raises instead.
+
+    Scope is deliberately narrow: **only 9-value rows are checked**, because
+    only they get truncated. A 3-value row is used exactly as given, so there
+    is no slicing assumption to defend, and validating it here would only add
+    false rejections (an earlier draft of this guard broke on legitimate
+    fixtures whose CoM sat near the origin).
+
+    The discriminator is the vertical component, not magnitude. Magnitude
+    cannot separate a position triple (~4 m) from a velocity triple (~1-2 m/s
+    walking) -- the numbers overlap. But in Xsens's Z-up global frame the
+    vertical component of a POSITION is stature-like and always well above
+    zero, whereas the vertical component of a velocity or acceleration
+    averages to ~0 over a trial. Three stacked positions therefore fail; a
+    genuine position|velocity|acceleration row passes.
+
+    This cannot prove the layout is [p|v|a]. It rejects the arrangements that
+    would actually mislead us, and fails loudly instead of silently.
+
+    Nothing downstream currently consumes center_of_mass (it is parsed,
+    returned, and reported by --list-segments only), so a bad slice would be
+    latent rather than immediately visible -- which is exactly why it is worth
+    catching at parse time rather than at first use.
+    """
+    nine = [r for r in com_rows if r and len(r) == 9]
+    if not nine:
+        return
+
+    def _median_of(index):
+        vals = sorted(r[index] for r in nine)
+        return vals[len(vals) // 2]
+
+    pos_v = _median_of(VERTICAL_AXIS_INDEX)
+    vel_v = _median_of(3 + VERTICAL_AXIS_INDEX)
+    acc_v = _median_of(6 + VERTICAL_AXIS_INDEX)
+
+    # Loose enough for a seated or supine subject, tight enough that a
+    # non-position leading triple cannot pass.
+    if not 0.15 <= pos_v <= 2.5:
+        raise ValueError(
+            f"{mvnx_path}: median <centerOfMass> vertical component is "
+            f"{pos_v:.3f} m, outside the plausible 0.15-2.5 m range. The "
+            "9-value layout is assumed to be position|velocity|acceleration "
+            "and truncated to the leading 3 -- that assumption looks wrong "
+            "for this file. Inspect a frame's raw values before trusting any "
+            "center-of-mass output."
+        )
+
+    # A velocity or acceleration triple has a near-zero median vertical
+    # component; a position triple does not.
+    if abs(vel_v) > 0.15 or abs(acc_v) > 0.5:
+        raise ValueError(
+            f"{mvnx_path}: 9-value <centerOfMass> rows have median vertical "
+            f"components (pos={pos_v:.3f}, second={vel_v:.3f}, "
+            f"third={acc_v:.3f}) that do not look like "
+            "position|velocity|acceleration -- the trailing triples read as "
+            "positions, not derivatives. This parser truncates such rows to "
+            "their leading 3 values on that assumption, so the center-of-mass "
+            "output would be wrong. Inspect the file's raw values."
+        )
 
 
 def list_segments(mvnx_path):

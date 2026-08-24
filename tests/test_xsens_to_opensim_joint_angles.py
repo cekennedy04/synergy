@@ -211,3 +211,80 @@ def test_center_of_mass_length_between_the_two_layouts_still_raises(mod, tmp_pat
 
     with pytest.raises(ValueError, match="centerOfMass"):
         mod.parse_mvnx(str(path))
+
+
+# -- centerOfMass layout tripwire (2026-08-24) ---------------------------
+# Truncating a 9-value row to its leading 3 is only safe while the layout is
+# position|velocity|acceleration. These pin the structural checks that catch
+# a future MVN revision emitting 9 values in some other arrangement, which
+# would otherwise silently redefine the parsed center-of-mass.
+
+
+def test_nine_value_row_with_position_like_tail_is_rejected(mod, tmp_path):
+    """The failure mode this guard exists for: 9 values that are three
+    POSITIONS (e.g. the same CoM in different reference frames) rather than
+    position + derivatives. Truncating those to the leading 3 would be
+    silently wrong, so it must raise."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    path.write_text(_fixture_mvnx(
+        text,
+        com_text="-4.0 0.35 0.99  -3.8 0.40 1.02  -3.6 0.45 1.05",
+    ))
+
+    with pytest.raises(ValueError, match="do not look like"):
+        mod.parse_mvnx(str(path))
+
+
+def test_implausible_com_height_in_a_nine_value_row_is_rejected(mod, tmp_path):
+    """A vertical component nowhere near a human stature means the leading 3
+    of a truncated row are not the position triple we think they are. Only
+    9-value rows are checked -- a 3-value row is used as given, so there is
+    no truncation assumption to defend."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    path.write_text(_fixture_mvnx(
+        text, com_text="0.001 0.002 0.003  -0.008 0.006 -0.0004  0.017 -0.028 0.008"))
+
+    with pytest.raises(ValueError, match="vertical component"):
+        mod.parse_mvnx(str(path))
+
+
+def test_three_value_row_is_not_subjected_to_the_truncation_tripwire(mod, tmp_path):
+    """Regression: an earlier draft of the guard also policed 3-value rows and
+    rejected legitimate fixtures whose CoM sat near the origin."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    path.write_text(_fixture_mvnx(text, com_text="0.001 0.002 0.003"))
+
+    parsed = mod.parse_mvnx(str(path))
+
+    assert parsed["center_of_mass"][0] == pytest.approx((0.001, 0.002, 0.003))
+
+
+def test_realistic_nine_value_row_passes_the_tripwire(mod, tmp_path):
+    """The guard must not fire on the layout it was written for -- a false
+    positive here would reject every real v4 file."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    path.write_text(_fixture_mvnx(
+        text,
+        com_text="-4.0 0.35 0.99  -0.008 0.006 -0.0004  0.017 -0.028 0.008",
+    ))
+
+    parsed = mod.parse_mvnx(str(path))
+
+    assert parsed["center_of_mass"][0] == pytest.approx((-4.0, 0.35, 0.99))
+
+
+def test_frames_without_com_skip_validation_entirely(mod, tmp_path):
+    """A file with no <centerOfMass> at all is valid (older export shape) and
+    must not trip a guard about data it does not contain."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    src = _fixture_mvnx(text, com_text="0.1 1.2 -0.05")
+    path.write_text(src.replace("<centerOfMass>0.1 1.2 -0.05</centerOfMass>", ""))
+
+    parsed = mod.parse_mvnx(str(path))
+
+    assert parsed["center_of_mass"] == [None]
