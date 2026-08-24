@@ -82,6 +82,8 @@ def _build_metadata_page(metadata):
         ("Date", metadata.get("date")),
         ("Duration", metadata.get("duration_display")),
         ("Sensor coverage", metadata.get("sensor_coverage")),
+        ("Root translation", metadata.get("translation_type")),
+        ("Gait speed method", metadata.get("gait_speed_method")),
     ]
     lines = [f"{label}: {value if value not in (None, '') else 'not available'}" for label, value in rows]
 
@@ -93,6 +95,16 @@ def _build_metadata_page(metadata):
         0.05, 0.85, "\n".join(lines), fontsize=12, va="top", ha="left",
         family="monospace", transform=axis.transAxes,
     )
+
+    # Spatial metrics here are inferred, not tracked (see clinician_gui's
+    # SPATIAL_PROVENANCE). A metadata row alone is easy to skim past, so the
+    # limitation is also stated in prose on the page carrying the numbers.
+    if metadata.get("spatial_displacement_validated") is False:
+        axis.text(
+            0.05, 0.32, "Note: this pipeline's inverse kinematics solves orientations only, with root translation pinned. Gait speed and stride length are therefore inferred from stance-phase foot velocity rather than measured from global displacement, and are not independent of one another. Cadence is derived from event timing and is unaffected.",
+            fontsize=9, va="top", ha="left", style="italic", wrap=True,
+            transform=axis.transAxes,
+        )
     return figure
 
 

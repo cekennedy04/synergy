@@ -713,6 +713,24 @@ def confidence_label_text(tier):
     return f"{word} agreement with the suit's own onboard estimate"
 
 
+# Provenance flags stamped onto every shaped result and rendered on the PDF's
+# metadata page (2026-08-24). These are not cosmetic: this pipeline's IMU-driven
+# IK has PINNED ROOT TRANSLATION -- pelvis_tx/tz are identically zero, against
+# ~6 m of real pelvis travel in the video-based reference for the same trial.
+# Joint angles are unaffected (they are orientation-derived, which is what IMUs
+# measure well), but gait_speed and stride_length are displacement-based
+# formulas whose displacement term is ~0, leaving them equal to a treadmill
+# term estimated from stance-phase ankle velocity. Reporting those as direct
+# spatial tracking would be wrong, and the numbers look entirely ordinary, so
+# the qualification has to travel with the report rather than live in a doc
+# nobody opens. See VENDORING.md, "IMU output has NO global translation".
+SPATIAL_PROVENANCE = {
+    "translation_type": "Pinned root (orientation-only IK)",
+    "gait_speed_method": "Stance-phase ankle velocity proxy",
+    "spatial_displacement_validated": False,
+}
+
+
 def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None, parsed_mvnx=None):
     """U4 Approach step 1: subject/session ID and trial name come from the
     inputs the clinician already picked (U1), not from parse_mvnx (which has
@@ -761,6 +779,9 @@ def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None, parsed
         "duration_display": duration_display,
         "sensor_coverage": sensor_coverage,
         "frame_count": n_frames,
+        # Travels with the report so the spatial-metric caveat cannot be
+        # separated from the numbers it qualifies -- see SPATIAL_PROVENANCE.
+        **SPATIAL_PROVENANCE,
     }
 
 

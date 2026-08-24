@@ -1212,3 +1212,68 @@ unrelated S01 export, which also has `Sensor Free Acceleration` and `Sensor Orie
 So the check becomes possible by re-exporting the CK trials to `.xlsx` from MVN Studio, or by
 enabling sensor-data output in the `.mvnx` export options. The raw `.mvn` files are present but are
 a proprietary binary format this pipeline cannot read.
+
+### Non-gait trial guardrail (2026-08-24)
+
+Closes the failure mode recorded above: a bed-to-shower-chair transfer produced a complete,
+clean-looking clinical report with no warning. `gait_analysis.__init__` now calls
+`_validate_gait_pattern()` immediately after segmentation and before any metric is computed,
+raising `NonGaitTrialError`.
+
+**Screening is event-count and event-timing only, by necessity.** A minimum-forward-velocity
+screen is the obvious complement and is *not possible here*: root translation is pinned, so global
+velocity is identically zero no matter what the subject did (see the section above). Cadence comes
+from event timestamps and is unaffected by the missing translation, which is why it can carry this
+job.
+
+Two thresholds, both empirically grounded rather than guessed:
+
+- `MIN_HEEL_STRIKES_PER_LEG = 3`. `ipsilateralIdx` is `(n × 3)` spanning HS→TO→HS so the
+  ipsilateral leg sees `n + 1` heel strikes, while `contralateralIdx` is `(n × 2)` as TO→HS and
+  sees exactly `n`. **The contralateral leg is the binding constraint**, so "3 per leg" means 3
+  full gait cycles. Across the 15 verified matched-pair trials, detected cycles ranged **4–6 per
+  leg**; the non-gait transfer produced **1**.
+- `PHYSIOLOGICAL_CADENCE_STEPS_PER_MIN = (40, 160)`. Deliberately wide. The point is to reject
+  transfers and rhythmic non-gait movement, not to adjudicate whether gait is clinically normal —
+  hemiparetic or walker-assisted gait can sit far below a healthy cadence, and a narrow window
+  would silently reject exactly the patients this tool exists for.
+
+**Validation against real data** (all 15 matched trials × both legs, plus the real non-gait trial):
+
+| | result |
+|---|---|
+| real gait trial-legs accepted | **30 / 30** |
+| false rejections | **0** |
+| non-gait trial-legs rejected | **2 / 2** |
+| observed cadence range | 124.2 – 133.3 steps/min |
+| margin to window bounds | 84.2 low, 26.7 high |
+
+`validate_gait_pattern=False` overrides, for a genuinely short but real trial. A screening
+heuristic should not be able to hard-block a clinician, and the override is asserted by a test so
+it cannot quietly disappear.
+
+Note what this does and does not do: it runs *after* segmentation, so a non-gait trial still pays
+the auto-trim retry cost before being rejected. It prevents the bad report, not the wasted CPU.
+
+Nine tests in `tests/test_gait_pattern_validation.py`, including the real-world cycle counts
+(4, 5, 6) pinned as a regression against a future threshold change quietly starting to reject real
+data. **115 tests pass.**
+
+### Spatial provenance stamped onto every report
+
+`clinician_gui.SPATIAL_PROVENANCE` is merged into the metadata of every shaped result and rendered
+on the PDF's metadata page:
+
+    translation_type                 "Pinned root (orientation-only IK)"
+    gait_speed_method                "Stance-phase ankle velocity proxy"
+    spatial_displacement_validated   False
+
+`report_export._build_metadata_page` renders the first two as metadata rows and, when
+`spatial_displacement_validated` is `False`, adds a prose note on the same page as the numbers:
+gait speed and stride length are inferred from stance-phase foot velocity rather than measured
+from global displacement, are not independent of one another, and cadence is unaffected.
+
+The reasoning for putting this in the artifact rather than only in this file: the numbers look
+entirely ordinary. Nothing about `1.116 m/s` signals that it came from a treadmill-speed heuristic
+on a pinned-root skeleton. A caveat that lives only in documentation will be separated from the
+report the first time someone copies a value into a slide, so it has to travel with the data.
