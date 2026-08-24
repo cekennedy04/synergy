@@ -475,12 +475,21 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
             joint_angles.append(None)
 
         com_values = _frame_child_values(frame, "centerOfMass")
-        if com_values is not None and len(com_values) != 3:
+        if com_values is not None and len(com_values) not in (3, 9):
             raise ValueError(
                 f"{mvnx_path}: frame has {len(com_values)} <centerOfMass> values, "
-                "expected 3 (x, y, z)."
+                "expected 3 (position) or 9 (position, velocity, acceleration)."
             )
-        center_of_mass.append(tuple(com_values) if com_values else None)
+        # MVNX v4 (MVN 2022+) writes centerOfMass as 9 values -- position,
+        # then velocity, then acceleration -- where the older export shape
+        # this parser was first built against carried only the 3 position
+        # components. Confirmed empirically against a real v4 file rather
+        # than taken from the schema: columns 0-2 hold a plausible standing
+        # CoM height (~1 m, matching the recorded subject) that drifts slowly,
+        # columns 3-5 hold ~0.01 m/s velocities, and columns 6-8 hold noisy
+        # near-zero accelerations. Only position is used downstream, so keep
+        # the leading 3 and drop the rest rather than rejecting the file.
+        center_of_mass.append(tuple(com_values[:3]) if com_values else None)
 
         time_attr = frame.attrib.get("time")
         if time_attr is not None:
@@ -915,15 +924,36 @@ def resolve_session_output_paths(session_dir, trial_name, model_file=None):
     if model_file is None:
         model_dir = session_dir / "OpenSimData" / "Model"
         osim_files = sorted(model_dir.glob("*.osim")) if model_dir.exists() else []
-        if len(osim_files) != 1:
-            raise ValueError(
-                f"{model_dir}: expected exactly one .osim file for model "
-                f"auto-discovery, found {len(osim_files)} "
-                f"({[f.name for f in osim_files]}). Pass model_file explicitly "
-                "instead (e.g. for a 'mono' session with per-trial model "
-                "subfolders, which this auto-discovery doesn't handle)."
+        # calibrate_model() writes "<stem>_calibrated.osim" into this very
+        # directory, so once a session has been processed a single time, a
+        # naive "*.osim" glob sees two models and auto-discovery fails
+        # forever ("found 2") -- the app breaking its own next run, and every
+        # subsequent trial in the same session. Calibrated models are this
+        # pipeline's OUTPUT, never a source model to be calibrated again, so
+        # they're excluded here rather than counted. Excluding (instead of
+        # writing the calibrated model elsewhere) is deliberate: it also
+        # repairs sessions already polluted by an earlier run, which a
+        # change of output location alone would leave permanently broken.
+        source_models = [f for f in osim_files if not f.stem.endswith("_calibrated")]
+        if len(source_models) != 1:
+            derived = [f.name for f in osim_files if f.stem.endswith("_calibrated")]
+            hint = (
+                "Pass model_file explicitly instead (e.g. for a 'mono' session "
+                "with per-trial model subfolders, which this auto-discovery "
+                "doesn't handle)."
             )
-        model_file = str(osim_files[0])
+            if not source_models and derived:
+                hint = (
+                    f"Only previously-calibrated model(s) {derived} were found, "
+                    "with no source model alongside them. Restore the original "
+                    "scaled .osim for this session, or pass model_file explicitly."
+                )
+            raise ValueError(
+                f"{model_dir}: expected exactly one source .osim file for model "
+                f"auto-discovery, found {len(source_models)} "
+                f"({[f.name for f in source_models]}). {hint}"
+            )
+        model_file = str(source_models[0])
 
     return {
         "model_file": model_file,

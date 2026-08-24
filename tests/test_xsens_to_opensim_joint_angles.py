@@ -159,3 +159,55 @@ def test_wrong_center_of_mass_length_raises(mod, tmp_path):
 
     with pytest.raises(ValueError, match="centerOfMass"):
         mod.parse_mvnx(str(path))
+
+
+# -- MVNX v4 centerOfMass layout (2026-08-24) ----------------------------
+# The real HD-reprocessed CK exports (MVN 2022.0.0, mvnx version="4") write
+# <centerOfMass> as 9 values -- position, velocity, then acceleration --
+# where the export shape this parser was first built against carried only
+# the 3 position components. parse_mvnx rejected the real files outright
+# ("frame has 9 <centerOfMass> values, expected 3") until this was fixed.
+
+
+def test_center_of_mass_accepts_mvnx_v4_nine_value_layout(mod, tmp_path):
+    """9 values parse, and the leading 3 (position) are what's kept --
+    silently storing velocity or acceleration as position would be worse
+    than the original hard failure."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    path.write_text(_fixture_mvnx(
+        text,
+        # position | velocity | acceleration. Synthetic values chosen to
+        # mirror the SHAPE and order of magnitude of a real v4 export
+        # (~1 m standing CoM height, ~0.01 m/s, ~0.01 m/s^2) without
+        # copying any real recording's numbers into the repo.
+        com_text="-4.0 0.35 0.99  -0.008 0.006 -0.0004  0.017 -0.028 0.008",
+    ))
+
+    parsed = mod.parse_mvnx(str(path))
+
+    assert parsed["center_of_mass"][0] == pytest.approx((-4.0, 0.35, 0.99))
+
+
+def test_center_of_mass_still_accepts_three_value_layout(mod, tmp_path):
+    """The older 3-value shape must keep working -- the v4 fix widens the
+    accepted set, it does not swap one layout for the other."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    path.write_text(_fixture_mvnx(text, com_text="0.1 1.2 -0.05"))
+
+    parsed = mod.parse_mvnx(str(path))
+
+    assert parsed["center_of_mass"][0] == pytest.approx((0.1, 1.2, -0.05))
+
+
+def test_center_of_mass_length_between_the_two_layouts_still_raises(mod, tmp_path):
+    """Only 3 and 9 are real MVNX layouts. A 6-value frame is a file we do
+    not understand, so it must fail loudly rather than get truncated to a
+    plausible-looking position."""
+    text = _joint_angle_values(mod, "jL5S1")
+    path = tmp_path / "fixture.mvnx"
+    path.write_text(_fixture_mvnx(text, com_text="0.1 1.2 -0.05 0.0 0.0 0.0"))
+
+    with pytest.raises(ValueError, match="centerOfMass"):
+        mod.parse_mvnx(str(path))

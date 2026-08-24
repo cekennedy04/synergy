@@ -109,6 +109,30 @@ from matplotlib import pyplot as plt
 from utilsKinematics import kinematics
 
 
+# Floor on how much trial data the auto-trim retry loop is allowed to leave
+# behind before it gives up (edit #12, 2026-08-24; rationale corrected the
+# same day after testing against real matched data -- see the guard in
+# segment_walking's `while checkflag==0` loop).
+#
+# This is a DEFENSIVE FLOOR, not a fix for any observed failure. It was
+# originally written believing the retry loop caused a hard native crash
+# (ucrtbase 0xc0000409) seen once in a GUI session; that belief did not
+# survive testing. On a real non-gait trial the loop runs to ~238 trims
+# across both legs, consumes ~23.8s of a 43.5s recording, and completes
+# normally. On a real walking trial (CK-001, a verified Xsens/OpenCap
+# matched pair) it needs ZERO retries. The crash has never been reproduced
+# and its cause remains unknown -- do not describe this constant as its fix.
+#
+# What the floor is genuinely for: trimend() is cumulative, and the loop's
+# only other bound is len(trimarray), itself derived from trial duration
+# (ntrims = round(seshlen/.2) - 2), which for a long trial authorises
+# trimming away essentially the whole recording. A gait cycle is roughly 1s
+# and ordering validation needs a full ipsilateral cycle with the
+# contralateral events inside it, so below ~2s no further retry can succeed
+# and continuing only burns CPU on data that cannot answer the question.
+MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION = 2.0
+
+
 class gait_analysis(kinematics):
     
     def __init__(self, session_dir, trial_name, fpa_r, fpa_l, leg='auto',
@@ -966,10 +990,31 @@ class gait_analysis(kinematics):
                     # everything was in the correct order. continue.
                     self.promflag=1
                     break
-                    
 
-        
-            return rHS, rTO, lHS, lTO
+
+
+            # Edit #13 (2026-08-24): was `return rHS, rTO, lHS, lTO`, but the
+            # only call site unpacks `rHS,lHS,rTO,lTO = trimend(...)` -- so
+            # every auto-trim retry silently swapped left heel-strikes with
+            # right toe-offs on the way OUT. Matches detect_gait_peaks' own
+            # (correct) `return rHS,lHS,rTO,lTO` order.
+            #
+            # Scope of the bug, stated precisely: this does NOT affect whether
+            # the retry loop converges. The ordering check that drives
+            # convergence runs INSIDE this function
+            # (`detect_correct_order(rHS=rHS, rTO=rTO, lHS=lHS, lTO=lTO)`
+            # above) on correctly-ordered locals, and signals success only
+            # through `self.promflag` -- set before this return executes, and
+            # the sole thing the caller's `while checkflag==0` loop reads. An
+            # earlier draft of this comment blamed the swap for the loop
+            # grinding without converging; that is not mechanically possible.
+            # What the swap actually corrupted is every downstream consumer of
+            # the returned events once convergence HAD happened -- gait-cycle
+            # segmentation and every metric derived from it silently ran on
+            # left heel-strikes sitting in the right toe-off slot. That is
+            # arguably worse than a hang: it yields plausible wrong numbers
+            # rather than an obvious failure.
+            return rHS, lHS, rTO, lTO
 
             
         
@@ -1014,8 +1059,11 @@ class gait_analysis(kinematics):
                 lHS=self.lhs
                 rTO=self.rto
                 lTO=self.lto
-            
-            return rHS, rTO, lHS, lTO
+
+            # Edit #13 (2026-08-24): same left/right swap as trimend above --
+            # the call site unpacks `rHS,lHS,rTO,lTO = manual_steps(self)`,
+            # so hand-entered gait events were being scrambled on the way out.
+            return rHS, lHS, rTO, lTO
         
         def detect_correct_order(rHS, rTO, lHS, lTO):
             # checks if the peaks are in the right order
@@ -1195,6 +1243,53 @@ class gait_analysis(kinematics):
                         'without finding correctly-ordered gait events. Consider manual '
                         'trimming_start/trimming_end, or allow_manual_entry=True for an '
                         'interactive session.'
+                    )
+                # Edit #12 (2026-08-24): trimend() is CUMULATIVE -- each call
+                # shaves another 0.2s off the already-trimmed data -- but the
+                # loop's only bound was `len(trimarray)`, itself derived from
+                # the trial's duration (ntrims = round(seshlen/.2) - 2). For a
+                # 43.5s trial that authorises ~215 trims x 0.2s = ~43s of
+                # trimming: the loop may consume essentially the ENTIRE
+                # recording looking for gait events that a non-gait trial will
+                # never have.
+                #
+                # Measured behaviour, not inferred (real non-gait trial, both
+                # legs): ~238 trims total, ~119 per leg, ~23.8s removed from a
+                # 43.5s recording, ~19.7s left -- and it completed, converging
+                # on one spurious "gait cycle" per leg. The guard below does
+                # NOT fire in that run (it only trips under ~2.2s remaining),
+                # which is the intended behaviour: it is a backstop against
+                # pathological trimming, not a filter for non-gait trials.
+                # A real walking trial from a verified matched pair needs zero
+                # retries and never reaches this code at all.
+                #
+                # An earlier draft of this comment claimed the loop caused a
+                # hard native crash (ucrtbase 0xc0000409). That was wrong: 238
+                # iterations complete cleanly, the crash has never been
+                # reproduced across the pipeline, display, export or threaded
+                # -import paths, and its cause is still unknown. Fixing the
+                # message here does not fix that crash.
+                #
+                # Bound the retry by REMAINING DATA rather than iteration count,
+                # and fail with a clinically meaningful message. MIN_REMAINING_
+                # SECONDS_FOR_GAIT_DETECTION is deliberately conservative: gait
+                # detection needs at least one full ipsilateral cycle plus the
+                # contralateral events inside it to check ordering at all, so
+                # anything under a couple of seconds cannot succeed no matter
+                # how many more times it is retried.
+                remaining = float(
+                    np.round(self.markerDict['time'][-1] - self.markerDict['time'][0], 6)
+                )
+                if remaining - trimarray[j] < MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION:
+                    raise Exception(
+                        'Auto-trim stopped after ' + str(j - 1) + ' attempt(s): trimming '
+                        'further would leave only ' + str(round(remaining - trimarray[j], 2)) +
+                        's of data, below the ' + str(MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION) +
+                        's minimum needed to detect a gait cycle. No correctly-ordered '
+                        'gait events were found in this trial. This usually means the '
+                        'recording is not walking (or the walking portion is too short '
+                        'or too noisy to segment) -- check that this is a gait trial '
+                        'before retrying.'
                     )
                 print("Trying auto-Trim")
                 rHS,lHS,rTO,lTO=trimend(self, trimarray[j])

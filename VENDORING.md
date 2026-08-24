@@ -309,6 +309,17 @@ once OpenSim is installed and this can actually run.
 
 ## Update 2026-08-17 (evening): OpenSim installed, ran end-to-end against real data for the first time
 
+> **⚠ SUPERSEDED 2026-08-24 — the data behind this section was mismatched.**
+> Every accuracy figure below was produced by driving IMU orientations from one
+> recording through `LaiUhlrich2022_scaled.osim` scaled to a *different* person:
+> the OpenCap session used was `subjectID: test1` (a generic OpenCap demo
+> session, 1.68 m / 84.4 kg, trials `test1`..`test10`/`Cir12`/`walker11`), while
+> the `.mvnx` was an unrelated bed-to-shower-chair transfer found online — a
+> different subject performing a different, non-walking motion. Do not quote
+> these numbers as this pipeline's accuracy. Real validation against a verified
+> matched pair is in **"Update 2026-08-24: real validation"** at the end of this
+> file. Kept here unedited as a record of how the error was made and found.
+
 `conda create -n opencap-processing python=3.11` + `conda install -c opensim-org opensim=4.5=py311np123`
 (exactly the version this repo's own README specifies) — confirmed installed and importable
 (`OpenSim version: 4.5-2023-11-26-efcdfd3eb`).
@@ -349,6 +360,17 @@ the existing 26-test suite; not re-verified against a real 5-minute run since th
 uncalibrated scaled model isn't available in this session to redo it cheaply.
 
 ## Update 2026-08-19: re-ran against the real trial with real timing, results reproducible
+
+> **⚠ SUPERSEDED 2026-08-24 — the data behind this section was mismatched.**
+> Every accuracy figure below was produced by driving IMU orientations from one
+> recording through `LaiUhlrich2022_scaled.osim` scaled to a *different* person:
+> the OpenCap session used was `subjectID: test1` (a generic OpenCap demo
+> session, 1.68 m / 84.4 kg, trials `test1`..`test10`/`Cir12`/`walker11`), while
+> the `.mvnx` was an unrelated bed-to-shower-chair transfer found online — a
+> different subject performing a different, non-walking motion. Do not quote
+> these numbers as this pipeline's accuracy. Real validation against a verified
+> matched pair is in **"Update 2026-08-24: real validation"** at the end of this
+> file. Kept here unedited as a record of how the error was made and found.
 
 Re-extracted `LaiUhlrich2022_scaled.osim` (the same real scaled model from the OpenCap session zip,
 `OpenSimData/Model/LaiUhlrich2022_scaled.osim`) and re-ran `xsens_to_opensim.py` against the same
@@ -513,6 +535,17 @@ cover extraction, DOF-order, the missing-element-yields-None case, and the wrong
 ### 3. The calibration concern, quantified: leg-tracking error scales with distance from the
 calibration pose
 
+> **⚠ SUPERSEDED 2026-08-24 — the data behind this section was mismatched.**
+> Every accuracy figure below was produced by driving IMU orientations from one
+> recording through `LaiUhlrich2022_scaled.osim` scaled to a *different* person:
+> the OpenCap session used was `subjectID: test1` (a generic OpenCap demo
+> session, 1.68 m / 84.4 kg, trials `test1`..`test10`/`Cir12`/`walker11`), while
+> the `.mvnx` was an unrelated bed-to-shower-chair transfer found online — a
+> different subject performing a different, non-walking motion. Do not quote
+> these numbers as this pipeline's accuracy. Real validation against a verified
+> matched pair is in **"Update 2026-08-24: real validation"** at the end of this
+> file. Kept here unedited as a record of how the error was made and found.
+
 Your supervisor's own framing ("one static calibration frame") turns out to name the actual
 mechanism behind the femur/tibia tracking-error finding from 2026-08-17 (20-32 deg RMS, worst of
 any segment), not just a design choice worth flagging. Used the newly-added Xsens joint-angle data
@@ -650,6 +683,17 @@ test.
 
 ## Update 2026-08-19 (evening): found and fixed the actual root cause of the leg-accuracy problem
 -- `base_heading_axis` default was wrong
+
+> **⚠ SUPERSEDED 2026-08-24 — the data behind this section was mismatched.**
+> Every accuracy figure below was produced by driving IMU orientations from one
+> recording through `LaiUhlrich2022_scaled.osim` scaled to a *different* person:
+> the OpenCap session used was `subjectID: test1` (a generic OpenCap demo
+> session, 1.68 m / 84.4 kg, trials `test1`..`test10`/`Cir12`/`walker11`), while
+> the `.mvnx` was an unrelated bed-to-shower-chair transfer found online — a
+> different subject performing a different, non-walking motion. Do not quote
+> these numbers as this pipeline's accuracy. Real validation against a verified
+> matched pair is in **"Update 2026-08-24: real validation"** at the end of this
+> file. Kept here unedited as a record of how the error was made and found.
 
 Your supervisor's benchmark (a working Xsens-to-OpenSim translation should show only a few degrees
 of error) was the right pushback -- the earlier framing of the 2026-08-17 leg-tracking-error
@@ -906,3 +950,185 @@ crashing (or, before this fix, hanging) the whole batch. The interactive call si
 **Not done:** an actual end-to-end `run_batch()` call against a real multi-trial session (would
 need real walking data with clean gait cycles, which this project doesn't have yet — see the
 previous entry's "Not done" note).
+
+## Update 2026-08-24: real validation — verified matched pair, knee/hip agreement at 4.48° RMS
+
+Everything before this section that quotes an accuracy number was measured on mismatched inputs
+(see the four ⚠ SUPERSEDED banners above). This section replaces those numbers. It is the first
+time this pipeline has been measured against an independent recording of **the same motion on the
+same body**.
+
+### The matched pair, and how the pairing was proven
+
+- **Xsens:** `context/Data for Alex/CK/HD Reprocessed/CK-001.mvnx` … `CK-015.mvnx` — 15
+  HD-reprocessed MVNX v4 files, MVN 2022.0.0, 23 segments, 60 Hz, each with exactly
+  `1 identity + 1 tpose + N normal` frames (so every trial carries its own calibration pose).
+- **OpenCap:** `context/OpenCapData_<session-id>` — subject CK, `Trial1` … `Trial15`, with
+  `LaiUhlrich2022_scaled.osim` scaled to that subject.
+- **Pairing: `CK-00N` ↔ `TrialN`.**
+
+The pairing is not assumed. It was established two independent ways that agree:
+
+1. **Wall clock.** Xsens `recDate` (local) vs. the OpenCap `.mov` QuickTime `mvhd` creation
+   timestamps (UTC) sit exactly 5 hours apart — CDT, consistent with a Chicago lab — and match
+   within **0–4 seconds on all 15 trials**. The whole session runs 2026-08-20 11:34–11:41 local.
+   The Xsens operator consistently starts recording a beat before the phones, which is exactly the
+   sign of the offset observed.
+2. **Signal alignment.** Per trial, the time lag between the two systems is recovered by
+   cross-correlating knee flexion — computed **independently for the left and right knee**. The two
+   answers never disagree by more than **1 frame** (mean 0.5), across lags spanning 0.90–4.82 s,
+   with peak correlations 0.956–0.988.
+
+Method 1 uses only file metadata; method 2 uses only signal content. They agree on every trial.
+
+### Result: agreement with OpenCap, 14 trials
+
+`Trial8` is excluded from the aggregate and discussed separately below.
+
+| coordinate | mean RMS | sd | mean r |
+|---|---|---|---|
+| `knee_angle_l` | **3.28°** | 0.55 | **0.986** |
+| `hip_adduction_r` | 3.72° | 0.28 | 0.902 |
+| `knee_angle_r` | **3.76°** | 0.55 | **0.980** |
+| `hip_adduction_l` | 3.92° | 0.31 | 0.857 |
+| `hip_flexion_r` | 4.75° | 1.10 | 0.924 |
+| `hip_flexion_l` | 6.13° | 0.67 | 0.889 |
+| `ankle_angle_l` | 11.56° | 0.99 | 0.296 |
+| `ankle_angle_r` | 13.67° | 0.95 | 0.345 |
+
+**Knee + hip flexion: 4.48° mean RMS**, with per-coordinate standard deviations of 0.28–1.10°
+across 14 trials. This meets your supervisor's stated benchmark that a working Xsens-to-OpenSim
+translation should show only a few degrees of error.
+
+Note this is **agreement with OpenCap**, which is itself a video-based estimate, not gold-standard
+marker mocap. It is also *not* comparable like-for-like with the superseded 16.4° / 24–32° figures:
+those were IMU **orientation residuals** from IK, a different quantity entirely.
+
+### The ankle disagreement is real, systematic, and not caused by this conversion
+
+Ankle agreement with OpenCap is poor and *consistently* poor (r ≈ 0.30, sd ≈ 1.0 across all 15) —
+a reproducible systematic difference, not noise. Three lines of evidence locate it on the OpenCap
+side rather than in this pipeline:
+
+**1. Against Xsens's own `<jointAngle>` data, our ankle is as good as our knee.** Using knee and
+hip as controls to confirm DOF indexing (`jRightAnkle` = index 16, `jLeftAnkle` = 20,
+`flexion_extension` = DOF 2), for CK-001:
+
+| joint | Xsens vs **ours** | Xsens vs OpenCap | ours vs OpenCap |
+|---|---|---|---|
+| knee R / L | **+0.990 / +0.993** | +0.959 / +0.958 | +0.975 / +0.979 |
+| hip R / L | **+0.988 / +0.985** | +0.851 / +0.826 | +0.887 / +0.849 |
+| **ankle R / L** | **+0.985 / +0.976** | **+0.388 / +0.249** | +0.343 / +0.241 |
+
+Our `.mot` reproduces Xsens's own ankle angles at r ≈ 0.98 / 4.3–4.5° RMS — the same fidelity we
+achieve at knee and hip. And **Xsens's own ankle disagrees with OpenCap just as badly as ours
+does.** Two independent IMU-side computations agree with each other and both diverge from video.
+
+**2. OpenCap's ankle signal degrades exactly where agreement collapses.** Frame-to-frame jitter and
+range of motion, CK-001 vs Trial1:
+
+| coordinate | our jitter | OpenCap jitter | ratio | our ROM | OpenCap ROM |
+|---|---|---|---|---|---|
+| `knee_angle_r` | 2.21° | 2.93° | 1.3× | 59.7° | 67.2° |
+| `hip_flexion_r` | 1.19° | 2.88° | 2.4× | 44.7° | 60.2° |
+| `ankle_angle_r` | 1.38° | **4.13°** | **3.0×** | 40.5° | **80.8°** |
+
+OpenCap degrades monotonically as you move distal (1.3× → 2.4× → 3.0× noisier), and agreement
+falls in exactly that order (0.98 → 0.89 → 0.30). OpenCap also reports **80.8° of ankle range**;
+normal walking is roughly 30°, and Xsens's 40° is already generous. An 81° ankle excursion is not
+physiological.
+
+**3. The ball-of-foot hypothesis is refuted, not merely doubted.** Xsens models `jRightBallFoot` /
+`jLeftBallFoot` separately from the ankle, so the obvious theory is that OpenCap's wider ankle
+excursion folds in toe motion our `RightFoot → calcn_r_imu` mapping discards. Adding the ball-foot
+joint makes agreement **worse**: R 0.388 → 0.295, L 0.249 → **−0.069**.
+
+**Standing caveat.** Xsens's `<jointAngle>` and our `.mot` both derive from the *same* IMU
+orientations, so their agreement validates the **conversion**, not ground truth. Neither has been
+checked against gold-standard mocap. The defensible claim is *"the ankle discrepancy is not
+introduced by this conversion, and the evidence points at OpenCap's video-based ankle estimate"* —
+**not** *"our ankle is correct."*
+
+### `Trial8` / `CK-008` — open, needs human review
+
+Left knee 15.74° and left hip 16.81° RMS, against ~3–6° everywhere else, while its **right** leg is
+normal (4.14° / 5.21°). Correlations stay high (+0.929 / +0.856), and removing the constant bias
+fixes the hip (16.81° → 8.02°, bias −14.78°) but only partly the knee (15.74° → 11.44°, bias
+−10.81°) — so a left-leg offset *plus* degraded tracking. It is also the shortest OpenCap clip
+(6.45 s), the largest trim overhead (5.87 s), the largest lag (4.82 s), and the lowest peak
+correlation (0.956). Flagged for clinical/design review rather than patched in code.
+
+### Gait analysis on a real walking trial
+
+`CK-001` through the full clinician-GUI pipeline: **44.9 s, zero auto-trim retries**, 4 gait cycles
+right / 5 left, with plausible metrics and tight bilateral agreement — gait speed 1.116 / 1.121 m/s
+(0.4% apart), cadence 130.3 / 127.8 steps/min, stride length 1.038 / 1.064 m, step width
+0.055 / 0.050 m.
+
+For contrast, the same pipeline on a non-gait trial (the bed-to-shower-chair transfer) runs 238
+auto-trim attempts over 313 s and still reports one "gait cycle" per leg. **The auto-trim retry
+loop is not pathological — it was being fed a trial with no gait events to find.** See the
+corrected `MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION` comment in `gait_analysis_UCM_fixed.py`.
+
+This also closes the previous section's "Not done": an end-to-end multi-trial run against real
+walking data now exists — all 15 trials processed successfully.
+
+### Parser fix required to read the real files: MVNX v4 `centerOfMass`
+
+`parse_mvnx` rejected all 15 real files outright:
+
+    ValueError: CK-001.mvnx: frame has 9 <centerOfMass> values, expected 3 (x, y, z).
+
+MVNX v4 (MVN 2022+) writes `<centerOfMass>` as **9** values — position, velocity, then
+acceleration — where the export shape this parser was first built against carried only the 3
+position components. The layout was confirmed empirically against the real file rather than taken
+from the schema: columns 0–2 hold a plausible standing CoM height (0.991 m, consistent with
+the subject's recorded stature) that drifts slowly, columns 3–5 hold ~0.01 m/s velocities,
+columns 6–8 hold noisy near-zero
+accelerations. `parse_mvnx` now accepts 3 **or** 9 and keeps the leading 3; a length that is
+neither still fails loudly rather than being truncated into a plausible-looking position.
+
+The rest of the parser needed no changes — it already filtered `type == "normal"`, preferred
+`tpose` over `npose` for calibration, and all 14 `SEGMENT_TO_IMU_FRAME` keys match the CK files'
+segment labels exactly. (These files carry real segment labels, unlike the malformed online
+`.mvnx` the parser was originally shaped against.)
+
+Three tests added (`tests/test_xsens_to_opensim_joint_angles.py`): the 9-value layout parses and
+keeps position, the 3-value layout still works, and a 6-value frame still raises. **101 tests pass.**
+
+### Reproducing this
+
+Interpreter note: `opensim` lives in the `opencap-processing` conda env, which has no `pytest`;
+the base interpreter has `pytest` but no `opensim`. So:
+
+    # pipeline / comparison (needs opensim)
+    <miniconda3>\envs\opencap-processing\python.exe <script>
+    # test suite (needs pytest)
+    <miniconda3>\python.exe -m pytest tests -q
+
+Procedure, per trial `N`:
+
+1. Run `clinician_gui.run_pipeline(session_dir, CK-00N.mvnx)`. Outputs are trial-named
+   (`CK-00N.trc/.sto/.mot`) and never overwrite OpenCap's own `TrialN.trc/.mot`, which is what
+   makes them usable as the comparison reference.
+2. Read both `.mot` files (skip to `endheader`, then whitespace-split columns).
+3. Recover the lag by cross-correlating `knee_angle_r` and `knee_angle_l` **separately** over
+   0–6 s; average them, and treat a disagreement of more than a few frames as evidence the pairing
+   failed for that trial rather than something to average away.
+4. Compare over OpenCap's window: `ours[lag : lag+n]` against `opencap[:n]`, reporting RMS and
+   Pearson r per coordinate.
+
+For the ankle investigation, `parse_mvnx(...)["joint_angles"]` gives Xsens's own joint kinematics
+as a third, independent opinion — indexed by `STANDARD_22_JOINT_ORDER` with DOF order
+`(abduction_adduction, internal_external_rotation, flexion_extension)`. Always compare knee and hip
+alongside as controls: if those do not land near r ≈ 0.99 against our `.mot`, the joint index or
+DOF index is wrong and the ankle numbers mean nothing.
+
+### Still unresolved
+
+The `ucrtbase 0xc0000409` native crash seen once in a GUI session **has never been reproduced** and
+its cause is unknown. It did not appear in `run_pipeline` (3 runs), `shape_results_for_display`,
+`build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root,
+or any of the 15 matched-pair runs. The only path not exercised is `_render_curves` embedding
+`FigureCanvasTkAgg` into live widgets — the main-thread rendering risk already tracked as
+GitHub issue #1. Edit #12 was originally written believing it fixed this crash; it does not.
