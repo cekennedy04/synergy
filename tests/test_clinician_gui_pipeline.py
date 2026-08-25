@@ -683,3 +683,135 @@ def test_reported_paths_are_the_ones_the_pipeline_actually_used(mod, tmp_path):
 
     assert result["trc_path"] == resolve_paths["trc_path"]
     assert result["sto_path"] == resolve_paths["sto_path"]
+
+
+# -- Gait-cycle curve matrix, the input UCM and GDI actually consume --------
+# The .mot is a raw time series over the whole trial. UCM and GDI need the
+# stride-normalised matrix: (n_coordinates x 101) rows by one column per gait
+# cycle. run_pipeline held the gait_analysis objects that can produce it but
+# never built it, so the GUI could not deliver the file the analysis needs.
+
+
+def _fake_gait_module_with_curves(n_cycles=4):
+    class _FakeGaitAnalysis:
+        def __init__(self, session_dir, trial_name, fpa_r, fpa_l, leg='auto', **kwargs):
+            self.leg = leg
+
+        def get_coordinates_normalized_time(self):
+            return {"indiv": [{} for _ in range(n_cycles)], "mean": {}}
+
+    return types.SimpleNamespace(gait_analysis=_FakeGaitAnalysis)
+
+
+def _fake_fp_module_with_export(recorder):
+    def compute_foot_progression_angles(session_dir, trial_name):
+        return [0.0, 0.0], [0.0, 0.0]
+
+    def export_individual_curves_csv(results, save_path, subject_id, trial_name):
+        recorder.append({"results": results, "save_path": str(save_path),
+                         "subject_id": subject_id, "trial_name": trial_name})
+        right = Path(save_path) / f"{subject_id}-{trial_name}_right.csv"
+        left = Path(save_path) / f"{subject_id}-{trial_name}_left.csv"
+        for path in (right, left):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("0.0\n")
+        return str(right), str(left)
+
+    return types.SimpleNamespace(
+        compute_foot_progression_angles=compute_foot_progression_angles,
+        export_individual_curves_csv=export_individual_curves_csv,
+    )
+
+
+def _run_with_curve_export(mod, tmp_path, recorder):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fake_xsens = _make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir))
+    return mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=fake_xsens,
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=_fake_fp_module_with_export(recorder),
+    )
+
+
+def test_run_pipeline_exports_the_gait_cycle_curve_matrix(mod, tmp_path):
+    recorder = []
+
+    result = _run_with_curve_export(mod, tmp_path, recorder)
+
+    assert recorder, "export_individual_curves_csv was never called"
+    assert result["curves_matrix_r_path"].endswith("_right.csv")
+    assert result["curves_matrix_l_path"].endswith("_left.csv")
+    assert Path(result["curves_matrix_r_path"]).is_file()
+
+
+def test_exported_matrix_is_built_from_both_legs_normalised_curves(mod, tmp_path):
+    """Both legs must be passed through -- an earlier version of the upstream
+    exporter computed curves_l and then only ever saved the right leg."""
+    recorder = []
+
+    _run_with_curve_export(mod, tmp_path, recorder)
+
+    passed = recorder[0]["results"]
+    assert "curves_r" in passed and "curves_l" in passed
+    assert len(passed["curves_r"]["indiv"]) == 4
+
+
+def test_curve_matrix_appears_in_the_reported_output_files(mod, tmp_path):
+    """It is the file a researcher actually needs for UCM/GDI, so it has to be
+    listed alongside the .mot and .trc rather than written silently."""
+    recorder = []
+    result = _run_with_curve_export(mod, tmp_path, recorder)
+
+    labels = {e["label"] for e in mod.shape_output_files_for_display(result)}
+
+    assert any("curve matrix" in label.lower() for label in labels), labels
+
+
+def test_curve_export_failure_does_not_lose_the_rest_of_the_run(mod, tmp_path):
+    """The matrix is the last stage. If it fails, the joint angles, markers and
+    gait metrics are all still valid and must still be returned."""
+    def exploding_export(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fp = _fake_fp_module_with_export([])
+    fp.export_individual_curves_csv = exploding_export
+
+    result = mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=_make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir)),
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=fp,
+    )
+
+    assert result["mot_path"]
+    assert result.get("curves_matrix_r_path") is None
+
+
+def test_curve_matrix_filename_uses_a_short_session_id(mod, tmp_path):
+    """The exporter names files '<subject_id>-<trial>_side.csv'. Passing the
+    whole session folder produced a 60-character name embedding the full
+    session UUID -- unwieldy, and it puts the session ID into a file that gets
+    shared. A short traceable prefix is enough."""
+    recorder = []
+    # A realistic session folder -- the tmp fixture's "OpenCapData_test" is
+    # already short and could never have caught this.
+    session_dir = tmp_path / "OpenCapData_ca505b02-a59a-4f35-836f-f211475f18b8"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    result = mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=_make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir)),
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=_fake_fp_module_with_export(recorder),
+    )
+
+    name = Path(result["curves_matrix_r_path"]).name
+    assert len(name) < 40, f"filename is unwieldy: {name}"
+    assert "trial1" in name
+    assert "ca505b02" in name, "should still trace back to the session"

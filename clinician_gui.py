@@ -422,6 +422,35 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
             raise NonGaitTrialRejectedError(str(exc)) from exc
         raise GaitAnalysisFailedError(str(exc)) from exc
 
+    # Stage 5: the stride-normalised curve matrix -- (n_coordinates x 101)
+    # rows by one column per gait cycle. This, not the .mot, is what a UCM or
+    # GDI analysis consumes: the .mot is a raw time series over the whole
+    # trial, with no cycle segmentation and no normalisation.
+    #
+    # Wrapped and non-fatal deliberately. It is the last stage, so a failure
+    # here still leaves valid joint angles, markers and gait metrics; losing
+    # all of that because a CSV could not be written would be the wrong
+    # trade. The paths come back None and the output panel simply omits them.
+    _progress("Exporting gait-cycle curve matrix...")
+    curves_matrix_r_path = curves_matrix_l_path = None
+    try:
+        curve_results = {
+            "curves_r": gait_r.get_coordinates_normalized_time(),
+            "curves_l": gait_l.get_coordinates_normalized_time(),
+        }
+        curves_dir = Path(session_dir) / "GaitCurves"
+        curves_dir.mkdir(parents=True, exist_ok=True)
+        curves_matrix_r_path, curves_matrix_l_path = (
+            foot_progression.export_individual_curves_csv(
+                curve_results, curves_dir, _short_session_id(session_dir), trial_name
+            )
+        )
+        curves_matrix_r_path = str(curves_matrix_r_path)
+        curves_matrix_l_path = str(curves_matrix_l_path)
+    except Exception as exc:  # noqa: BLE001 -- see the note above
+        _progress(f"Curve matrix export failed ({type(exc).__name__}); "
+                  "other results are unaffected.")
+
     _progress("Finalizing results...")
     return {
         "session_dir": session_dir,
@@ -435,6 +464,8 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
         "mot_path": mot_path,
         "trc_path": paths["trc_path"],
         "sto_path": paths["sto_path"],
+        "curves_matrix_r_path": curves_matrix_r_path,
+        "curves_matrix_l_path": curves_matrix_l_path,
         "fpa_r": fpa_r,
         "fpa_l": fpa_l,
         "gait_r": gait_r,
@@ -1030,11 +1061,28 @@ def _mot_series_from_coordinate_values(coordinate_values):
 # want them. Labels carry the extension because that is what they will look
 # for on disk (2026-08-25).
 OUTPUT_FILE_LABELS = (
+    # First: this is the file a UCM or GDI analysis actually consumes.
+    ("curves_matrix_r_path", "Gait-cycle curve matrix, right (.csv)"),
+    ("curves_matrix_l_path", "Gait-cycle curve matrix, left (.csv)"),
     ("mot_path", "Joint angles (.mot)"),
     ("trc_path", "Markers (.trc)"),
     ("sto_path", "IMU orientations (.sto)"),
     ("model_file", "Calibrated model (.osim)"),
 )
+
+
+def _short_session_id(session_dir):
+    """A short, traceable prefix for exported filenames.
+
+    export_individual_curves_csv names files '<subject_id>-<trial>_side.csv'.
+    Handing it the whole session folder produced a 60-character name carrying
+    the full session UUID -- unwieldy on disk and needlessly embedding the
+    session ID in a file that gets passed around. The leading UUID segment is
+    short and still traces back to the session.
+    """
+    name = Path(session_dir).name
+    stem = name[len("OpenCapData_"):] if name.startswith("OpenCapData_") else name
+    return stem.split("-")[0] or "session"
 
 
 def shape_output_files_for_display(result):
