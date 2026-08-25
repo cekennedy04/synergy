@@ -1393,7 +1393,7 @@ earlier sections carry ⚠ SUPERSEDED banners).
 |---|---|
 | `Trial8` / `CK-008` mechanism | **Unresolved.** Localised to CK-008's recorded left-leg segment orientations. Magnetic drift is **not confirmed and the evidence leans against it**: drift accumulates, but `knee_angle_l` error runs 17.74° (Q1) → 16.05° (Q4), slope **−0.135 °/s** — a large near-constant offset, consistent with fixed sensor-to-segment misalignment or a fusion solution settling wrong early. `hip_flexion_l` does grow (+0.460 °/s), so the picture is mixed. Discriminating requires the `Sensor Magnetic Field` sheet from an MVN Studio `.xlsx` re-export; the HD `.mvnx` carries no `magneticField` element and no per-sensor quality attributes. |
 | Spatial gait metrics | **Not fixed, only labelled.** Root translation is pinned (`pelvis_tx`/`tz` constant 0.0000 against ~6.3 m of real travel), so `gait_speed` and `stride_length` are stance-phase ankle-velocity proxies, and `stride_length ≈ treadmillSpeed × stride_time` makes them **not independent of each other**. `cadence` is event-timing derived and unaffected. Every overground trial is silently classified as treadmill. Provenance is stamped on every report via `SPATIAL_PROVENANCE`. |
-| `ucrtbase 0xc0000409` | **Unreproduced and undiagnosed.** Absent from `run_pipeline` (3 runs), `shape_results_for_display`, `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root, and all 15 matched-pair runs. **Updated 2026-08-25:** the widget path is no longer untested — a headless smoke test built a real `ClinicianGUI`, applied the design system, and ran `_render_metadata`/`_render_curves` (real `FigureCanvasTkAgg` embedding)/`_render_metrics` on real shaped data, then tore the root down, with no crash. What remains unexercised is the **interactive/concurrent** case: a live `mainloop` with the pipeline thread running while figures render, which is the actual risk GitHub issue #1 describes. Nothing localises the crash anywhere — it is untested there, not implicated. |
+| `ucrtbase 0xc0000409` | **Unreproduced and undiagnosed.** Absent from `run_pipeline` (3 runs), `shape_results_for_display`, `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root, and all 15 matched-pair runs. **Updated 2026-08-25:** widget *construction* is no longer untested — a headless smoke test built a real `ClinicianGUI`, applied the design system, and ran `_render_metadata`/`_render_curves` (real `FigureCanvasTkAgg` embedding)/`_render_metrics` on real shaped data, then tore the root down, with no crash. But the root was **withdrawn/never mapped**, so the native paint path (GDI/screen draw, device context) did not run — if a crash lives in rendering, that is exactly where it would fail to reproduce. A thread-safety race is separately **ruled out**: the worker thread only puts tuples on a queue and every widget/Figure touch is main-thread (see "Threading-boundary audit"). Still unexercised: a mapped window, the native paint path, a live `mainloop` concurrent with the pipeline thread, and the click flow. Nothing localises the crash anywhere — it is untested there, not implicated. |
 | UCM / synergy analysis | **Does not exist in this repo.** "UCM" is a filename suffix and a docstring label; there is no uncontrolled-manifold or variance-ratio computation. Guidance about restricting synergy joint space or filtering ankle DOFs applies to future code. |
 
 ### Standing methodological ceiling
@@ -1453,3 +1453,50 @@ concurrency is what GitHub issue #1 actually describes, and it needs a person at
 
 7 tests added (3 for the error mapping including the "must not tell them to re-record" regression,
 3 for the PDF provenance rows and prose caveat, 1 for the shaped-metadata flags). **122 pass.**
+
+### Threading-boundary audit, and what `root.withdraw()` does not prove (2026-08-25)
+
+Two results that together reclassify GitHub issue #1 and bound what the widget smoke test above
+actually established. Both are negative results — they remove hypotheses rather than fix anything —
+which is exactly why they are worth writing down.
+
+**The thread boundary is clean; there is no cross-thread GUI mutation.** The obvious explanation
+for a native crash in a threaded Tk app is a worker thread touching widgets or Matplotlib figures
+directly. Audited, and it does not happen here:
+
+| | what runs there |
+|---|---|
+| **Worker thread** (`start_pipeline_thread._target`) | `run_pipeline` plus `result_queue.put((kind, payload))`. Pure data. `map_error_to_message` also runs here, but it is string logic with no Tk reference. No widget access, no Figure creation. |
+| **Main thread** | `root.after(100, self._poll_pipeline_queue)` → `drain_queue` → `progress_var.set` / `_on_pipeline_result` → `_render_results` → `build_curve_figure` and all `FigureCanvasTkAgg` construction. |
+
+Every widget mutation and every Matplotlib Figure is created on the main thread; the worker only
+posts tuples onto a `queue.Queue`. This is the correct pattern, and it means a Tcl/Tk or Matplotlib
+**thread-safety race is effectively ruled out** as the mechanism behind `ucrtbase 0xc0000409`.
+
+**Consequently, GitHub issue #1 is reclassified.** It is not a latent concurrency crash. It is what
+its title says: main-thread Figure rendering blocks the event loop, so the UI freezes while curves
+are built. That is a responsiveness defect, not a stability one. Worth fixing on its own merits;
+not a candidate explanation for the crash.
+
+**What `root.withdraw()` did and did not exercise.** The smoke test above used a withdrawn — never
+mapped — window, so its result must not be over-read:
+
+| exercised | not exercised |
+|---|---|
+| Python object construction, widget hierarchy, `apply_design_system` | native OS window mapping |
+| `FigureCanvasTkAgg` embedding and memory allocation | GDI/screen paint calls, device-context creation |
+| `_render_metadata` / `_render_curves` / `_render_metrics` code paths | physical layout reflow, `wraplength` wrapping, overlap |
+| clean teardown via `root.destroy()` | anything requiring a visible window |
+
+So static construction is verified; **the native paint path is not**. If a crash lives in rendering,
+an unmapped window is precisely where it would fail to reproduce. Similarly, the on-screen
+provenance rows and the metrics caveat are confirmed **present in the widget tree** — their *visual*
+correctness (position, wrapping at the real panel width, collision with the metrics table) is
+unverified, because no window was ever displayed.
+
+**Remaining unexercised surface**, stated precisely so it is not quietly assumed away: a mapped,
+visible window; the native paint path; a live `mainloop` running concurrently with
+`start_pipeline_thread`; and the click flow (`_pick_session_dir`, `_on_run_clicked`,
+`_poll_pipeline_queue` firing for real, `_on_export_clicked`). One interactive session against a
+`CK-00N` trial covers all four at once, and is the single highest-value remaining test on this
+codebase.
