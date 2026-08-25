@@ -267,3 +267,52 @@ def test_export_with_entirely_empty_shaped_results_does_not_raise(mod, tmp_path)
     assert pdf_path.read_bytes()[:5] == b"%PDF-"
     # metadata + 0 curves + metrics + confidence.
     assert result["page_count"] == 3
+
+
+# -- Spatial provenance on the exported report (2026-08-25) -------------
+# The pinned-root caveat has to travel with the numbers. Nothing about a
+# gait speed of "1.116 m/s" signals that it came from a stance-phase
+# velocity proxy rather than measured displacement, so a caveat that lives
+# only in VENDORING.md is separated from the data the first time someone
+# copies a value onto a slide.
+
+
+def test_metadata_page_renders_the_spatial_provenance_rows(mod):
+    shaped_results, _ = _make_full_shaped_results()
+    shaped_results["metadata"].update({
+        "translation_type": "Pinned root (orientation-only IK)",
+        "gait_speed_method": "Stance-phase ankle velocity proxy",
+        "spatial_displacement_validated": False,
+    })
+
+    figure = mod._build_metadata_page(shaped_results["metadata"])
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "Pinned root" in rendered
+    assert "Stance-phase ankle velocity proxy" in rendered
+
+
+def test_metadata_page_states_the_limitation_in_prose_not_just_a_row(mod):
+    """A metadata row is easy to skim past; the limitation is also stated as
+    a sentence on the page carrying the numbers."""
+    shaped_results, _ = _make_full_shaped_results()
+    shaped_results["metadata"]["spatial_displacement_validated"] = False
+
+    figure = mod._build_metadata_page(shaped_results["metadata"])
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "stance-phase foot velocity" in rendered
+    assert "not independent of one another" in rendered
+    assert "Cadence" in rendered
+
+
+def test_metadata_page_omits_the_caveat_when_displacement_is_validated(mod):
+    """If a future pipeline recovers real translation, the caveat must stop
+    appearing rather than becoming permanent boilerplate nobody reads."""
+    shaped_results, _ = _make_full_shaped_results()
+    shaped_results["metadata"]["spatial_displacement_validated"] = True
+
+    figure = mod._build_metadata_page(shaped_results["metadata"])
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "stance-phase foot velocity" not in rendered

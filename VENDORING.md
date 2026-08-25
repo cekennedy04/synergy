@@ -1393,7 +1393,7 @@ earlier sections carry ⚠ SUPERSEDED banners).
 |---|---|
 | `Trial8` / `CK-008` mechanism | **Unresolved.** Localised to CK-008's recorded left-leg segment orientations. Magnetic drift is **not confirmed and the evidence leans against it**: drift accumulates, but `knee_angle_l` error runs 17.74° (Q1) → 16.05° (Q4), slope **−0.135 °/s** — a large near-constant offset, consistent with fixed sensor-to-segment misalignment or a fusion solution settling wrong early. `hip_flexion_l` does grow (+0.460 °/s), so the picture is mixed. Discriminating requires the `Sensor Magnetic Field` sheet from an MVN Studio `.xlsx` re-export; the HD `.mvnx` carries no `magneticField` element and no per-sensor quality attributes. |
 | Spatial gait metrics | **Not fixed, only labelled.** Root translation is pinned (`pelvis_tx`/`tz` constant 0.0000 against ~6.3 m of real travel), so `gait_speed` and `stride_length` are stance-phase ankle-velocity proxies, and `stride_length ≈ treadmillSpeed × stride_time` makes them **not independent of each other**. `cadence` is event-timing derived and unaffected. Every overground trial is silently classified as treadmill. Provenance is stamped on every report via `SPATIAL_PROVENANCE`. |
-| `ucrtbase 0xc0000409` | **Unreproduced and undiagnosed.** Absent from `run_pipeline` (3 runs), `shape_results_for_display`, `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root, and all 15 matched-pair runs. The sole path **not yet exercised** is `_render_curves` embedding `FigureCanvasTkAgg` into live widgets (GitHub issue #1). Nothing localises the crash there — it is untested, not implicated. |
+| `ucrtbase 0xc0000409` | **Unreproduced and undiagnosed.** Absent from `run_pipeline` (3 runs), `shape_results_for_display`, `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root, and all 15 matched-pair runs. **Updated 2026-08-25:** the widget path is no longer untested — a headless smoke test built a real `ClinicianGUI`, applied the design system, and ran `_render_metadata`/`_render_curves` (real `FigureCanvasTkAgg` embedding)/`_render_metrics` on real shaped data, then tore the root down, with no crash. What remains unexercised is the **interactive/concurrent** case: a live `mainloop` with the pipeline thread running while figures render, which is the actual risk GitHub issue #1 describes. Nothing localises the crash anywhere — it is untested there, not implicated. |
 | UCM / synergy analysis | **Does not exist in this repo.** "UCM" is a filename suffix and a docstring label; there is no uncontrolled-manifold or variance-ratio computation. Guidance about restricting synergy joint space or filtering ankle DOFs applies to future code. |
 
 ### Standing methodological ceiling
@@ -1410,3 +1410,46 @@ IMU *orientation residuals* computed on mismatched data (one person's IMU stream
 scaled to a different person, performing a different, non-walking motion). They are **not**
 comparable to the joint-angle figures above, and the change from them is a metric and dataset
 correction, not a reduction in error on like data.
+
+### Clinician GUI: guardrail messaging and on-screen provenance (2026-08-25)
+
+Two gaps found by auditing the GUI against changes made elsewhere in the pipeline. Both were
+silent — the code ran fine, it just told the clinician the wrong thing.
+
+**1. The non-gait guardrail gave actively wrong advice.** `NonGaitTrialError` was not referenced in
+`clinician_gui.py` at all, so a guardrail rejection fell through `run_pipeline`'s generic
+`except Exception` into `GaitAnalysisFailedError`, whose headline reads *"Try a longer or cleaner
+recording of the same activity."* For a rejected transfer that is wrong advice: a longer, cleaner
+recording of a transfer is rejected for exactly the same reason, so the clinician spends another
+session to reach the same screen. The specific text survived only as a `Details:` appendix.
+
+Now a dedicated `NonGaitTrialRejectedError` with its own message, ending *"re-recording the same
+activity will not change this result."* The class is pulled off the loaded module via `getattr`
+rather than matched on `__name__`, because `gait_analysis_UCM_fixed` is loaded by path at runtime
+and cannot be imported at module level — and a module predating the class (or a test fake without
+it) still maps to the generic failure rather than raising `AttributeError`.
+
+**2. The spatial-metric caveat reached the PDF but not the screen.** `_render_metadata` built its
+rows from a hardcoded five-entry list, so `Root translation` and `Gait speed method` appeared only
+on the exported report. The clinician reads gait speed **on screen first**. The provenance rows are
+now appended when present (via `.get()`, so partial metadata still renders), and the metrics panel
+carries the caveat sentence itself, on the panel showing the numbers it qualifies.
+
+Per `DESIGN.md`: metadata rows follow the established label-in-`Secondary.TLabel` / value-in-data-
+font pattern; the caveat is sentence-case rather than uppercase following KTD5's precedent that
+long-form explanatory text stays sentence-case (all-caps is a readability regression at that
+length); no new color; `wraplength` rather than hard line breaks so it reflows with the panel.
+
+**Widget path exercised for the first time.** A headless smoke test (real `Tk` root, withdrawn)
+constructed `ClinicianGUI`, applied the design system, and ran `_render_results` on real shaped
+data — exercising `_build_widgets`, `_render_metadata`, `_render_curves` with genuine
+`FigureCanvasTkAgg` embedding, and `_render_metrics` — then destroyed the root. No crash, and both
+fixes confirmed present in the live widget tree. This is the first time any of that code has run.
+
+Still not exercised, and worth being precise about: the **interactive** path — a live `mainloop`
+with `start_pipeline_thread` running while figures render, plus the actual click flow
+(`_pick_session_dir`, `_on_run_clicked`, `_poll_pipeline_queue`, `_on_export_clicked`). That
+concurrency is what GitHub issue #1 actually describes, and it needs a person at a real window.
+
+7 tests added (3 for the error mapping including the "must not tell them to re-record" regression,
+3 for the PDF provenance rows and prose caveat, 1 for the shaped-metadata flags). **122 pass.**

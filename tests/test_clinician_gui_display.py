@@ -431,3 +431,33 @@ def test_tier_colors_and_label_text_cover_every_known_tier(mod):
     # Unknown/None tier falls back to the same encoding as "not_scored"
     # rather than being left unstyled.
     assert mod.tier_colors(None) == mod.tier_colors("not_scored")
+
+
+# -- Spatial provenance travels with the shaped result (2026-08-25) -----
+
+
+def test_shape_metadata_carries_the_spatial_provenance_flags(mod, tmp_path):
+    """Stamped at shaping time so every consumer -- the on-screen panel and
+    the exported PDF alike -- gets the caveat without having to know to ask
+    for it."""
+    session_dir = tmp_path / "OpenCapData_abc"
+    session_dir.mkdir()
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fake_xsens = _make_fake_xsens_module(
+        times=[i / 60.0 for i in range(120)],
+        joint_angles=[None] * 120,
+        frame_rate=60.0,
+        n_segments=23,
+    )
+
+    metadata = mod.shape_metadata_for_display(
+        str(session_dir), str(mvnx_path), xsens_module=fake_xsens
+    )
+
+    assert metadata["spatial_displacement_validated"] is False
+    assert "Pinned root" in metadata["translation_type"]
+    assert "Stance-phase" in metadata["gait_speed_method"]
+    # and the constant is the single source of truth, not duplicated literals
+    for key, value in mod.SPATIAL_PROVENANCE.items():
+        assert metadata[key] == value

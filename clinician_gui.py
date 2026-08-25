@@ -191,6 +191,15 @@ class ImuKinematicsError(Exception):
     review) (R5)."""
 
 
+class NonGaitTrialRejectedError(Exception):
+    """The trial segmented, but the gait guardrail rejected it as not
+    walking. Distinct from GaitAnalysisFailedError: detection did not fail,
+    it succeeded and found too little rhythmic gait to support the metrics.
+    The advice a clinician needs differs completely -- "this is not a gait
+    trial" rather than "try a longer or cleaner recording."
+    """
+
+
 class ReportExportError(Exception):
     """Wraps an OSError raised while writing the PDF report file itself
     (e.g. a Windows PermissionError when the destination file is still open
@@ -257,6 +266,16 @@ def map_error_to_message(exc):
             "a sensor was misplaced or misoriented during recording, or the "
             "model's base IMU label/heading axis doesn't match this trial's "
             "sensor setup."
+        )
+    elif isinstance(exc, NonGaitTrialRejectedError):
+        message = (
+            "This recording does not contain enough continuous walking to "
+            "compute gait metrics, so no report was produced. Gait analysis "
+            "needs at least three full gait cycles on each leg at a "
+            "walking-like cadence. A transfer, a turn, a stand-to-sit, or a "
+            "few isolated steps will not qualify. Check that this is the "
+            "trial you meant to run -- re-recording the same activity will "
+            "not change this result."
         )
     elif isinstance(exc, ReportExportError):
         message = (
@@ -394,6 +413,13 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
             allow_manual_entry=False, modelName=model_name,
         )
     except Exception as exc:
+        # gait_analysis_UCM_fixed is loaded by path at runtime, so its
+        # exception classes cannot be imported at module level -- pull the
+        # class off the loaded module instead of matching on __name__, which
+        # would silently stop working if the class were ever renamed.
+        non_gait_error = getattr(gait_fixed, "NonGaitTrialError", None)
+        if non_gait_error is not None and isinstance(exc, non_gait_error):
+            raise NonGaitTrialRejectedError(str(exc)) from exc
         raise GaitAnalysisFailedError(str(exc)) from exc
 
     _progress("Finalizing results...")
@@ -1334,7 +1360,9 @@ class ClinicianGUI:
 
         self._render_metadata(self._results_frame, shaped["metadata"])
         self._render_curves(self._results_frame, shaped["curves"], shaped["confidence"])
-        self._render_metrics(self._results_frame, shaped["metrics"])
+        self._render_metrics(
+            self._results_frame, shaped["metrics"], shaped["metadata"]
+        )
 
     def _render_metadata(self, parent, metadata):
         # Uppercased per DESIGN.md's section-header scale note ("12-13px
@@ -1351,6 +1379,14 @@ class ClinicianGUI:
             ("Duration", metadata["duration_display"]),
             ("Sensor coverage", metadata["sensor_coverage"]),
         ]
+        # The spatial-metric caveat has to reach the screen, not only the
+        # exported PDF -- the clinician reads gait speed here first. .get()
+        # rather than [] so a caller passing partial metadata (as several
+        # tests do) still renders instead of raising.
+        for label, key in (("Root translation", "translation_type"),
+                           ("Gait speed method", "gait_speed_method")):
+            if metadata.get(key):
+                rows.append((label, metadata[key]))
         for row_index, (label, value) in enumerate(rows):
             ttk.Label(frame, text=f"{label}:", style="Secondary.TLabel").grid(
                 row=row_index, column=0, sticky="w"
@@ -1404,7 +1440,7 @@ class ClinicianGUI:
                 wraplength=190, anchor="center",
             ).pack(fill="x", pady=(4, 0))
 
-    def _render_metrics(self, parent, metrics):
+    def _render_metrics(self, parent, metrics, metadata=None):
         report_formatting = _load_report_formatting()
         frame = ttk.LabelFrame(parent, text="GAIT-CYCLE METRICS", padding=8)
         frame.grid(row=2, column=0, sticky="we")
@@ -1434,6 +1470,25 @@ class ClinicianGUI:
                 frame, text=report_formatting.format_symmetry_value(row["symmetry"]),
                 style="Data.TLabel",
             ).grid(row=row_index, column=3, sticky="e", padx=4)
+
+        # Spatial-metric caveat, on the panel carrying the numbers it
+        # qualifies (see SPATIAL_PROVENANCE). Sentence-case rather than
+        # uppercase per DESIGN.md's KTD5 precedent: long-form explanatory
+        # text stays sentence-case because all-caps is a readability
+        # regression at this length. text-secondary via Secondary.TLabel,
+        # no new color introduced. wraplength rather than hard line breaks
+        # so the sentence reflows with the panel.
+        if metadata is not None and metadata.get("spatial_displacement_validated") is False:
+            ttk.Label(
+                frame,
+                text='Gait speed and stride length are inferred from stance-phase foot velocity, not measured from global displacement, and are not independent of each other. Cadence is timing-derived and unaffected.',
+                style="Secondary.TLabel",
+                justify="left",
+                wraplength=520,
+            ).grid(
+                row=len(metrics) + 1, column=0, columnspan=4, sticky="w",
+                padx=4, pady=(8, 0),
+            )
 
 
 def main():
