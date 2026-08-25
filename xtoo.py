@@ -47,21 +47,32 @@ state explicitly.
 import numpy as np
 
 
-def quaternion_to_euler(quaternions):
-    """Port of q_to_euler.m. Returns (roll, pitch, yaw) in degrees.
+def quaternion_to_euler(quaternions, use_atan2=True):
+    """Quaternion to (roll, pitch, yaw) in degrees.
 
-    Uses `arctan`, not `arctan2`, exactly as the MATLAB does. That limits roll
-    and yaw to +/-90 degrees and discards quadrant information -- a real
-    limitation, kept deliberately so this port reproduces the original rather
-    than silently diverging from it. Changing to arctan2 would be a considered
-    improvement, not a bug fix, and would need re-validating against the
-    supervisor's output.
+    q_to_euler.m uses `atan`, which caps roll and yaw at +/-90 degrees and
+    throws away the quadrant: a 120 degree yaw comes back as -60. Measured
+    consequence on real data -- one 175.3 degree discontinuity in CK-004's
+    pelvis_rotation across the 15 CK trials. Rare, but it silently corrupts
+    that trial, and pelvis_rotation is one of the 26 coordinates the
+    comparison uses.
+
+    `use_atan2=True` (the default) uses the same numerators and denominators
+    but resolves the quadrant properly. Inside +/-90 the two are identical, so
+    this only changes cases atan could not represent at all.
+    `use_atan2=False` reproduces the MATLAB exactly.
     """
     q = np.atleast_2d(np.asarray(quaternions, dtype=float))
     q0, q1, q2, q3 = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
-    roll = np.degrees(np.arctan((2*q2*q3 + 2*q0*q1) / (2*q0*q0 + 2*q3*q3 - 1)))
+    roll_num, roll_den = 2*q2*q3 + 2*q0*q1, 2*q0*q0 + 2*q3*q3 - 1
+    yaw_num, yaw_den = 2*q1*q2 + 2*q0*q3, 2*q0*q0 + 2*q1*q1 - 1
+    if use_atan2:
+        roll = np.degrees(np.arctan2(roll_num, roll_den))
+        yaw = np.degrees(np.arctan2(yaw_num, yaw_den))
+    else:
+        roll = np.degrees(np.arctan(roll_num / roll_den))
+        yaw = np.degrees(np.arctan(yaw_num / yaw_den))
     pitch = -np.degrees(np.arcsin(2*q1*q3 - 2*q0*q2))
-    yaw = np.degrees(np.arctan((2*q1*q2 + 2*q0*q3) / (2*q0*q0 + 2*q1*q1 - 1)))
     return roll, pitch, yaw
 
 
@@ -172,7 +183,9 @@ def build_coordinate_table(pelvis_quaternions, pelvis_positions, joint_angles,
     if not frame_rate:
         raise ValueError("frame_rate is required to build the time column")
 
-    roll, pitch, yaw = quaternion_to_euler(quaternions)
+    # legacy_axes reproduces XtoO.m, which means reproducing all of it --
+    # including the truncated atan convention, not just the axis assignment.
+    roll, pitch, yaw = quaternion_to_euler(quaternions, use_atan2=not legacy_axes)
     channels = {"roll": roll, "pitch": pitch, "yaw": yaw}
 
     rotation_map = LEGACY_PELVIS_ROTATION_MAP if legacy_axes else PELVIS_ROTATION_MAP

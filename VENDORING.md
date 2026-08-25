@@ -1930,3 +1930,34 @@ earlier "conversion fidelity" figure (our `.mot` vs Xsens `<jointAngle>`, r ≈ 
 **Not yet done:** `jointcheck.m`'s comparison plot (mean ± SD bands, Xsens vs OpenCap, 26
 coordinates + 3 COM channels) and `matrix_general.m`'s ±180° unwrap, both of which operate on the
 curve matrix rather than the `.mot`.
+
+### The `atan` truncation in `q_to_euler.m` is real, and it corrupts one trial (2026-08-25)
+
+Follow-up to the XtoO port. `q_to_euler.m` computes roll and yaw with `atan`, which caps them at
+±90° and discards the quadrant. Initially ported verbatim; then checked against the data rather
+than left as a theoretical caveat.
+
+**It bites once in 15 trials, and the failure is invisible without looking for it.** CK-004's
+pelvis yaw genuinely rotates to **−167.4°**. `atan` folds that back to **+88.2°**, producing a
+false **175.3°** frame-to-frame discontinuity:
+
+| convention | yaw range | discontinuities >90° | max frame-to-frame change |
+|---|---|---|---|
+| `atan` (XtoO.m) | −87.1 … 88.2 | **1** | **175.3°** |
+| `atan2` | −167.4 … 14.3 | **0** | 4.9° |
+
+The clipped range sitting exactly on ±87/88 is the truncation signature. `pelvis_rotation` is one
+of the 26 coordinates the comparison uses, so a trial with a folded yaw carries a spurious 175°
+step through every downstream analysis.
+
+`use_atan2=True` is now the default: same numerators and denominators, quadrant resolved properly.
+Inside ±90° the two are identical, so this only changes cases `atan` could not represent at all.
+`use_atan2=False` reproduces the MATLAB exactly, and `legacy_axes=True` selects it automatically —
+reproducing XtoO.m means reproducing all of it, not just the axis assignment.
+
+**The ±180° unwrap from `matrix_general.m` was NOT ported, because this port does not need it.**
+Across 15 trials and 11,785 frames, zero arm-coordinate samples fall below −140° (`arm_flex_r`
+−31.2…147.0, `arm_flex_l` −24.8…30.4, and so on — all physiological). Those corrections were
+patching a symptom in the original pipeline; with the axis assignment corrected and `atan2` in
+place, the symptom does not arise. Porting them would have been cargo-culted cleanup on data that
+does not exhibit the problem.

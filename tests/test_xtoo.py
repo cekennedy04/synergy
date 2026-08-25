@@ -287,3 +287,54 @@ def test_calibration_frames_are_excluded(xtoo, tmp_path):
 
     assert frames["n_frames"] == 2
     assert frames["frame_rate"] == pytest.approx(60.0)
+
+
+def test_atan2_recovers_rotations_beyond_ninety_degrees(xtoo):
+    """q_to_euler.m uses atan, which caps roll and yaw at +/-90 and discards
+    quadrant. A 120 deg yaw comes back as -60. Measured consequence on real
+    data: one 175.3 deg discontinuity in CK-004's pelvis_rotation across the
+    15 trials -- rare, but it silently corrupts that trial."""
+    # pure 120 deg rotation about Z
+    q = np.array([[np.cos(np.radians(60)), 0.0, 0.0, np.sin(np.radians(60))]])
+
+    _r, _p, yaw_legacy = xtoo.quaternion_to_euler(q, use_atan2=False)
+    _r2, _p2, yaw_fixed = xtoo.quaternion_to_euler(q, use_atan2=True)
+
+    assert yaw_legacy[0] == pytest.approx(-60.0, abs=1e-6)   # truncated
+    assert yaw_fixed[0] == pytest.approx(120.0, abs=1e-6)    # recovered
+
+
+def test_atan2_is_the_default(xtoo):
+    """Correct by default; the legacy behaviour stays reachable for
+    reproducing the supervisor's exact output."""
+    q = np.array([[np.cos(np.radians(60)), 0.0, 0.0, np.sin(np.radians(60))]])
+
+    assert xtoo.quaternion_to_euler(q)[2][0] == pytest.approx(120.0, abs=1e-6)
+
+
+def test_both_conventions_agree_inside_the_unambiguous_range(xtoo):
+    """Below 90 degrees atan and atan2 must give identical answers -- so the
+    change only affects the cases atan could not represent."""
+    q = np.array([[np.cos(np.radians(20)), 0.0, 0.0, np.sin(np.radians(20))]])
+
+    legacy = xtoo.quaternion_to_euler(q, use_atan2=False)
+    fixed = xtoo.quaternion_to_euler(q, use_atan2=True)
+
+    for a, b in zip(legacy, fixed):
+        assert a[0] == pytest.approx(b[0], abs=1e-9)
+
+
+def test_legacy_axes_also_selects_the_legacy_euler_convention(xtoo):
+    """Reproducing XtoO.m means reproducing all of it, atan included."""
+    n = 3
+    quats = np.tile(np.array([np.cos(np.radians(60)), 0.0, 0.0, np.sin(np.radians(60))]), (n, 1))
+    positions = np.zeros((n, 3))
+    joint_angles = np.zeros((n, 22, 3))
+
+    legacy = xtoo.build_coordinate_table(quats, positions, joint_angles, 60.0, legacy_axes=True)
+    fixed = xtoo.build_coordinate_table(quats, positions, joint_angles, 60.0)
+
+    # legacy maps rotation from -pitch, fixed maps it from +yaw; the point here
+    # is that the legacy table is built on the truncated convention.
+    assert legacy["pelvis_list"][0] == pytest.approx(60.0, abs=1e-6)     # -(-60)
+    assert fixed["pelvis_rotation"][0] == pytest.approx(120.0, abs=1e-6)
