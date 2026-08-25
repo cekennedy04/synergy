@@ -1,0 +1,231 @@
+"""Tests for methodology_comparison.py.
+
+The exported curve CSVs carry no labels -- row position is the only thing
+identifying a coordinate -- so the row-mapping guard is the most important
+thing here. A silent desynchronisation between JOINT_NAMES and this reader
+would mislabel every number in the report while looking entirely plausible.
+
+Equally important: neither GDI nor the synergy index can be computed today,
+and both must say so rather than returning a placeholder. A zero or a NaN in
+a results table is indistinguishable from a real measurement.
+"""
+import csv
+import importlib.util
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+MODULE_PATH = Path(__file__).resolve().parent.parent / "methodology_comparison.py"
+POINTS = 101
+
+
+@pytest.fixture(scope="module")
+def mc():
+    spec = importlib.util.spec_from_file_location("methodology_comparison_under_test", MODULE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_matrix(path, names, n_cycles=4, value_fn=None):
+    """Write a curve matrix in the real export's layout: (len(names)*101) rows
+    by n_cycles columns, no labels."""
+    rows = []
+    for i, name in enumerate(names):
+        for point in range(POINTS):
+            if value_fn is None:
+                rows.append([float(i)] * n_cycles)
+            else:
+                rows.append([value_fn(name, point, c) for c in range(n_cycles)])
+    np.savetxt(path, np.array(rows), delimiter=",", fmt="%f")
+
+
+# -- row mapping, the thing that silently breaks -------------------------
+
+
+def test_row_blocks_map_to_the_right_coordinates(mc, tmp_path):
+    names = ["a", "b", "c"]
+    path = tmp_path / "m.csv"
+    _write_matrix(path, names)
+
+    loaded = mc.load_curve_matrix(path, names)
+
+    assert list(loaded) == names
+    # block i was written as constant float(i)
+    for i, name in enumerate(names):
+        assert loaded[name].shape == (POINTS, 4)
+        assert np.allclose(loaded[name], float(i))
+
+
+def test_row_count_mismatch_is_rejected_not_silently_truncated(mc, tmp_path):
+    """The failure mode this guard exists for: JOINT_NAMES gaining or losing a
+    coordinate (fpa_r/fpa_l were added 2026-08-20) while a reader still assumes
+    the old length. Every row block after the divergence would be mislabelled."""
+    path = tmp_path / "m.csv"
+    _write_matrix(path, ["a", "b", "c"])
+
+    with pytest.raises(ValueError, match="row mapping would be silently wrong"):
+        mc.load_curve_matrix(path, ["a", "b"])
+
+
+def test_joint_names_comes_from_the_driver_not_a_local_copy(mc):
+    """A duplicated list would drift. This must read the driver's own."""
+    names = mc.joint_names()
+
+    assert "pelvis_tilt" in names and "comz" in names
+    assert names[0] == "pelvis_tilt"          # order is the row mapping
+    assert len(names) == len(set(names))
+
+
+# -- variability ---------------------------------------------------------
+
+
+def test_single_stride_gives_nan_not_zero(mc):
+    """Across-stride variance is undefined for one stride. Returning 0.0 would
+    make a single-cycle trial look perfectly repeatable."""
+    assert np.isnan(mc.across_stride_sd(np.ones((POINTS, 1))))
+
+
+def test_identical_strides_give_zero_sd(mc):
+    assert mc.across_stride_sd(np.ones((POINTS, 4))) == 0.0
+
+
+def test_sd_is_mean_across_the_cycle(mc):
+    block = np.zeros((POINTS, 2))
+    block[:, 1] = 2.0            # SD of {0,2} is 1.0 at every point
+    assert mc.across_stride_sd(block) == pytest.approx(1.0)
+
+
+# -- classification ------------------------------------------------------
+
+
+def _summaries(sd_by_method, name):
+    return {
+        method: {"coordinates": {name: {"sd": sd, "min": 0.0, "max": 1.0}}}
+        for method, sd in sd_by_method.items()
+    }
+
+
+def test_pinned_root_is_flagged_for_the_imu_methodology(mc):
+    status, reason = mc.classify("pelvis_tx", _summaries({"Xsens": 0.0, "OpenCap": 1.2}, "pelvis_tx"))
+
+    assert status == "imu-degenerate"
+    assert "pinned" in reason
+
+
+def test_upper_limb_is_flagged_invalid_with_the_saturation_evidence(mc):
+    status, reason = mc.classify("arm_rot_l", _summaries({"Xsens": 156.6, "OpenCap": 3.3}, "arm_rot_l"))
+
+    assert status == "imu-invalid"
+    assert "10 rad" in reason
+
+
+def test_toe_joint_is_degenerate_in_both_methodologies(mc):
+    status, _ = mc.classify("mtp_angle_r", _summaries({"Xsens": 0.0, "OpenCap": 0.0}, "mtp_angle_r"))
+
+    assert status == "degenerate (both)"
+
+
+def test_a_clean_coordinate_is_usable(mc):
+    status, reason = mc.classify("knee_angle_r", _summaries({"Xsens": 1.2, "OpenCap": 2.3}, "knee_angle_r"))
+
+    assert status == "usable"
+    assert reason == ""
+
+
+# -- blocked analyses must say so ----------------------------------------
+
+
+def test_gdi_reports_blocked_without_reference_data(mc):
+    result = mc.gdi_comparison({}, reference_dir=None)
+
+    assert result["available"] is False
+    assert result["scores"] == {}
+    assert "normative control group" in result["reason"]
+
+
+def test_gdi_blocked_reason_names_the_required_files(mc):
+    result = mc.gdi_comparison({}, reference_dir=None)
+
+    assert "matrix_ms_reduced.csv" in result["reason"]
+    assert "controlCalc_ms_reduced.csv" in result["reason"]
+
+
+def test_gdi_with_an_empty_reference_directory_still_reports_blocked(mc, tmp_path):
+    result = mc.gdi_comparison({}, reference_dir=tmp_path)
+
+    assert result["available"] is False
+    assert "matrix_ms_reduced.csv" in result["reason"]
+
+
+def test_gdi_computes_for_every_methodology_once_reference_exists(mc, tmp_path):
+    """The slot fills automatically -- no code change needed when the
+    collaborator supplies the control dataset."""
+    n_components, vector_length = 15, 459
+    matrix = np.ones((n_components, vector_length)) / vector_length
+    with open(tmp_path / "matrix_ms_reduced.csv", "w", newline="") as handle:
+        csv.writer(handle).writerows(matrix.T)
+    with open(tmp_path / "controlCalc_ms_reduced.csv", "w", newline="") as handle:
+        csv.writer(handle).writerow(np.zeros(n_components))
+
+    def curves(side, value):
+        names = ["pelvis_tilt", "pelvis_list", "pelvis_rotation",
+                 f"hip_flexion_{side}", f"hip_adduction_{side}", f"hip_rotation_{side}",
+                 f"knee_angle_{side}", f"ankle_angle_{side}", f"subtalar_angle_{side}"]
+        return {"mean": {n: [value] * 101 for n in names}}
+
+    results = {
+        "Xsens": {"curves_r": curves("r", 2.0), "curves_l": curves("l", 2.0)},
+        "OpenCap": {"curves_r": curves("r", 3.0), "curves_l": curves("l", 3.0)},
+    }
+
+    result = mc.gdi_comparison(results, reference_dir=tmp_path)
+
+    assert result["available"] is True
+    assert set(result["scores"]) == {"Xsens", "OpenCap"}
+    for scores in result["scores"].values():
+        assert set(scores) == {"r", "l", "average"}
+
+
+def test_synergy_status_never_returns_a_number(mc):
+    """A placeholder 0 or NaN in a results table is indistinguishable from a
+    computed value. It must report unavailability instead."""
+    status = mc.synergy_status()
+
+    assert status["available"] is False
+    assert "value" not in status and "score" not in status
+    assert "task variable" in status["reason"]
+
+
+def test_synergy_reason_records_the_com_asymmetry_between_methodologies(mc):
+    """The decisive constraint: a global-COM task variable is available to the
+    video methodology but not the IMU one."""
+    reason = mc.synergy_status()["reason"]
+
+    assert "pinned" in reason
+    assert "OpenCap" in reason and "relative to pelvis" in reason
+
+
+# -- end-to-end over a small synthetic curve directory -------------------
+
+
+def test_summarise_reports_stride_counts_and_ranges(mc, tmp_path):
+    names = ["pelvis_tilt", "knee_angle_r"]
+    for trial, cycles in (("001", 4), ("002", 6)):
+        _write_matrix(tmp_path / f"CK-CK-{trial}_right.csv", names, n_cycles=cycles,
+                      value_fn=lambda n, p, c: float(c))
+
+    summary = mc.summarise_methodology(tmp_path, "CK-CK-", ["001", "002"], names)
+
+    assert summary["n_trials"] == 2
+    assert summary["n_strides"] == 10
+    assert summary["coordinates"]["knee_angle_r"]["min"] == 0.0
+    assert summary["coordinates"]["knee_angle_r"]["max"] == 5.0
+
+
+def test_missing_curve_files_raise_rather_than_report_an_empty_comparison(mc, tmp_path):
+    with pytest.raises(FileNotFoundError, match="Run the curve export first"):
+        mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], ["pelvis_tilt"])

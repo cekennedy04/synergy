@@ -1130,7 +1130,23 @@ class ClinicianGUI:
         # unavailable curve.
         self._current_figures = {}
 
+        # Results are taller than any sensible default window once six
+        # joint-angle figures are laid out three-across, so the results area
+        # scrolls (2026-08-25). Before this, anything past the window edge was
+        # simply unreachable -- there was no Canvas, Scrollbar or yview
+        # anywhere in this module, and no row/column weights, so the window
+        # did not expand either.
+        self.root.rowconfigure(1, weight=1)
+        self.root.columnconfigure(0, weight=1)
+        try:
+            self.root.geometry("1180x820")
+            self.root.minsize(900, 600)
+        except tk.TclError:
+            # A withdrawn/headless root (smoke tests) may refuse geometry.
+            pass
+
         self._build_widgets()
+        self._build_results_scroller()
         self._revalidate()
 
     def _build_widgets(self):
@@ -1188,6 +1204,61 @@ class ClinicianGUI:
             style="Primary.TButton",
         )
         self.export_button.grid(row=7, column=0, columnspan=2, pady=(6, 0))
+
+    def _build_results_scroller(self):
+        """Scrollable host for the results panel.
+
+        tkinter has no scrollable Frame, so the standard composition is used:
+        a Canvas that owns the scrolling, a Scrollbar driving its yview, and an
+        inner Frame placed into the Canvas with create_window. _render_results
+        builds into that inner Frame rather than straight into root.
+        """
+        container = ttk.Frame(self.root)
+        container.grid(row=1, column=0, sticky="nsew")
+        container.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+
+        self._results_canvas = tk.Canvas(container, highlightthickness=0, borderwidth=0)
+        self._results_canvas.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(
+            container, orient="vertical", command=self._results_canvas.yview
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self._results_canvas.configure(yscrollcommand=scrollbar.set)
+
+        self._scroll_inner = ttk.Frame(self._results_canvas)
+        self._scroll_window = self._results_canvas.create_window(
+            (0, 0), window=self._scroll_inner, anchor="nw"
+        )
+
+        # Keep the scrollable region matched to the content, and the content
+        # width matched to the viewport so panels do not sit in a narrow column.
+        self._scroll_inner.bind("<Configure>", self._sync_scrollregion)
+        self._results_canvas.bind(
+            "<Configure>",
+            lambda event: self._results_canvas.itemconfigure(
+                self._scroll_window, width=event.width
+            ),
+        )
+        # Wheel scrolling is bound on the canvas rather than bind_all so it
+        # cannot hijack the wheel over unrelated widgets.
+        for widget in (self._results_canvas, self._scroll_inner):
+            widget.bind("<Enter>", self._bind_mousewheel)
+            widget.bind("<Leave>", self._unbind_mousewheel)
+
+    def _sync_scrollregion(self, _event=None):
+        self._results_canvas.configure(scrollregion=self._results_canvas.bbox("all"))
+
+    def _bind_mousewheel(self, _event=None):
+        self._results_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self, _event=None):
+        self._results_canvas.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(self, event):
+        # Windows delivers multiples of 120 in event.delta.
+        self._results_canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def _pick_session_dir(self):
         # Mirrors Examples/gaitAnalysis-UCM.py's
@@ -1350,8 +1421,8 @@ class ClinicianGUI:
         if self._results_frame is not None:
             self._results_frame.destroy()
 
-        self._results_frame = ttk.Frame(self.root, padding=12)
-        self._results_frame.grid(row=1, column=0, sticky="nsew")
+        self._results_frame = ttk.Frame(self._scroll_inner, padding=12)
+        self._results_frame.grid(row=0, column=0, sticky="nsew")
 
         # Reset per-run: re-running a trial (KTD8) rebuilds every curve's
         # Figure from scratch, so a stale Figure from a prior run is never
@@ -1363,6 +1434,13 @@ class ClinicianGUI:
         self._render_metrics(
             self._results_frame, shaped["metrics"], shaped["metadata"]
         )
+
+        # Content height just changed; recompute what is scrollable and return
+        # to the top so a re-run does not leave the view scrolled into the
+        # middle of the previous trial's results.
+        self._results_frame.update_idletasks()
+        self._sync_scrollregion()
+        self._results_canvas.yview_moveto(0.0)
 
     def _render_metadata(self, parent, metadata):
         # Uppercased per DESIGN.md's section-header scale note ("12-13px

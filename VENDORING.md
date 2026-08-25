@@ -1134,9 +1134,14 @@ DOF index is wrong and the ankle numbers mean nothing.
 The `ucrtbase 0xc0000409` native crash seen once in a GUI session **has never been reproduced** and
 its cause is unknown. It did not appear in `run_pipeline` (3 runs), `shape_results_for_display`,
 `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root,
-or any of the 15 matched-pair runs. The only path not exercised is `_render_curves` embedding
-`FigureCanvasTkAgg` into live widgets — the main-thread rendering risk already tracked as
-GitHub issue #1. Edit #12 was originally written believing it fixed this crash; it does not.
+or any of the 15 matched-pair runs. **Closed out 2026-08-25:** the last remaining path was
+exercised in a real interactive session — mapped visible window, live `mainloop`,
+`start_pipeline_thread` running concurrently with rendering, and the full click flow through Run
+and Export PDF on trial `CK-001` under `-X faulthandler`. It completed and exited 0 with no fault,
+traceback or exception across 835 lines of output. **No known unexercised path remains.** The
+crash was observed once and has never recurred; treat it as intermittent or environment-specific,
+not as resolved. GitHub issue #1 is a separate main-thread rendering freeze, not a race — see the
+threading-boundary audit. Edit #12 was originally written believing it fixed this crash; it does not.
 
 ### ⚠ IMU output has NO global translation — what this means for the spatial gait metrics
 
@@ -1393,7 +1398,7 @@ earlier sections carry ⚠ SUPERSEDED banners).
 |---|---|
 | `Trial8` / `CK-008` mechanism | **Unresolved.** Localised to CK-008's recorded left-leg segment orientations. Magnetic drift is **not confirmed and the evidence leans against it**: drift accumulates, but `knee_angle_l` error runs 17.74° (Q1) → 16.05° (Q4), slope **−0.135 °/s** — a large near-constant offset, consistent with fixed sensor-to-segment misalignment or a fusion solution settling wrong early. `hip_flexion_l` does grow (+0.460 °/s), so the picture is mixed. Discriminating requires the `Sensor Magnetic Field` sheet from an MVN Studio `.xlsx` re-export; the HD `.mvnx` carries no `magneticField` element and no per-sensor quality attributes. |
 | Spatial gait metrics | **Not fixed, only labelled.** Root translation is pinned (`pelvis_tx`/`tz` constant 0.0000 against ~6.3 m of real travel), so `gait_speed` and `stride_length` are stance-phase ankle-velocity proxies, and `stride_length ≈ treadmillSpeed × stride_time` makes them **not independent of each other**. `cadence` is event-timing derived and unaffected. Every overground trial is silently classified as treadmill. Provenance is stamped on every report via `SPATIAL_PROVENANCE`. |
-| `ucrtbase 0xc0000409` | **Unreproduced and undiagnosed.** Absent from `run_pipeline` (3 runs), `shape_results_for_display`, `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root, and all 15 matched-pair runs. **Updated 2026-08-25:** widget *construction* is no longer untested — a headless smoke test built a real `ClinicianGUI`, applied the design system, and ran `_render_metadata`/`_render_curves` (real `FigureCanvasTkAgg` embedding)/`_render_metrics` on real shaped data, then tore the root down, with no crash. But the root was **withdrawn/never mapped**, so the native paint path (GDI/screen draw, device context) did not run — if a crash lives in rendering, that is exactly where it would fail to reproduce. A thread-safety race is separately **ruled out**: the worker thread only puts tuples on a queue and every widget/Figure touch is main-thread (see "Threading-boundary audit"). Still unexercised: a mapped window, the native paint path, a live `mainloop` concurrent with the pipeline thread, and the click flow. Nothing localises the crash anywhere — it is untested there, not implicated. |
+| `ucrtbase 0xc0000409` | **Unreproduced and undiagnosed.** Absent from `run_pipeline` (3 runs), `shape_results_for_display`, `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root, and all 15 matched-pair runs. **Updated 2026-08-25:** widget *construction* is no longer untested — a headless smoke test built a real `ClinicianGUI`, applied the design system, and ran `_render_metadata`/`_render_curves` (real `FigureCanvasTkAgg` embedding)/`_render_metrics` on real shaped data, then tore the root down, with no crash. But the root was **withdrawn/never mapped**, so the native paint path (GDI/screen draw, device context) did not run — if a crash lives in rendering, that is exactly where it would fail to reproduce. A thread-safety race is separately **ruled out**: the worker thread only puts tuples on a queue and every widget/Figure touch is main-thread (see "Threading-boundary audit"). **Updated again 2026-08-25 (interactive run):** a real user session — mapped visible window, live `mainloop`, `start_pipeline_thread` running concurrently with rendering, the full click flow through Run and Export PDF, on trial `CK-001` under `-X faulthandler` — completed and exited 0 with no fault, traceback or exception in 835 lines of output. **There is no longer any known unexercised path.** The crash remains undiagnosed and unreproduced; since it was observed once, treat it as intermittent or environment-specific rather than resolved. |
 | UCM / synergy analysis | **Does not exist in this repo.** "UCM" is a filename suffix and a docstring label; there is no uncontrolled-manifold or variance-ratio computation. Guidance about restricting synergy joint space or filtering ankle DOFs applies to future code. |
 
 ### Standing methodological ceiling
@@ -1717,3 +1722,66 @@ C therefore carries its own validation pass as a prerequisite, and is materially
 
 Deliberately not started. Doing either B or C before the task variable is known risks rebuilding
 DOFs the formulation does not use.
+
+### Clinician GUI: scrollable results, and a multi-trial methodology comparison (2026-08-25)
+
+Two errors reported from a real interactive session.
+
+**1. Results were unreachable below the window edge.** There was no scrolling machinery anywhere in
+`clinician_gui.py` — no `Canvas`, no `Scrollbar`, no `yview` — and no `rowconfigure`/
+`columnconfigure`/`geometry`, so the window did not expand either. With six joint-angle figures laid
+out three-across plus metadata and metrics, the content measures **1166 px** against a default
+window of ~820 px: roughly 350 px, including the second row of flexion curves, simply could not be
+reached.
+
+Fixed with the standard tkinter composition (there is no scrollable Frame): a `Canvas` owning the
+scroll, a `Scrollbar` driving its `yview`, and an inner `Frame` placed via `create_window`, with
+`_render_results` building into that inner frame. The canvas item width tracks the viewport so
+panels do not sit in a narrow column, the scrollregion is resynced after each render, and the view
+returns to the top on a re-run rather than staying scrolled into the previous trial's results.
+Mouse-wheel is bound on enter/leave of the canvas rather than via `bind_all`, so it cannot hijack
+the wheel over unrelated widgets. Window now defaults to 1180x820 with a 900x600 minimum.
+Verified: `yview` reaches `(0.999, 1.0)`, i.e. the bottom of the content.
+
+**2. No way to compare methodologies across trials** → `methodology_comparison.py` (+18 tests).
+
+Both pipelines' per-stride curves now exist for the same 15 motions, produced through the identical
+offline unfiltered path: 15 Xsens trials (72 right-side strides) and 15 OpenCap trials (50). The
+module reads the exported matrices and reports them side by side.
+
+The row-mapping guard is the important part. The CSVs carry **no labels** — row position is the only
+thing identifying a coordinate — so `JOINT_NAMES` is imported from the driver rather than copied,
+and a length mismatch raises instead of mislabelling every number in the report. `fpa_r`/`fpa_l`
+were added to that list on 2026-08-20, which is exactly the kind of change that would otherwise
+desynchronise a local copy silently.
+
+What the comparison shows across all 15 matched trials:
+
+| | Xsens / IMU | OpenCap / video |
+|---|---|---|
+| strides (right side) | 72 | 50 |
+| `pelvis_tx/ty/tz` | **0.00000** (pinned root) | 1.247 / 0.010 / 0.093 — real translation |
+| `mtp_angle_r/l` | 0.00000 (frozen at −7.50°) | 0.00000 (frozen at 0.00°) |
+| `arm_flex_l` / `arm_rot_l` | **156.8 / 156.6** — saturating | 2.28 / 3.26 — physiological |
+| knee / hip / ankle SD | 1.17 / 1.34 / 1.19 | 2.26 / 2.42 / 4.76 |
+| `comx/comy/comz` | 0.0029 / 0.0025 / 0.0033 | 0.0034 / 0.0036 / 0.0034 |
+
+Three findings worth carrying forward:
+
+- **The toe joint is degenerate in *both* methodologies**, not just ours — OpenCap freezes it at
+  0.00° and the IMU pipeline at −7.50°. Earlier notes attributed this solely to the missing
+  `RightToe`/`LeftToe` mapping in `SEGMENT_TO_IMU_FRAME`; that gap is real, but OpenCap does not
+  drive `mtp_angle` either, so it is not a coordinate either methodology currently supports.
+- **OpenCap's arms are fine.** `arm_flex_l` spans −37…16° there against −566…140° in the IMU
+  pipeline, confirming the saturation is specific to the T-pose calibration rather than to the
+  subject or the model.
+- **OpenCap is roughly 2× more variable stride to stride at knee and hip, and 4× at the ankle** —
+  the same distal degradation pattern the joint-angle validation found, now visible in
+  across-stride variance rather than frame-to-frame jitter.
+
+`gdi_comparison()` computes GDI for every methodology as soon as a reference directory is supplied
+and otherwise reports exactly what is missing; `synergy_status()` reports unavailability rather than
+returning a placeholder, since a zero or NaN in a results table is indistinguishable from a real
+measurement. Both are pinned by tests. It also records the decisive asymmetry: **a global-COM task
+variable is available to the OpenCap methodology but not to the IMU one**, whose root translation is
+pinned — the COM columns in both exports are pelvis-relative.
