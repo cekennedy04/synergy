@@ -1,4 +1,4 @@
-"""Pelvis-relative centre-of-mass task function for the UCM decomposition.
+"""Task variables x = f(q) for the UCM decomposition.
 
 This is the seam ucm.analyse_cycle's `jacobian_fn` plugs into. Swapping the
 task variable -- to foot placement, or anything else -- means writing another
@@ -18,8 +18,13 @@ import numpy as np
 PELVIS_TRANSLATIONS = ("pelvis_tx", "pelvis_ty", "pelvis_tz")
 
 
-class PelvisRelativeComTask:
-    """x = f(q): centre of mass relative to the pelvis, from a joint pose."""
+class _PelvisRelativeTask:
+    """Shared machinery: set the pose, zero the pelvis, read something.
+
+    Subclasses differ only in `_read`. Everything risky -- the degrees to
+    radians conversion, the pelvis zeroing, the length check -- lives here
+    once, so a new task variable cannot reintroduce those bugs.
+    """
 
     def __init__(self, model, coordinate_names, step_degrees=1e-3):
         self.model = model
@@ -45,7 +50,10 @@ class PelvisRelativeComTask:
             self.model.set_coordinate(name, np.deg2rad(value))
         for name in PELVIS_TRANSLATIONS:
             self.model.set_coordinate(name, 0.0)
-        return np.asarray(self.model.center_of_mass(), dtype=float)
+        return np.asarray(self._read(), dtype=float)
+
+    def _read(self):
+        raise NotImplementedError
 
     def jacobian(self, joint_angles_degrees):
         """d(COM)/d(q), shape (3, n_dof), by central differences in degrees."""
@@ -57,6 +65,37 @@ class PelvisRelativeComTask:
     def as_jacobian_fn(self):
         """Adapter to ucm.analyse_cycle's expected callable signature."""
         return lambda mean_configuration, phase_index: self.jacobian(mean_configuration)
+
+
+class PelvisRelativeComTask(_PelvisRelativeTask):
+    """x = centre of mass relative to the pelvis.
+
+    Chosen for cross-methodology comparability, but note the consequence
+    measured 2026-08-25: this task is ~80x more sensitive to proximal than to
+    distal DOFs, so ankle and subtalar variance lands in the uncontrolled
+    manifold almost by construction and inflates Delta-V. See VENDORING.md.
+    """
+
+    def _read(self):
+        return self.model.center_of_mass()
+
+
+class FootPlacementTask(_PelvisRelativeTask):
+    """x = position of a foot body relative to the pelvis.
+
+    The counterpart to PelvisRelativeComTask, and the reason the task function
+    is a swappable seam: foot placement depends strongly on the distal joints
+    that COM is nearly blind to, so distal measurement noise should move out
+    of V_UCM and into V_ORT. That makes it a direct test of whether the
+    methodology difference seen under the COM task is an artifact.
+    """
+
+    def __init__(self, model, coordinate_names, body_name="calcn_r", step_degrees=1e-3):
+        super().__init__(model, coordinate_names, step_degrees=step_degrees)
+        self.body_name = body_name
+
+    def _read(self):
+        return self.model.body_position(self.body_name)
 
 
 class OpenSimModel:
@@ -100,6 +139,14 @@ class OpenSimModel:
         # a single Jacobian needs would dominate the runtime, and the poses come
         # from an IK solution that already satisfies the constraints.
         coordinate.setValue(self.state, float(value_radians), False)
+
+    def body_position(self, body_name):
+        """Origin of a body in ground. With the pelvis translation zeroed by
+        the task, this is the body's position relative to the pelvis."""
+        self.model.realizePosition(self.state)
+        body = self.model.getBodySet().get(body_name)
+        position = body.getPositionInGround(self.state)
+        return np.array([position.get(0), position.get(1), position.get(2)])
 
     def center_of_mass(self):
         self.model.realizePosition(self.state)

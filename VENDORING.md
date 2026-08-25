@@ -1839,3 +1839,42 @@ Consequences to carry forward:
 - Strides are pooled across trials, so between-bout differences count as deviation from the pooled
   mean. Defensible for "across-stride variance", applied identically to both methodologies, but it
   is not within-bout variability and should not be described as such.
+
+### The synergy ranking reverses with the task variable (2026-08-25)
+
+Follow-up to the COM result above, and the reason `analyse_cycle` takes the task function as a
+callable. `FootPlacementTask` (position of `calcn_r` relative to the pelvis) was added and run
+against the same strides.
+
+| task variable | Xsens ΔV | OpenCap ΔV | gap | OpenCap V_ORT |
+|---|---|---|---|---|
+| pelvis-relative COM | 0.407 | **0.803** | **+0.396** | 4.962 |
+| foot placement, 18-DOF q | 0.475 | 0.179 | **−0.297** | 15.117 |
+| foot placement, 9-DOF ipsilateral q | 0.448 | 0.195 | −0.253 | 15.117 |
+
+**The ranking flips sign.** Under COM, OpenCap looks markedly more synergistic; under foot
+placement, markedly less. Xsens moves hardly at all (0.407 → 0.475) because its variance is not
+concentrated distally.
+
+The mechanism is visible in V_ORT: OpenCap's **triples**, 4.962 → 15.117, while the IMU pipeline's
+falls slightly. Sensitivity to the ankle rises 45× between the two task variables (0.022 →
+0.995 mm/deg), so OpenCap's distal noise stops being invisible to the task and starts disrupting
+it — moving out of V_UCM and into V_ORT, which is where measurement noise belongs.
+
+**So "which methodology shows more synergy" is not a property of the data.** It is determined by
+how the chosen task variable weights the DOFs where the two methodologies differ. Any ΔV comparison
+quoted without its task variable and sensitivity profile is uninterpretable.
+
+Of the two, foot placement is the more honest basis for judging measurement quality, precisely
+because it stops rewarding distal noise. That does not make it the right task variable for the
+research question — that remains a domain decision.
+
+One modelling note found while building it: for a right-foot task, the left leg and lumbar have
+**exactly zero** sensitivity (they are not in the pelvis→right-foot kinematic chain), so with an
+18-DOF q half the joints sit in the uncontrolled manifold by construction rather than by any
+motor-control fact. The 9-DOF ipsilateral q is the defensible formulation; both are reported above
+and they agree closely (−0.297 vs −0.253), so the conclusion does not rest on that choice.
+
+`subtalar_angle_r` also has zero sensitivity to foot placement: subtalar rotation turns the
+calcaneus about its own origin without translating it. Expected, not a bug, but it means the
+ipsilateral q effectively contributes 8 informative DOFs, not 9.
