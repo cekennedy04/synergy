@@ -1051,6 +1051,11 @@ introduced by this conversion, and the evidence points at OpenCap's video-based 
 
 ### `Trial8` / `CK-008` — open, needs human review
 
+> **Superseded 2026-08-25** — see "`Trial8` / `CK-008` — anomaly relocated to the Xsens
+> recording" at the end of this file. The anomaly is now dual-confirmed against Xsens's own
+> solver, OpenCap and per-trial calibration are excluded as causes, and the error signature
+> argues against magnetic drift. Kept for the per-trial numbers it records.
+
 Left knee 15.74° and left hip 16.81° RMS, against ~3–6° everywhere else, while its **right** leg is
 normal (4.14° / 5.21°). Correlations stay high (+0.929 / +0.856), and removing the constant bias
 fixes the hip (16.81° → 8.02°, bias −14.78°) but only partly the knee (15.74° → 11.44°, bias
@@ -1277,3 +1282,76 @@ The reasoning for putting this in the artifact rather than only in this file: th
 entirely ordinary. Nothing about `1.116 m/s` signals that it came from a treadmill-speed heuristic
 on a pinned-root skeleton. A caveat that lives only in documentation will be separated from the
 report the first time someone copies a value into a slide, so it has to travel with the data.
+
+### Conversion fidelity across all 15 trials (2026-08-25)
+
+Supersedes the single-trial figures quoted in "The ankle disagreement is real, systematic, and not
+caused by this conversion" above, which came from `CK-001` alone. Comparing our `.mot` against
+Xsens's own `<jointAngle>` for every trial gives 90 coordinate comparisons (15 trials × 6
+coordinates), and confirms the single-trial numbers were representative.
+
+**Excluding `Trial8`** (n = 14, 84 comparisons): **r 0.976–0.994, RMS 2.68–4.97°, mean 3.75°.**
+
+| coordinate | mean r | mean RMS | sd | range (excl. Trial8) |
+|---|---|---|---|---|
+| `knee_angle_r` | 0.990 | 2.85° | 0.13 | 2.69–3.20° |
+| `knee_angle_l` | 0.986 | 4.02° | 4.36 | 2.76–3.02° |
+| `hip_flexion_r` | 0.989 | 3.85° | 0.30 | 3.62–4.95° |
+| `hip_flexion_l` | 0.966 | 4.44° | 1.20 | 3.96–4.29° |
+| `ankle_angle_r` | 0.984 | 4.30° | 0.10 | 4.12–4.47° |
+| `ankle_angle_l` | 0.974 | 4.83° | 0.74 | 4.45–4.97° |
+
+The `sd` and `mean` columns are inflated by `Trial8`; the final column shows the band the other 14
+trials actually occupy, which is remarkably tight. Note this is **conversion fidelity** — our `.mot`
+against Xsens's own solver, both fed by the same IMU orientations — and is a different quantity
+from the cross-modality agreement with OpenCap reported earlier (r 0.857–0.986, 4.48° mean RMS for
+knee + hip flexion). The two must not be quoted interchangeably.
+
+### `Trial8` / `CK-008` — anomaly relocated to the Xsens recording (2026-08-25)
+
+Supersedes the "open, needs human review" framing above. The left-leg divergence is now
+**dual-confirmed**: it appears against OpenCap video *and* against Xsens's own internal solver.
+
+| CK-008 | vs OpenCap | vs Xsens `jointAngle` |
+|---|---|---|
+| `knee_angle_l` | 15.74° (r 0.929) | **20.32° (r 0.89)** |
+| `hip_flexion_l` | 16.81° (r 0.856) | **8.91° (r 0.70)** |
+| `ankle_angle_l` | 17.65° (r 0.02) | **7.54° (r 0.87)** |
+| right leg | 4.14° / 5.21° — normal | 3.20° / 4.95° / 4.47° — normal |
+
+It is the only trial of 15 to leave the 2.68–4.97° band, and only on the left. Because our `.mot`
+and Xsens's `jointAngle` both derive from the *same* `.mvnx` — ours by IK on `<orientation>` segment
+data, Xsens's by its own constrained solver — a disagreement between them localises the anomaly
+**inside the Xsens recording of CK-008's left leg**. That removes OpenCap from the list of
+candidate causes entirely.
+
+**Calibration is ruled out.** Our pipeline calibrates from each file's own `tpose` frame, so a
+per-trial calibration failure was the obvious competing explanation. It does not survive: the
+`tpose` frames are *identical* across all 15 files (0.00° angular deviation from the 14-trial mean
+for every left- and right-leg segment; the 0.11° on `RightUpperLeg` is uniform across every trial).
+Xsens writes the once-per-session calibration into all files, so IMUPlacer received exactly the
+same calibration input for every trial. Whatever is wrong with `CK-008` is in its motion frames,
+not its calibration.
+
+**But the signature is not drift-shaped, so do not write this up as magnetic drift yet.** Magnetic
+drift accumulates over a recording. The dominant error here does not:
+
+| CK-008 | 1st quartile | 4th quartile | slope | mean bias |
+|---|---|---|---|---|
+| `knee_angle_l` | 17.74° | 16.05° | **−0.135 °/s** | 16.87° |
+| `hip_flexion_l` | 4.83° | 9.21° | +0.460 °/s | 5.18° |
+| `CK-001` `knee_angle_l` (reference) | 1.46° | 2.71° | +0.179 °/s | 1.58° |
+| `CK-005` `knee_angle_l` (reference) | 1.88° | 2.97° | +0.106 °/s | 1.70° |
+
+The knee error is large and essentially **constant** — it is very slightly *decreasing* — which is
+the signature of a fixed sensor-to-segment misalignment or a fusion solution that settled into a
+wrong offset early, not of accumulating magnetic interference. The hip does show a growing
+component (+0.46 °/s), so the picture is mixed, but the dominant 17° knee offset argues against
+pure drift.
+
+**Status:** the anomaly is localised to CK-008's recorded left-leg segment orientations; OpenCap
+and per-trial calibration are excluded; the specific mechanism is unresolved and the constant-offset
+knee signature is evidence against the magnetic-drift hypothesis rather than for it. Confirming or
+excluding drift still requires the `Sensor Magnetic Field` sheet from an MVN Studio `.xlsx`
+re-export (the HD `.mvnx` carries no `magneticField` element and no per-sensor quality attributes).
+Left for clinical/hardware review rather than patched in code.
