@@ -1355,3 +1355,58 @@ knee signature is evidence against the magnetic-drift hypothesis rather than for
 excluding drift still requires the `Sensor Magnetic Field` sheet from an MVN Studio `.xlsx`
 re-export (the HD `.mvnx` carries no `magneticField` element and no per-sensor quality attributes).
 Left for clinical/hardware review rather than patched in code.
+
+---
+
+## Project status & methodological boundaries (index, current as of 2026-08-25)
+
+A single place to see what is established, what is excluded, and what is open — each paired with
+the boundary that limits it. Every row is detailed in a section above; this is an index, not a
+replacement. **Where this section and an earlier one disagree, this section is current** (several
+earlier sections carry ⚠ SUPERSEDED banners).
+
+### Established
+
+| finding | value | boundary on the claim |
+|---|---|---|
+| Matched pair `CK-00N` ↔ `TrialN` | 15 trials | Proven two independent ways: Xsens `recDate` vs OpenCap `.mov` QuickTime `mvhd` stamps agree 0–4 s at exactly UTC−5 on all 15; per-trial knee cross-correlation recovers the same lag from left and right knees within ≤1 frame. Metadata and signal content agree. |
+| **Conversion fidelity** — our `.mot` vs Xsens `<jointAngle>` | r 0.976–0.994, RMS 2.68–4.97°, **mean 3.75°** (n=14, 84 comparisons) | Both sides derive from the **same IMU orientations**. This measures coordinate and model-mapping fidelity **only** — not accuracy. Excludes `Trial8`. |
+| **Cross-modality agreement** — our `.mot` vs OpenCap video | knee r 0.980/0.986 (3.76°/3.28°); hip flexion r 0.924/0.889 (4.75°/6.13°); hip adduction r 0.902/0.857 (3.72°/3.92°); **knee + hip flexion mean 4.48° RMS** (n=14) | OpenCap is itself a video-based estimate, not gold-standard mocap. Excludes `Trial8`. **Not interchangeable with conversion fidelity above** — different quantity, different reference. |
+| Ankle disagreement is not ours | ours vs OpenCap r 0.296/0.345; ours vs Xsens ankle r 0.985/0.976 | Xsens's own ankle disagrees with OpenCap just as badly (r 0.388/0.249). OpenCap ankle is 3.0× noisier frame-to-frame and reports 80.8° ROM where normal gait is ~30°. Ball-of-foot explanation **refuted** (R 0.388→0.295, L 0.249→−0.069). |
+| Non-gait guardrail | 30/30 real trial-legs accepted, 0 false rejections, 2/2 non-gait rejected | Thresholds ≥3 heel strikes per leg (contralateral leg binds) and cadence 40–160 steps/min. Observed real cadence 124.2–133.3. Runs *after* segmentation, so a non-gait trial still pays the auto-trim cost. |
+| MVNX v4 parsing | 3- or 9-value `centerOfMass` | Layout confirmed empirically, not from schema. Truncation guarded by a vertical-component tripwire on 9-value rows only. |
+| Test suite | **115 tests pass** | This is a **pass rate, not a coverage measurement**. No coverage analysis has been run on this repo. |
+
+### Excluded, and by which argument
+
+| candidate cause | status | argument that excludes it |
+|---|---|---|
+| OpenCap error explains `Trial8` | excluded | `Trial8`'s left leg also diverges from **Xsens's own solver** (knee 20.32°, r 0.89), and both sources derive from the same `.mvnx`. The fault is inside the Xsens recording. |
+| **Per-trial** calibration failure | excluded | All 15 `tpose` frames are identical (0.00° deviation from the 14-trial mean; the 0.11° on `RightUpperLeg` is uniform across every trial). IMUPlacer received the same input every time. |
+| **Session-level** calibration failure | excluded | *Separate argument:* all 15 trials share that one session calibration, and 14 of them are clean. A bad session calibration would affect all 15. |
+| Ball-of-foot / toe joint explains the ankle gap | excluded | Adding `jRightBallFoot`/`jLeftBallFoot` makes agreement **worse**, not better. |
+| Auto-trim retry loop caused the native crash | excluded | A real non-gait trial runs 238 trims to completion; a real walking trial needs zero. Edit #12 does not fix that crash. |
+
+### Open
+
+| item | precise status |
+|---|---|
+| `Trial8` / `CK-008` mechanism | **Unresolved.** Localised to CK-008's recorded left-leg segment orientations. Magnetic drift is **not confirmed and the evidence leans against it**: drift accumulates, but `knee_angle_l` error runs 17.74° (Q1) → 16.05° (Q4), slope **−0.135 °/s** — a large near-constant offset, consistent with fixed sensor-to-segment misalignment or a fusion solution settling wrong early. `hip_flexion_l` does grow (+0.460 °/s), so the picture is mixed. Discriminating requires the `Sensor Magnetic Field` sheet from an MVN Studio `.xlsx` re-export; the HD `.mvnx` carries no `magneticField` element and no per-sensor quality attributes. |
+| Spatial gait metrics | **Not fixed, only labelled.** Root translation is pinned (`pelvis_tx`/`tz` constant 0.0000 against ~6.3 m of real travel), so `gait_speed` and `stride_length` are stance-phase ankle-velocity proxies, and `stride_length ≈ treadmillSpeed × stride_time` makes them **not independent of each other**. `cadence` is event-timing derived and unaffected. Every overground trial is silently classified as treadmill. Provenance is stamped on every report via `SPATIAL_PROVENANCE`. |
+| `ucrtbase 0xc0000409` | **Unreproduced and undiagnosed.** Absent from `run_pipeline` (3 runs), `shape_results_for_display`, `build_curve_figure`, `export_report_to_pdf`, a threaded `pyplot`/TkAgg import under a live Tk root, and all 15 matched-pair runs. The sole path **not yet exercised** is `_render_curves` embedding `FigureCanvasTkAgg` into live widgets (GitHub issue #1). Nothing localises the crash there — it is untested, not implicated. |
+| UCM / synergy analysis | **Does not exist in this repo.** "UCM" is a filename suffix and a docstring label; there is no uncontrolled-manifold or variance-ratio computation. Guidance about restricting synergy joint space or filtering ankle DOFs applies to future code. |
+
+### Standing methodological ceiling
+
+Nothing in this repository has been validated against gold-standard optical motion capture
+(Vicon/Qualisys). The strongest defensible claims are **conversion fidelity** (against Xsens's own
+solver, shared input) and **cross-modality agreement** (against OpenCap video, independent but not
+a reference standard). Neither is an accuracy measurement.
+
+### Retracted
+
+The earlier 16.4° overall and 24–32° per-segment figures are **withdrawn as invalid** — they were
+IMU *orientation residuals* computed on mismatched data (one person's IMU stream driving a model
+scaled to a different person, performing a different, non-walking motion). They are **not**
+comparable to the joint-angle figures above, and the change from them is a metric and dataset
+correction, not a reduction in error on like data.
