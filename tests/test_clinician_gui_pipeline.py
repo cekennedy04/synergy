@@ -815,3 +815,107 @@ def test_curve_matrix_filename_uses_a_short_session_id(mod, tmp_path):
     assert len(name) < 40, f"filename is unwieldy: {name}"
     assert "trial1" in name
     assert "ca505b02" in name, "should still trace back to the session"
+
+
+# -- XtoO as a selectable conversion route (2026-08-25) -------------------
+# Two ways to get from .mvnx to a .mot: OpenSense IK on segment orientations,
+# or XtoO's direct remapping of Xsens's own joint angles. They differ in what
+# they can produce -- the IK route pins root translation, freezes the toes and
+# saturates the arms -- so the route has to be a user choice, and the report
+# has to say which one produced its numbers.
+
+
+def _make_fake_xtoo_module(recorder):
+    def convert_mvnx_to_mot(mvnx_path, mot_path, legacy_axes=False):
+        recorder.append({"mvnx": str(mvnx_path), "mot": str(mot_path),
+                         "legacy_axes": legacy_axes})
+        Path(mot_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(mot_path).write_text("Coordinates\nendheader\ntime\n0.0\n")
+        return str(mot_path)
+
+    return types.SimpleNamespace(convert_mvnx_to_mot=convert_mvnx_to_mot)
+
+
+def _run_route(mod, tmp_path, conversion, xtoo_recorder=None):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fake_xsens = _make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir))
+    kwargs = {}
+    if xtoo_recorder is not None:
+        kwargs["xtoo_module"] = _make_fake_xtoo_module(xtoo_recorder)
+    result = mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        conversion=conversion,
+        xsens_module=fake_xsens,
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=_fake_fp_module_with_export([]),
+        **kwargs,
+    )
+    return result, fake_xsens
+
+
+def test_ik_remains_the_default_route(mod, tmp_path):
+    result, fake_xsens = _run_route(mod, tmp_path, conversion=None)
+
+    assert fake_xsens._calls["run_imu_ik"], "default must still run inverse kinematics"
+    assert result["conversion"] == "ik"
+
+
+def test_xtoo_route_skips_calibration_and_inverse_kinematics(mod, tmp_path):
+    """The whole point: no IMUPlacer, no IK, no model solve. Calling them
+    anyway would waste ~40 s per trial and reintroduce the pinned root."""
+    recorder = []
+    _result, fake_xsens = _run_route(mod, tmp_path, "xtoo", xtoo_recorder=recorder)
+
+    assert recorder, "xtoo.convert_mvnx_to_mot was never called"
+    assert not fake_xsens._calls["calibrate_model"]
+    assert not fake_xsens._calls["run_imu_ik"]
+    assert not fake_xsens._calls["build_orientations_sto"]
+
+
+def test_xtoo_route_still_writes_markers_for_the_gait_stage(mod, tmp_path):
+    """gait_analysis loads MarkerData/<trial>.trc unconditionally, so the .trc
+    is required whichever route produced the .mot."""
+    recorder = []
+    _result, fake_xsens = _run_route(mod, tmp_path, "xtoo", xtoo_recorder=recorder)
+
+    assert fake_xsens._calls["write_markers_trc"]
+
+
+def test_xtoo_route_uses_the_uncalibrated_model_for_markers(mod, tmp_path):
+    """There is no calibrated model on this route -- nothing calibrated one.
+    Passing a non-existent '_calibrated.osim' would fail at the marker stage."""
+    recorder = []
+    _result, fake_xsens = _run_route(mod, tmp_path, "xtoo", xtoo_recorder=recorder)
+
+    model_used = fake_xsens._calls["write_markers_trc"][0][0]
+    assert "_calibrated" not in str(model_used)
+
+
+def test_route_is_reported_in_the_result(mod, tmp_path):
+    recorder = []
+    result, _ = _run_route(mod, tmp_path, "xtoo", xtoo_recorder=recorder)
+
+    assert result["conversion"] == "xtoo"
+
+
+def test_unknown_route_is_rejected_rather_than_silently_defaulting(mod, tmp_path):
+    """Silently falling back to IK would produce a pinned-root report while
+    the user believed they had asked for real translation."""
+    with pytest.raises(ValueError, match="unknown conversion"):
+        _run_route(mod, tmp_path, "magic")
+
+
+def test_provenance_reflects_the_route_that_actually_ran(mod, tmp_path):
+    """The spatial caveat is true for IK and false for XtoO. Stamping the IK
+    disclaimer onto an XtoO report would understate data that is genuinely
+    displacement-derived; the reverse would be far worse."""
+    ik = mod.spatial_provenance_for("ik")
+    xtoo = mod.spatial_provenance_for("xtoo")
+
+    assert ik["spatial_displacement_validated"] is False
+    assert "Pinned root" in ik["translation_type"]
+    assert xtoo["spatial_displacement_validated"] is True
+    assert "Pinned root" not in xtoo["translation_type"]
+    assert "proxy" not in xtoo["gait_speed_method"].lower()

@@ -45,6 +45,7 @@ _GAIT_ANALYSIS_UCM_FIXED_PATH = os.path.join(REPO_ROOT, "gait_analysis_UCM_fixed
 _GAIT_ANALYSIS_EXAMPLE_PATH = os.path.join(REPO_ROOT, "Examples", "gaitAnalysis-UCM.py")
 _JOINT_CONFIDENCE_PATH = os.path.join(REPO_ROOT, "joint_confidence.py")
 _REPORT_EXPORT_PATH = os.path.join(REPO_ROOT, "report_export.py")
+_XTOO_PATH = os.path.join(REPO_ROOT, "xtoo.py")
 _REPORT_FORMATTING_PATH = os.path.join(REPO_ROOT, "report_formatting.py")
 _MODULE_LOADING_PATH = os.path.join(REPO_ROOT, "module_loading.py")
 
@@ -124,6 +125,11 @@ def _load_joint_confidence():
     inject fake pipeline stages (KTD9's pattern applied to U4's own
     display-shaping seam)."""
     return _load_module_by_path("joint_confidence_for_clinician_gui", _JOINT_CONFIDENCE_PATH)
+
+
+def _load_xtoo():
+    """Lazy, path-based load matching the other pipeline modules."""
+    return _load_module_by_path("xtoo_for_clinician_gui", _XTOO_PATH)
 
 
 def _load_report_export():
@@ -306,7 +312,8 @@ def _resolve_trial_name(mvnx_path):
 
 def run_pipeline(session_dir, mvnx_path, progress_callback=None,
                   xsens_module=None, gait_fixed_module=None,
-                  foot_progression_module=None):
+                  foot_progression_module=None, xtoo_module=None,
+                  conversion=None):
     """Runs the full conversion + gait-analysis pipeline for one trial
     (KTD3, KTD4's Approach step 1): build_orientations_sto -> calibrate_model
     -> run_imu_ik (xsens_to_opensim.py), then compute_foot_progression_angles,
@@ -338,6 +345,52 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
     except ValueError as exc:
         raise ModelResolutionError(str(exc)) from exc
 
+    conversion = conversion or "ik"
+    if conversion not in CONVERSION_ROUTES:
+        raise ValueError(
+            f"unknown conversion route {conversion!r}; expected one of "
+            f"{list(CONVERSION_ROUTES)}. Falling back silently would produce a "
+            "pinned-root report while the caller believed they had asked for "
+            "measured translation."
+        )
+
+    if conversion == "xtoo":
+        # Direct remapping: Xsens's own joint angles relabelled into OpenSim
+        # coordinates. No orientations file, no IMUPlacer, no IK -- which is
+        # what preserves real pelvis translation, live toe joints and
+        # unsaturated arms. Roughly 40 s/trial faster too, since the IK solve
+        # is the expensive stage.
+        xtoo = xtoo_module if xtoo_module is not None else _load_xtoo()
+        _progress("Converting Xsens joint angles to OpenSim coordinates...")
+        try:
+            target = str(Path(paths["results_dir"]) / paths["output_motion_filename"])
+            mot_path = xtoo.convert_mvnx_to_mot(mvnx_path, target)
+        except (ValueError, ET.ParseError, OSError) as exc:
+            raise MvnxParsingError(str(exc)) from exc
+        # There is no calibrated model on this route because nothing
+        # calibrated one; markers come from the scaled model as-is.
+        marker_model = paths["model_file"]
+    else:
+        mot_path, marker_model = _run_ik_conversion(
+            xsens, paths, mvnx_path, _progress
+        )
+
+    _progress("Writing marker positions...")
+    try:
+        Path(paths["trc_path"]).parent.mkdir(parents=True, exist_ok=True)
+        xsens.write_markers_trc(marker_model, mot_path, paths["trc_path"])
+    except Exception as exc:
+        raise MarkerExportError(str(exc)) from exc
+
+    _progress("Computing foot progression angles...")
+    return _run_gait_stages(
+        session_dir, mvnx_path, trial_name, paths, mot_path, conversion,
+        gait_fixed_module, foot_progression_module, _progress,
+    )
+
+
+def _run_ik_conversion(xsens, paths, mvnx_path, _progress):
+    """The OpenSense route: orientations -> IMUPlacer -> IK."""
     _progress("Converting Xsens orientations to OpenSim format...")
     try:
         xsens.build_orientations_sto(
@@ -371,18 +424,15 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
     except Exception as exc:
         raise ImuKinematicsError(str(exc)) from exc
 
-    # gait_analysis_UCM_fixed.gait_analysis's constructor unconditionally
-    # loads MarkerData/<trial_name>.trc (get_marker_dict -> trc_2_dict, no
-    # existence check) -- without writing it here first, every real trial
-    # fails inside that constructor. Mirrors xsens_to_opensim.py's own
-    # main() stage 4 exactly (found missing in code review).
-    _progress("Writing marker positions...")
-    try:
-        Path(paths["trc_path"]).parent.mkdir(parents=True, exist_ok=True)
-        xsens.write_markers_trc(calibrated_model, mot_path, paths["trc_path"])
-    except Exception as exc:
-        raise MarkerExportError(str(exc)) from exc
+    return mot_path, calibrated_model
 
+
+def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
+                     conversion, gait_fixed_module, foot_progression_module,
+                     _progress):
+    """Everything downstream of the .mot: foot progression, gait analysis for
+    both legs, and the stride-normalised curve matrix. Shared by both
+    conversion routes -- only the way the .mot was produced differs."""
     _progress("Computing foot progression angles...")
     foot_progression = (
         foot_progression_module if foot_progression_module is not None
@@ -456,6 +506,9 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
         "session_dir": session_dir,
         "mvnx_path": mvnx_path,
         "trial_name": trial_name,
+        # Which route produced these numbers. Downstream, shaping uses it to
+        # pick the right spatial provenance, and the report states it.
+        "conversion": conversion,
         "model_file": paths["model_file"],
         # Every artefact this run wrote, so a researcher can take the raw
         # files into their own analysis. Returned from `paths` rather than
@@ -793,8 +846,36 @@ SPATIAL_PROVENANCE = {
     "spatial_displacement_validated": False,
 }
 
+# The caveat above is true of the inverse-kinematics route and NOT of the
+# direct-remapping one, which carries real pelvis translation straight from
+# the .mvnx segment positions. Stamping the IK disclaimer onto an XtoO report
+# would understate genuinely displacement-derived data; stamping the XtoO
+# wording onto an IK report would be far worse.
+XTOO_SPATIAL_PROVENANCE = {
+    "translation_type": "Measured segment position (direct remapping)",
+    "gait_speed_method": "Global pelvis displacement",
+    "spatial_displacement_validated": True,
+}
 
-def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None, parsed_mvnx=None):
+CONVERSION_ROUTES = ("ik", "xtoo")
+
+# Shown on screen and in the PDF so a report always names the pipeline that
+# produced it. The two routes differ in what they can measure, not just how.
+CONVERSION_ROUTE_LABELS = {
+    "ik": "OpenSim inverse kinematics (orientations)",
+    "xtoo": "Direct remapping of Xsens joint angles",
+}
+
+
+def spatial_provenance_for(conversion):
+    """Provenance flags for the route that actually ran."""
+    if conversion == "xtoo":
+        return dict(XTOO_SPATIAL_PROVENANCE)
+    return dict(SPATIAL_PROVENANCE)
+
+
+def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None,
+                               parsed_mvnx=None, conversion=None):
     """U4 Approach step 1: subject/session ID and trial name come from the
     inputs the clinician already picked (U1), not from parse_mvnx (which has
     no subject/trial/date fields of its own); date comes from the .mvnx
@@ -843,8 +924,12 @@ def shape_metadata_for_display(session_dir, mvnx_path, xsens_module=None, parsed
         "sensor_coverage": sensor_coverage,
         "frame_count": n_frames,
         # Travels with the report so the spatial-metric caveat cannot be
-        # separated from the numbers it qualifies -- see SPATIAL_PROVENANCE.
-        **SPATIAL_PROVENANCE,
+        # separated from the numbers it qualifies. Route-dependent: the
+        # pinned-root disclaimer is true of IK and false of direct remapping.
+        "conversion_route": CONVERSION_ROUTE_LABELS.get(
+            conversion or "ik", CONVERSION_ROUTE_LABELS["ik"]
+        ),
+        **spatial_provenance_for(conversion),
     }
 
 
@@ -1137,7 +1222,8 @@ def shape_results_for_display(result, xsens_module=None, joint_confidence_module
         raise MvnxParsingError(str(exc)) from exc
 
     metadata = shape_metadata_for_display(
-        result["session_dir"], result["mvnx_path"], xsens_module=xsens, parsed_mvnx=parsed
+        result["session_dir"], result["mvnx_path"], xsens_module=xsens,
+        parsed_mvnx=parsed, conversion=result.get("conversion")
     )
     curves = shape_joint_curves_for_display(gait_r, gait_l)
 
@@ -1267,6 +1353,27 @@ class ClinicianGUI:
         ttk.Button(frame, text="Browse...", command=self._pick_mvnx_file).grid(
             row=3, column=1, padx=(6, 0)
         )
+
+        # Conversion route (2026-08-25). The two are not interchangeable:
+        # inverse kinematics pins root translation, freezes the toe joints and
+        # saturates the arms, while direct remapping carries Xsens's own joint
+        # angles and real segment positions. The choice changes what the
+        # report can legitimately claim, so it is explicit rather than a
+        # hidden default.
+        ttk.Label(frame, text="Conversion route:").grid(
+            row=4, column=0, sticky="w", pady=(10, 0)
+        )
+        self.conversion_var = tk.StringVar(value="ik")
+        route_frame = ttk.Frame(frame)
+        route_frame.grid(row=5, column=0, columnspan=2, sticky="w")
+        ttk.Radiobutton(
+            route_frame, text="OpenSim inverse kinematics",
+            variable=self.conversion_var, value="ik",
+        ).grid(row=0, column=0, sticky="w", padx=(0, 16))
+        ttk.Radiobutton(
+            route_frame, text="Direct remapping (real translation, toes, arms)",
+            variable=self.conversion_var, value="xtoo",
+        ).grid(row=0, column=1, sticky="w")
 
         self.reason_var = tk.StringVar(value="")
         # Uses the same tier-low red as the confidence banner (_render_curves)
@@ -1400,7 +1507,8 @@ class ClinicianGUI:
         self.progress_var.set("Starting...")
         self._pipeline_queue = queue.Queue()
         self._pipeline_thread = start_pipeline_thread(
-            self.session_dir, self.mvnx_path, self._pipeline_queue
+            self.session_dir, self.mvnx_path, self._pipeline_queue,
+            conversion=self.conversion_var.get(),
         )
         self.root.after(100, self._poll_pipeline_queue)
 
@@ -1614,6 +1722,7 @@ class ClinicianGUI:
             ("Date", metadata["date"]),
             ("Duration", metadata["duration_display"]),
             ("Sensor coverage", metadata["sensor_coverage"]),
+            ("Conversion route", metadata.get("conversion_route", "")),
         ]
         # The spatial-metric caveat has to reach the screen, not only the
         # exported PDF -- the clinician reads gait speed here first. .get()

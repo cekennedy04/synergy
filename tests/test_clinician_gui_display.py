@@ -526,3 +526,40 @@ def test_missing_optional_paths_do_not_break_shaping(mod, tmp_path):
 
     assert any(entry["label"] == "Joint angles (.mot)" for entry in outputs)
     assert all(entry["path"] for entry in outputs)
+
+
+def test_metadata_provenance_follows_the_conversion_route(mod, tmp_path):
+    """An XtoO run carries real translation, so stamping the IK disclaimer on
+    it would understate genuinely displacement-derived data."""
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+    result["conversion"] = "xtoo"
+
+    metadata = mod.shape_results_for_display(result, xsens_module=fake_xsens)["metadata"]
+
+    assert metadata["spatial_displacement_validated"] is True
+    assert "Pinned root" not in metadata["translation_type"]
+
+
+def test_metadata_defaults_to_the_ik_caveat_when_no_route_is_recorded(mod, tmp_path):
+    """Older results predate the route field. Defaulting to the cautious
+    wording is the safe direction to be wrong in."""
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+    result.pop("conversion", None)
+
+    metadata = mod.shape_results_for_display(result, xsens_module=fake_xsens)["metadata"]
+
+    assert metadata["spatial_displacement_validated"] is False
+
+
+def test_conversion_route_is_shown_in_the_metadata(mod, tmp_path):
+    """The report has to say which pipeline produced its numbers."""
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+    result["conversion"] = "xtoo"
+
+    metadata = mod.shape_results_for_display(result, xsens_module=fake_xsens)["metadata"]
+
+    assert "conversion_route" in metadata
+    assert "remapping" in metadata["conversion_route"].lower()
