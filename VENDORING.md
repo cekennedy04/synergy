@@ -1878,3 +1878,55 @@ and they agree closely (−0.297 vs −0.253), so the conclusion does not rest o
 `subtalar_angle_r` also has zero sensitivity to foot placement: subtalar rotation turns the
 calcaneus about its own origin without translating it. Expected, not a bug, but it means the
 ipsilateral q effectively contributes 8 informative DOFs, not 9.
+
+### `xtoo.py` — second conversion route, ported from the supervisor's XtoO.m (2026-08-25)
+
+Built test-first from `context/XtoO.m` and `context/jointcheck/`. It relabels Xsens's **own** joint
+angles into OpenSim coordinate names and writes a `.mot` directly — no IMUPlacer, no IK, no model.
+
+**It supplies the three things the IK path cannot.** Measured on CK-001:
+
+| | XtoO port | OpenSense IK | OpenCap |
+|---|---|---|---|
+| `pelvis_tx` range | **6.998 m** | 0.000 m (pinned) | 6.275 m |
+| `mtp_angle_r` range | **57.4°** | 1.21° (frozen) | 0.00° |
+| `arm_flex_l` range | **45.2°** | 419.8° (saturated) | — |
+
+Where both paths are valid they agree: knee r 0.990, hip 0.988, ankle 0.985, pelvis 0.984–0.992.
+
+Reads `.mvnx` directly — `<jointAngle>`, `<orientation>` and `<position>` carry everything XtoO.m
+pulls from `.xlsx`, so the spreadsheet export and its column-naming drift are skipped.
+
+**Two axis assignments in XtoO.m are wrong, and this port corrects them.** Both were established
+empirically, not read off the MATLAB:
+
+- **Pelvis rotations.** XtoO.m assigns tilt←roll, list←−yaw, rotation←−pitch. Measured against our
+  IK solution: tilt is **−pitch** (r −0.992), list is **+roll** (r +0.984), rotation is **+yaw**
+  (r +0.989). This is not a column-naming confusion — the xlsx `Pelvis x/y/z` columns were verified
+  to be exactly roll/pitch/yaw (r = 1.000 against the quaternion sheet of the same file).
+- **Pelvis translation.** XtoO.m assigns `pelvis_ty` ← Xsens Y and `pelvis_tz` ← Xsens Z. Xsens is
+  Z-up, OpenSim is Y-up: Xsens Z sits at 0.95–0.98 m (stature) and tracks OpenCap's `pelvis_ty`,
+  while Xsens Y tracks `pelvis_tz` at r −0.994. **XtoO.m routes the subject's height into the
+  lateral coordinate.** `pelvis_tx` ← Xsens X is correct in both, and correlates with OpenCap's at
+  **r = +1.000**.
+
+`legacy_axes=True` reproduces XtoO.m's original assignment so its exact output can be regenerated.
+
+`q_to_euler.m` is ported verbatim including its use of `atan` rather than `atan2`, which limits
+roll and yaw to ±90° and discards quadrant information. Kept deliberately: switching to `atan2`
+would be a considered improvement needing re-validation, not a silent bug fix.
+
+**Independent confirmation of our DOF partition.** `matrix_general.m` deletes rows
+`[304:606, 1213:1313, 1920:2020, 2728:2828, 3233:3333]` — worked out against XtoO's column order,
+exactly `pelvis_tx/ty/tz`, `mtp_angle_r/l` and `pro_sup_r/l`, leaving 26 coordinates. That is
+essentially the exclusion set we reached independently from the variance analysis. It also carries
+±180° unwrap corrections on the arm columns, so the arms gave trouble there too.
+
+**Standing caveat.** This output *is* Xsens's joint angles under OpenSim names. Nothing solves a
+model, so it inherits Xsens's biomechanics wholesale — a different scientific claim from IK. Our
+earlier "conversion fidelity" figure (our `.mot` vs Xsens `<jointAngle>`, r ≈ 0.98) is trivially
+1.0 for this path, because it *is* that data. A write-up must say which route produced its numbers.
+
+**Not yet done:** `jointcheck.m`'s comparison plot (mean ± SD bands, Xsens vs OpenCap, 26
+coordinates + 3 COM channels) and `matrix_general.m`'s ±180° unwrap, both of which operate on the
+curve matrix rather than the `.mot`.
