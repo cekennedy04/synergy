@@ -1500,3 +1500,115 @@ visible window; the native paint path; a live `mainloop` running concurrently wi
 `_poll_pipeline_queue` firing for real, `_on_export_clicked`). One interactive session against a
 `CK-00N` trial covers all four at once, and is the single highest-value remaining test on this
 codebase.
+
+## Update 2026-08-25: all 15 trials batched, GDI recovered, UCM still absent
+
+Driven by the actual research goal, stated this session: GDI and a synergy (UCM) index, both of
+which need variance across trials, which a one-trial-at-a-time GUI structurally cannot provide.
+
+### `run_batch` cannot process locally-generated trials
+
+`Examples/gaitAnalysis-UCM.py`'s `process_trial()` calls `get_trial_id()` then `download_trial()` —
+it **re-downloads every trial from OpenCap's servers** before analysing it. The `CK-*` trials are
+IMU-derived and written locally by this pipeline; they have never existed on OpenCap. All 15 failed
+with *"This session is not in your username, nor is it public."*
+
+This is architectural, not a bug to patch: `run_batch` assumes every trial originated in OpenCap.
+`run_gait_analysis()` and `export_individual_curves_csv()` underneath it are fully offline, so the
+batch driver calls those two directly and skips the download. Worth knowing before anyone reaches
+for `--all-trials` on Xsens-derived data again.
+
+Note also `discover_trials()` globs `*.mot`, and the session now holds **31** — 15 IMU-derived
+`CK-*` plus 16 video-derived `Trial*`. `--all-trials` would silently process both sets as though
+they were one cohort. Trial names are passed explicitly instead.
+
+### Upstream bug in `utilsKinematics.py`: the filtered path is broken
+
+```python
+if lowpass_cutoff_frequency_for_coordinate_values > 0:
+    ...
+    self.table.trim(...)          # shortens the table
+...
+self.Qs = self.table.getMatrix().to_numpy()                    # trimmed length
+spline = InterpolatedUnivariateSpline(self.time, self.Qs[:,i])  # self.time never updated
+```
+
+The trim shortens `self.table` but leaves `self.time` at its original length, so **any** call with
+a positive cutoff raises `ValueError: x and y should have a same length` whenever the trim actually
+removes a row. `run_gait_analysis` defaults to `filter_frequency=6` and hits it on every trial;
+`clinician_gui.run_pipeline` passes nothing (default `-1`), skips the branch, and works.
+
+Not fixed here: `utilsKinematics.py` is one of the coworker-supplied files under the "copies only"
+rule. **Consequence worth stating plainly: every validated number in this file was produced
+unfiltered**, because `run_pipeline` never passes a cutoff. The batch was run the same way, so it
+is consistent with the validation — but if the protocol calls for 6 Hz filtering, that fix belongs
+in a `_UCM`-suffixed copy and the accuracy work would need re-running.
+
+### Batch result: 15/15
+
+All 15 CK trials → `context/gait_curves/` (gitignored), 319 s, both legs each, 30 CSVs.
+
+**Format note.** The export is `np.savetxt(matrix, delimiter=',', fmt='%f')` — raw numbers, no
+coordinate-name or frame-index columns. This is *not* a regression from the 2026-08-17 rewrite: the
+pre-rewrite version used the identical `np.savetxt` call. The labels in `Data/UCM
+Analysis-test1_right.csv` (`pelvis_tilt,0,...`) were added by something downstream of this
+pipeline, not by it.
+
+**Row-count compatibility.** Ours are `38 × 101 = 3838` rows; that reference file is `36 × 101 =
+3636`. The difference is `fpa_r`/`fpa_l`, added to `JOINT_NAMES` on 2026-08-20. Any downstream
+matrix built against the 36-coordinate layout will not accept these files unmodified.
+
+### GDI recovered and repaired → `gdi.py`
+
+The ~810 lines removed on 2026-08-17 are restored as live, tested code in a new module (same
+"new file, not an edit of a coworker's" pattern as `gait_analysis_UCM_fixed.py`). Five bugs fixed,
+each of which produced a wrong answer or an obscure crash rather than an obvious failure:
+
+1. Checked for `matrix.csv` but opened `matrix_ms_reduced.csv`; checked `controlCalc.csv` but
+   opened `controlCalc_ms_reduced.csv`. Either way one path was wrong — a missing `_ms_reduced`
+   file raised `FileNotFoundError`, a missing plain-named one skipped silently and left `matrix`
+   undefined until a `NameError` much later.
+2. Searched via `os.walk` from three directory levels above the repo, with no `break`, so the last
+   copy found anywhere in that tree silently won. Now an explicit directory argument.
+3. **The right-leg feature vector was wrong.** It used all 36 coordinates at 101 points (3636
+   values) with the `num % 2 == 0` downsampling commented out, while the left-leg version used the
+   correct 9-variable list at 51 points. GDI is defined on 9 × 51 = 459; the right-leg vector was
+   neither the right features nor the right sampling.
+4. The reference load ran at import time, walking the filesystem as an import side effect.
+5. No validation that vector length matched the reference matrix, so a shape mismatch surfaced as
+   an opaque numpy error.
+
+Verified against real data: both sides of `CK-001` build a finite 459-value vector
+(r: −26.28…58.93, l: −28.83…62.82). 17 tests; **139 pass** overall.
+
+**GDI still cannot produce a score.** `matrix_ms_reduced.csv` and `controlCalc_ms_reduced.csv` are
+not in this repo, and GDI is *defined* relative to a normative control group — it is not derivable
+from subject data. `load_gdi_reference` now fails with a message naming exactly what is missing and
+why. The normative constants `LN_CONTROL_MEAN = 4.443685139` / `LN_CONTROL_SD = 0.223457646` belong
+to that same control dataset and must be replaced together with it.
+
+**GDI is unaffected by the pinned-root limitation.** Its 9 variables are joint angles plus pelvis
+*orientation* (tilt/list/rotation) — no translation, no centre-of-mass term. All 9 are present in
+the IMU `.mot` output, `subtalar_angle` included. So unlike `gait_speed`/`stride_length`, GDI is
+computable from this pipeline's data as soon as the reference dataset exists.
+
+### UCM / synergy index: does not exist anywhere in this repo
+
+Searched every commit and every file type (`.py`, `.m`, `.mlx`, `.ipynb`, `.mat`, `.csv`) including
+`context/`. There is no nullspace projection, no V_UCM/V_ORT variance decomposition, and no
+task-variable Jacobian — not even commented out, unlike GDI. The `-UCM` filename suffix and the
+repository's name are the only traces.
+
+`Data/UCM Analysis-test1_right.csv` is **not** UCM output: it is 36 coordinates × 101 frames with
+one column per gait cycle, exactly `_build_individual_curves_matrix`'s shape, and its filename
+parses as `subject_id="UCM Analysis"`, `trial_name="test1"`. It is the per-gait-cycle curves export
+— the *input* a UCM analysis consumes.
+
+If the math exists, it is outside this repository. Re-deriving it risks a different formulation
+than the lab's, so it is worth asking for rather than reconstructing.
+
+**One constraint to settle before any UCM work starts:** `JOINT_NAMES` carries `pelvis_tx/ty/tz`
+and `comx/comy/comz`, and `_build_individual_curves_matrix` expresses the COM terms *relative to
+the matching pelvis translation*. For IMU-derived trials the root is pinned, so those six are
+degenerate. If the task variable is COM position — the standard gait UCM formulation — it cannot be
+computed from the IMU data as it currently stands. That is a modelling decision, not a coding one.
