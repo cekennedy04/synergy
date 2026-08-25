@@ -1612,3 +1612,78 @@ and `comx/comy/comz`, and `_build_individual_curves_matrix` expresses the COM te
 the matching pelvis translation*. For IMU-derived trials the root is pinned, so those six are
 degenerate. If the task variable is COM position — the standard gait UCM formulation — it cannot be
 computed from the IMU data as it currently stands. That is a modelling decision, not a coding one.
+
+### Batch inspection: stride inventory and which coordinates are actually usable (2026-08-25)
+
+Inspection of the 30 exported curve matrices. The headline is that **five coordinates carry
+exactly zero variance and the upper limb is invalid**, so any variance decomposition must strip
+those columns rather than project noise into the V_UCM / V_ORT subspaces.
+
+**Stride inventory: 145 pooled** — 72 right, 73 left, 4–6 per trial per side across all 15 trials.
+Adequate for across-stride variance work.
+
+**Coordinate usability** (across-stride SD in **degrees**, pooled over 15 trials, right-side file):
+
+| group | across-stride SD | status | consequence |
+|---|---|---|---|
+| pelvis orientation (`tilt`/`list`/`rotation`) | 0.71–1.86 | clean | usable in `q` |
+| lower limb (hip/knee/ankle/subtalar, both sides) | 0.78–1.70 | clean | usable in `q` |
+| lumbar (`extension`/`bending`/`rotation`) | 0.74–1.40 | clean | usable in `q` |
+| `pelvis_tx` / `ty` / `tz` | **0.000000** | degenerate | pinned root — exclude |
+| `mtp_angle_r` / `mtp_angle_l` | **0.000000** | degenerate | exclude (see below) |
+| `comx` / `comy` / `comz` | 0.0025–0.0033 **m** | pelvis-relative only | task-variable candidate, not `q` |
+| upper limb (10 DOF) | see below | invalid | exclude |
+
+**`mtp_angle_r/l` are frozen for a specific, fixable reason.** `SEGMENT_TO_IMU_FRAME` maps
+`RightFoot → calcn_r_imu` but nothing maps `RightToe`/`LeftToe`, so the metatarsophalangeal joint is
+unconstrained by any IMU and never leaves its default value. The Xsens file *does* carry
+`RightToe`/`LeftToe` segments (23 segments, both present), so this is a mapping gap rather than a
+data limitation — addressable if toe kinematics ever matter.
+
+**`comx/comy/comz` are not degenerate, but they are not global COM either.**
+`_build_individual_curves_matrix` expresses each COM component *relative to the matching pelvis
+translation*, and with translation pinned that reduces to COM in a **pelvis-fixed frame**. It does
+vary (~3 mm across strides) from limb motion. That is a different construct from global COM
+control, so a COM-based UCM task variable computed here would not mean what the standard gait
+formulation means. Modelling decision, not a coding one.
+
+**The upper limb is invalid — the 2026-08-19 T-pose hypothesis, now confirmed.** That entry
+predicted the arms would be wrong because "the calibration pose has arms out; this model's default
+pose has arms down," and left it untested. It is now demonstrated:
+
+| coordinate | range across all 15 trials | verdict |
+|---|---|---|
+| `arm_flex_l` | −566.4° … 140.3° | **saturating** |
+| `arm_rot_l` | −126.1° … **572.9°** | **saturating** |
+| `arm_flex_r` | 181.2° … 363.9° | **non-physiological** |
+| `arm_add_r`, `arm_rot_r`, `elbow_flex_r`, `arm_add_l`, `elbow_flex_l` | within plausible bounds | not proven bad |
+
+**10 radians = 573.0°.** Those coordinates are pinned against their OpenSim joint bounds in 11 of
+15 trials — IMUPlacer derives a large bogus shoulder offset from the T-pose, and IK then drives the
+coordinate to its limit.
+
+State the scope precisely: **three** coordinates demonstrably saturate; the remaining upper-limb
+DOFs sit in plausible ranges but are produced by the same corrupted shoulder calibration and are
+coupled to the broken ones through the shoulder's Euler triplet. They are *not trustworthy by
+association*, not *proven wrong*. The conservative and correct call is to exclude all 10 upper-limb
+DOFs from any joint vector.
+
+**Legs and pelvis are clean** across all 15: knee 0.0–68.8°, hip −29.9…35.0°, ankle −37.4…15.4°,
+pelvis within ±30.9°. All physiological.
+
+**Resulting partition of `JOINT_NAMES` (38 entries):**
+
+- **18 usable as `q`** — 3 pelvis orientation, 12 lower limb (6 per side), 3 lumbar.
+- **5 zero-variance, must be stripped** — `pelvis_tx/ty/tz`, `mtp_angle_r/l`.
+- **10 upper-limb, excluded** — invalid calibration.
+- **3 COM** — task-variable candidates, pelvis-relative, not part of `q`.
+- **2 derived** — `fpa_r`/`fpa_l` are computed foot-progression angles, not model DOFs.
+
+**Impact by analysis:**
+
+- **GDI: unaffected.** Its 9 variables are pelvis orientation plus one leg — no translation, no COM,
+  no arm coordinate. All 9 are clean here.
+- **Lower-limb UCM formulations: unaffected.** Foot-position-relative-to-hip and lower-limb angular
+  coordination both draw only on the clean 18.
+- **Any formulation including the upper limb would decompose garbage,** and `JOINT_NAMES` carries
+  those coordinates by default, so the exclusion has to be explicit rather than assumed.
