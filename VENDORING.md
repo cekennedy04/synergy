@@ -1687,3 +1687,33 @@ pelvis within ±30.9°. All physiological.
   coordination both draw only on the clean 18.
 - **Any formulation including the upper limb would decompose garbage,** and `JOINT_NAMES` carries
   those coordinates by default, so the exclusion has to be explicit rather than assumed.
+
+### Contingency scoping for the three UCM formulations (2026-08-25)
+
+Recorded before any of it is attempted, because the cost differences are large and not obvious from
+the code. Which path applies depends on the task variable the collaborator's prior formulation used
+— an open question at time of writing.
+
+**A — lower-limb / pelvic synergy: zero compute.** The 18-DOF `q` (3 pelvis orientation, 12 lower
+limb, 3 lumbar) for all 145 strides is already on disk in `context/gait_curves/`. Nothing to
+re-run.
+
+**B — foot/toe kinematics included: full pipeline re-run, ~15-20 min.** `mtp_angle_r/l` are frozen
+because `SEGMENT_TO_IMU_FRAME` never maps `RightToe`/`LeftToe`, so mapping them is the fix. But
+note what that actually changes: it adds two more **tracked IMU frames to the IK problem**, so
+`run_imu_ik` produces a different solution. Every `CK-*.mot` is replaced, and `.trc`/`.sto` and the
+curve CSVs regenerate from it. This is not a matter of appending two columns at export time —
+`mtp_angle` comes out of the IK, not the exporter. Budget the full conversion pipeline (~45 s/trial)
+plus the curve batch (~20 s/trial), and expect the existing outputs to be invalidated.
+
+**C — whole-body synergy: a validation project, not a calibration fix.** Recovering the 10
+upper-limb DOFs means addressing the T-pose-vs-arms-down shoulder offset (see the batch-inspection
+section above). Even if the geometry fix works, **the resulting arm kinematics would be newly
+generated and entirely unvalidated**: every validation figure in this file covers knee, hip, ankle
+and pelvis only — no arm coordinate has ever been compared against OpenCap or against Xsens's own
+`<jointAngle>`. Feeding unvalidated arm DOFs into a variance decomposition would project calibration
+artifacts straight into V_UCM / V_ORT, which is exactly the failure the exclusion exists to prevent.
+C therefore carries its own validation pass as a prerequisite, and is materially larger than B.
+
+Deliberately not started. Doing either B or C before the task variable is known risks rebuilding
+DOFs the formulation does not use.
