@@ -168,7 +168,9 @@ def test_full_results_shape_for_display_without_error(mod, tmp_path):
 
     shaped = mod.shape_results_for_display(result, xsens_module=fake_xsens)
 
-    assert set(shaped.keys()) == {"metadata", "curves", "metrics", "confidence"}
+    assert set(shaped.keys()) == {
+        "metadata", "curves", "metrics", "confidence", "outputs", "output_folder",
+    }
 
     metadata = shaped["metadata"]
     assert metadata["subject_session_id"] == Path(result["session_dir"]).name
@@ -461,3 +463,66 @@ def test_shape_metadata_carries_the_spatial_provenance_flags(mod, tmp_path):
     # and the constant is the single source of truth, not duplicated literals
     for key, value in mod.SPATIAL_PROVENANCE.items():
         assert metadata[key] == value
+
+
+# -- Raw output files surfaced for the user (2026-08-25) -----------------
+
+
+def test_shaped_results_list_the_raw_output_files(mod, tmp_path):
+    """A researcher needs the .mot and .trc to take into their own analysis.
+    Reported from what run_pipeline actually wrote, not recomputed."""
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+    result["trc_path"] = str(tmp_path / "MarkerData" / "trial1.trc")
+    result["sto_path"] = str(tmp_path / "Kinematics" / "trial1_orientations.sto")
+
+    outputs = mod.shape_results_for_display(result, xsens_module=fake_xsens)["outputs"]
+
+    by_label = {entry["label"]: entry for entry in outputs}
+    assert "Joint angles (.mot)" in by_label
+    assert "Markers (.trc)" in by_label
+    assert by_label["Markers (.trc)"]["path"] == result["trc_path"]
+
+
+def test_output_entries_flag_whether_the_file_is_actually_there(mod, tmp_path):
+    """A path that looks fine but points at nothing is the confusing case --
+    the panel should be able to say so rather than sending the user to an
+    empty folder."""
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+    real = tmp_path / "real.mot"
+    real.write_text("x")
+    result["mot_path"] = str(real)
+    result["trc_path"] = str(tmp_path / "missing.trc")
+
+    outputs = mod.shape_results_for_display(result, xsens_module=fake_xsens)["outputs"]
+    by_label = {entry["label"]: entry for entry in outputs}
+
+    assert by_label["Joint angles (.mot)"]["exists"] is True
+    assert by_label["Markers (.trc)"]["exists"] is False
+
+
+def test_output_folder_is_reported_for_opening(mod, tmp_path):
+    """The panel offers an 'open folder' action, so the shaped result has to
+    name a directory that exists rather than leaving the GUI to guess."""
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+
+    shaped = mod.shape_results_for_display(result, xsens_module=fake_xsens)
+
+    assert shaped["outputs"]
+    assert Path(shaped["output_folder"]).name == Path(result["session_dir"]).name
+
+
+def test_missing_optional_paths_do_not_break_shaping(mod, tmp_path):
+    """Older result dicts (or a partial run) may lack trc/sto. Shaping must
+    degrade rather than raise -- the rest of the report is still valid."""
+    jc = mod._load_joint_confidence()
+    result, fake_xsens = _make_full_result(tmp_path, mod, jc)
+    result.pop("trc_path", None)
+    result.pop("sto_path", None)
+
+    outputs = mod.shape_results_for_display(result, xsens_module=fake_xsens)["outputs"]
+
+    assert any(entry["label"] == "Joint angles (.mot)" for entry in outputs)
+    assert all(entry["path"] for entry in outputs)

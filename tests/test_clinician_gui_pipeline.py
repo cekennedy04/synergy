@@ -638,3 +638,48 @@ def test_a_gait_module_without_the_error_class_still_maps_to_generic_failure(mod
     exc = _run_pipeline_expecting_error(mod, tmp_path, fake_gait)
 
     assert isinstance(exc, mod.GaitAnalysisFailedError)
+
+
+# -- Raw file outputs surfaced to the user (2026-08-25) -------------------
+# run_pipeline already computes the .trc and .sto paths but discarded them,
+# returning only mot_path. Researchers need the raw files to take into their
+# own analysis, so every artefact the run produced is now reported.
+
+
+def test_run_pipeline_reports_every_file_it_wrote(mod, tmp_path):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    resolve_paths = _resolve_paths_for(session_dir)
+    fake_xsens = _make_fake_xsens_module(resolve_paths=resolve_paths)
+
+    result = mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=fake_xsens,
+        gait_fixed_module=_make_fake_gait_fixed_module(),
+        foot_progression_module=_make_fake_foot_progression_module(),
+    )
+
+    for key in ("mot_path", "trc_path", "sto_path", "model_file"):
+        assert key in result, f"{key} missing from run_pipeline's result"
+        assert result[key], f"{key} is empty"
+
+
+def test_reported_paths_are_the_ones_the_pipeline_actually_used(mod, tmp_path):
+    """Recomputing paths for display instead of returning the ones written to
+    would drift silently the moment resolve_session_output_paths changes."""
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    resolve_paths = _resolve_paths_for(session_dir)
+    fake_xsens = _make_fake_xsens_module(resolve_paths=resolve_paths)
+
+    result = mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=fake_xsens,
+        gait_fixed_module=_make_fake_gait_fixed_module(),
+        foot_progression_module=_make_fake_foot_progression_module(),
+    )
+
+    assert result["trc_path"] == resolve_paths["trc_path"]
+    assert result["sto_path"] == resolve_paths["sto_path"]

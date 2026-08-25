@@ -428,7 +428,13 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
         "mvnx_path": mvnx_path,
         "trial_name": trial_name,
         "model_file": paths["model_file"],
+        # Every artefact this run wrote, so a researcher can take the raw
+        # files into their own analysis. Returned from `paths` rather than
+        # recomputed for display, which would drift the moment
+        # resolve_session_output_paths changes.
         "mot_path": mot_path,
+        "trc_path": paths["trc_path"],
+        "sto_path": paths["sto_path"],
         "fpa_r": fpa_r,
         "fpa_l": fpa_l,
         "gait_r": gait_r,
@@ -1020,6 +1026,38 @@ def _mot_series_from_coordinate_values(coordinate_values):
     return mot_times, mot_coordinates
 
 
+# Raw artefacts a run writes, in the order a researcher is most likely to
+# want them. Labels carry the extension because that is what they will look
+# for on disk (2026-08-25).
+OUTPUT_FILE_LABELS = (
+    ("mot_path", "Joint angles (.mot)"),
+    ("trc_path", "Markers (.trc)"),
+    ("sto_path", "IMU orientations (.sto)"),
+    ("model_file", "Calibrated model (.osim)"),
+)
+
+
+def shape_output_files_for_display(result):
+    """List every file the run produced, with whether it is actually present.
+
+    A path that looks fine but points at nothing is the confusing case, so
+    existence is reported rather than assumed. Keys absent from `result` are
+    skipped instead of raising: a partial run, or an older result dict, should
+    still yield a usable report for everything else.
+    """
+    entries = []
+    for key, label in OUTPUT_FILE_LABELS:
+        path = result.get(key)
+        if not path:
+            continue
+        entries.append({
+            "label": label,
+            "path": str(path),
+            "exists": Path(path).is_file(),
+        })
+    return entries
+
+
 def shape_results_for_display(result, xsens_module=None, joint_confidence_module=None):
     """Orchestrates all four U4 content areas from one run_pipeline() result
     dict. Pure w.r.t. Tk (no widgets built here); ClinicianGUI._render_results
@@ -1065,7 +1103,14 @@ def shape_results_for_display(result, xsens_module=None, joint_confidence_module
     )
     confidence = shape_confidence_for_display(confidence_raw)
 
-    return {"metadata": metadata, "curves": curves, "metrics": metrics, "confidence": confidence}
+    return {
+        "metadata": metadata,
+        "curves": curves,
+        "metrics": metrics,
+        "confidence": confidence,
+        "outputs": shape_output_files_for_display(result),
+        "output_folder": str(result.get("session_dir", "")),
+    }
 
 
 def build_curve_figure(curve):
@@ -1434,6 +1479,9 @@ class ClinicianGUI:
         self._render_metrics(
             self._results_frame, shaped["metrics"], shaped["metadata"]
         )
+        self._render_outputs(
+            self._results_frame, shaped.get("outputs"), shaped.get("output_folder")
+        )
 
         # Content height just changed; recompute what is scrollable and return
         # to the top so a re-run does not leave the view scrolled into the
@@ -1441,6 +1489,68 @@ class ClinicianGUI:
         self._results_frame.update_idletasks()
         self._sync_scrollregion()
         self._results_canvas.yview_moveto(0.0)
+
+    def _render_outputs(self, parent, outputs, output_folder):
+        """Raw files this run wrote, so they can be taken into other analysis.
+
+        Follows DESIGN.md's metadata-panel pattern -- label in text-secondary,
+        value in the data font -- since these are label/value rows like any
+        other readout. The button uses the plain bordered "TButton" rather
+        than Primary: Export to PDF is the primary action on this screen and
+        two solid teal buttons would compete.
+        """
+        if not outputs:
+            return
+
+        frame = ttk.LabelFrame(parent, text="OUTPUT FILES", padding=8)
+        frame.grid(row=3, column=0, sticky="we", pady=(0, 8))
+        frame.columnconfigure(1, weight=1)
+
+        for row_index, entry in enumerate(outputs):
+            ttk.Label(frame, text=f"{entry['label']}:", style="Secondary.TLabel").grid(
+                row=row_index, column=0, sticky="nw", padx=(0, 8), pady=1
+            )
+            # wraplength rather than truncation: a path the clinician cannot
+            # read in full is not much use, and these nest several levels deep.
+            ttk.Label(
+                frame, text=entry["path"], style="Data.TLabel",
+                wraplength=760, justify="left",
+            ).grid(row=row_index, column=1, sticky="w", pady=1)
+            # Only flag the surprising case. A tick beside every present file
+            # is noise; a missing one needs to be obvious.
+            if not entry.get("exists", True):
+                ttk.Label(
+                    frame, text="not found", foreground=TIER_COLORS["low"]["fg"],
+                ).grid(row=row_index, column=2, sticky="w", padx=(8, 0))
+
+        if output_folder:
+            ttk.Button(
+                frame, text="Open output folder",
+                command=lambda: self._open_folder(output_folder),
+            ).grid(row=len(outputs), column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    def _open_folder(self, folder):
+        """Reveal the output directory in the OS file browser.
+
+        os.startfile is Windows-only, which is this app's target; the fallbacks
+        keep it working elsewhere rather than failing silently. Any failure
+        surfaces as a message box, because a button that does nothing when
+        clicked is worse than one that explains itself.
+        """
+        import subprocess
+
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(folder)  # noqa: S606 -- opening a directory the user chose
+            elif sys.platform == "darwin":
+                subprocess.run(["open", folder], check=True)
+            else:
+                subprocess.run(["xdg-open", folder], check=True)
+        except Exception as exc:  # noqa: BLE001 -- surfaced to the user below
+            messagebox.showerror(
+                "Could not open folder",
+                "Could not open:" + chr(10) + str(folder) + chr(10) + chr(10) + f"{type(exc).__name__}: {exc}",
+            )
 
     def _render_metadata(self, parent, metadata):
         # Uppercased per DESIGN.md's section-header scale note ("12-13px
