@@ -1785,3 +1785,57 @@ returning a placeholder, since a zero or NaN in a results table is indistinguish
 measurement. Both are pinned by tests. It also records the decisive asymmetry: **a global-COM task
 variable is available to the OpenCap methodology but not to the IMU one**, whose root translation is
 pinned — the COM columns in both exports are pelvis-relative.
+
+### UCM decomposition implemented, and a first result that must not be quoted naively (2026-08-25)
+
+`ucm.py` (projection maths) and `com_task.py` (the task function) built test-first — see the commit
+messages for the TDD/mutation-sweep record. **The formulation is a default chosen here, not a
+reproduction of any prior analysis.**
+
+Formulation: `q` = the 18 clean DOFs; `x` = pelvis-relative COM, chosen over global COM so both
+methodologies remain comparable (global COM does not exist for the pinned-root IMU pipeline).
+Jacobian by central differences through the real scaled OpenSim model — rank 3, so the uncontrolled
+manifold is 15-dimensional, as designed.
+
+First result, all strides pooled:
+
+| methodology | strides | V_UCM | V_ORT | mean ΔV | ΔV_z | phases with synergy |
+|---|---|---|---|---|---|---|
+| Xsens | 72 | 9.695 | 5.777 | 0.407 | 0.365 | 100/101 |
+| OpenCap | 50 | 19.329 | 4.962 | 0.803 | 0.838 | 101/101 |
+
+Both show a COM-stabilising synergy. **The methodology difference is largely an artifact, and this
+is the number most likely to be misread.**
+
+The task is **80× more sensitive to proximal than distal DOFs** (mean |J| 1.515 mm/deg for
+hip/pelvis/lumbar against 0.019 for ankle/subtalar; 121× between the extremes). Pelvis-relative COM
+barely moves when the ankle does, so ankle and subtalar variance is close to *free* — it lands in
+the uncontrolled manifold by construction, inflating V_UCM and therefore ΔV.
+
+OpenCap's excess variance sits precisely there (ankle across-stride SD 4.76 against the IMU
+pipeline's 1.19). Re-running with those four DOFs removed:
+
+| | with ankle/subtalar | without | change |
+|---|---|---|---|
+| Xsens ΔV | 0.407 | 0.477 | +0.070 |
+| OpenCap ΔV | 0.803 | 0.643 | −0.160 |
+| **gap** | **0.396** | **0.166** | **−58%** |
+
+OpenCap's V_UCM falls 33% (19.33 → 12.86) while the IMU pipeline's *rises*. **Roughly 58% of the
+apparent methodology difference was distal measurement noise projecting into COM-insensitive
+directions**, not better motor coordination. The residual gap may be real or may be the same effect
+in other DOFs; it is not established either way.
+
+Consequences to carry forward:
+
+- Do not report "OpenCap shows a stronger synergy". On this task variable, a noisier signal can
+  score *higher* whenever its noise concentrates in low-sensitivity DOFs.
+- Any ΔV quoted from this pipeline needs the Jacobian sensitivity profile alongside it. A synergy
+  index is only interpretable against how much each DOF actually moves the task variable.
+- This is an argument for choosing the task variable on domain grounds rather than convenience.
+  Pelvis-relative COM was picked for cross-methodology comparability, and it happens to be nearly
+  blind to the distal joints where the two methodologies differ most — close to a worst case for
+  this particular comparison.
+- Strides are pooled across trials, so between-bout differences count as deviation from the pooled
+  mean. Defensible for "across-stride variance", applied identically to both methodologies, but it
+  is not within-bout variability and should not be described as such.
