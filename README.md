@@ -22,6 +22,27 @@ which already contains the logic for detecting when steps happen — splitting a
 into strides from heel-strike to heel-strike (heel strike → single support → swing → next
 heel strike).
 
+## Running the GUI
+
+```
+python launch_gui.py
+```
+
+Any python works -- there is no need to `conda activate` first. The launcher
+finds the `opencap-processing` environment (the only place `opensim` is
+installed) and re-executes the GUI under it. On Windows, `launch_gui.bat` does
+the same and can be double-clicked.
+
+Note that the **tests** run under a different interpreter than the app: `pytest`
+lives in base, not in `opencap-processing`.
+
+```
+~/miniconda3/python.exe -m pytest tests -q
+```
+
+See `.claude/skills/run-gui/SKILL.md` for the failure modes and the
+`SYNERGY_PYTHON` override.
+
 ## Pipeline
 
 1. **Xsens → OpenSim format.** Convert Xsens kinematics (`.mvnx`) into the `.mot` format
