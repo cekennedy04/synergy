@@ -124,7 +124,12 @@ sys.path.append(os.path.abspath("../ActivityAnalyses"))
 # xsens_to_opensim.py defers its own `import opensim`).
 
 # Joint/segment coordinate names, in the order the exported CSV columns follow.
-# Unchanged from the pre-rewrite version.
+# Unchanged from the pre-rewrite version, except fpa_r/fpa_l (added
+# 2026-08-20): these were computed by compute_foot_progression_angles below
+# and passed into gait_analysis, but this list controls what actually reaches
+# the per-gait-cycle curves CSV -- without them here, the computed FPA values
+# never appeared in any output at all. See VENDORING.md's 2026-08-20 FPA
+# finding.
 JOINT_NAMES = [
     'pelvis_tilt', 'pelvis_list', 'pelvis_rotation', 'pelvis_tx', 'pelvis_ty', 'pelvis_tz',
     'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r',
@@ -132,12 +137,18 @@ JOINT_NAMES = [
     'knee_angle_l', 'ankle_angle_l', 'subtalar_angle_l', 'mtp_angle_l', 'lumbar_extension',
     'lumbar_bending', 'lumbar_rotation', 'arm_flex_r', 'arm_add_r', 'arm_rot_r', 'elbow_flex_r',
     'pro_sup_r', 'arm_flex_l', 'arm_add_l', 'arm_rot_l', 'elbow_flex_l', 'pro_sup_l',
-    'comx', 'comy', 'comz',
+    'comx', 'comy', 'comz', 'fpa_r', 'fpa_l',
 ]
 
+# 'foot_progression_angle' added 2026-08-20, alongside
+# gait_analysis_UCM_fixed.py's new compute_foot_progression_angle() method --
+# same reason as the JOINT_NAMES change above: this is what makes FPA
+# actually show up in scalars_r/scalars_l instead of being computed and
+# discarded.
 SCALAR_NAMES = {
     'gait_speed', 'stride_length', 'step_width', 'cadence',
     'single_support_time', 'double_support_time', 'step_length_symmetry',
+    'foot_progression_angle',
 }
 
 # Number of leading OpenSim coordinates whose value gets set per frame in
@@ -314,26 +325,40 @@ def compute_foot_progression_angles(model_filename, coordinates_file_name):
 
 
 def run_gait_analysis(base_folder, trial_name, filter_frequency=6, n_gait_cycles=-1,
-                       trimming_start=-1, trimming_end=-1):
+                       trimming_start=-1, trimming_end=-1, allow_manual_entry=True):
     """Run FPA computation + left/right gait_analysis_UCM for one trial.
 
-    Deferred import of gait_analysis_UCM: this file is still missing from
-    the repo (see VENDORING.md's "Critical gap" section) -- deferring the
-    import here means everything else in this module (path parsing, trial
-    discovery, CSV export) stays importable/testable without it.
+    Deferred import: everything else in this module (path parsing, trial
+    discovery, CSV export) stays importable/testable without gait_analysis_UCM's
+    heavier dependency chain (opensim, pandas, scipy, ...).
+
+    Imports gait_analysis_UCM_fixed (2026-08-20), not gait_analysis_UCM --
+    the bug-fixed copy (see VENDORING.md and that file's own module
+    docstring for the full list of fixes: batch-mode-safe gait-event
+    detection, several IndexError/ZeroDivisionError fixes, and the new
+    compute_foot_progression_angle scalar this SCALAR_NAMES/JOINT_NAMES
+    update above depends on). The original gait_analysis_UCM.py is left
+    untouched -- same "only make copies" rule as utils.py/utilsKinematics.py.
+
+    allow_manual_entry is threaded through from process_trial/run_batch so
+    --all-trials can pass False (see run_batch) -- gait_analysis_UCM_fixed.py's
+    interactive fallback would otherwise still block a batch run on stdin
+    even with everything else in this driver already non-interactive.
     """
-    from gait_analysis_UCM import gait_analysis
+    from gait_analysis_UCM_fixed import gait_analysis
 
     fpa_r, fpa_l = compute_foot_progression_angles(base_folder, trial_name)
 
     gait_r = gait_analysis(
         base_folder, trial_name, fpa_r, fpa_l, leg='r',
         lowpass_cutoff_frequency_for_coordinate_values=filter_frequency,
-        n_gait_cycles=n_gait_cycles, trimming_start=trimming_start, trimming_end=trimming_end)
+        n_gait_cycles=n_gait_cycles, trimming_start=trimming_start, trimming_end=trimming_end,
+        allow_manual_entry=allow_manual_entry)
     gait_l = gait_analysis(
         base_folder, trial_name, fpa_r, fpa_l, leg='l',
         lowpass_cutoff_frequency_for_coordinate_values=filter_frequency,
-        n_gait_cycles=n_gait_cycles, trimming_start=trimming_start, trimming_end=trimming_end)
+        n_gait_cycles=n_gait_cycles, trimming_start=trimming_start, trimming_end=trimming_end,
+        allow_manual_entry=allow_manual_entry)
 
     center_of_mass = {trial_name: gait_r.get_center_of_mass_values(lowpass_cutoff_frequency=10)}
 
@@ -491,9 +516,12 @@ def _select_extracted_folder_interactively(data_folder):
     return filedialog.askdirectory(parent=root, initialdir=str(data_folder))
 
 
-def process_trial(base_folder, trial_name, session_id, subject_id, save_path):
+def process_trial(base_folder, trial_name, session_id, subject_id, save_path,
+                   allow_manual_entry=True):
     """Run the gait pipeline for one trial and export its CSVs. Shared by
-    both the interactive menu and non-interactive batch mode."""
+    both the interactive menu and non-interactive batch mode -- the two
+    call sites pass different allow_manual_entry values (see run_batch and
+    run_interactive)."""
     from utils import download_trial, get_trial_id
 
     trial_id = get_trial_id(session_id, trial_name)
@@ -501,7 +529,8 @@ def process_trial(base_folder, trial_name, session_id, subject_id, save_path):
     session_dir = data_folder / session_id
     downloaded_trial_name = download_trial(trial_id, str(session_dir), session_id=session_id)
 
-    results = run_gait_analysis(base_folder, downloaded_trial_name)
+    results = run_gait_analysis(base_folder, downloaded_trial_name,
+                                 allow_manual_entry=allow_manual_entry)
     print_scalar_results(results)
     right_path, left_path = export_individual_curves_csv(
         results, save_path, subject_id, trial_name)
@@ -559,8 +588,18 @@ def run_batch(zip_path=None, data_dir=None, trial_names=None, all_trials=False):
     all_results = {}
     for trial_name in trials_to_run:
         print(f'\n=== {trial_name} ===')
-        all_results[trial_name] = process_trial(
-            base_folder, trial_name, session_id, subject_id, save_path)
+        # allow_manual_entry=False: a batch run has nothing to answer an
+        # interactive prompt, so gait_analysis_UCM_fixed.py's manual-entry
+        # fallback must raise instead of blocking on stdin (see that file's
+        # module docstring, edit #2). A trial that fails automatic gait-event
+        # detection is skipped (logged, not silently dropped) rather than
+        # hanging the whole batch.
+        try:
+            all_results[trial_name] = process_trial(
+                base_folder, trial_name, session_id, subject_id, save_path,
+                allow_manual_entry=False)
+        except Exception as e:
+            print(f'Skipping {trial_name}: {e}')
     return all_results
 
 
