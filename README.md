@@ -16,10 +16,32 @@ without hand-driving every step.
 
 The gait-cycle-segmentation portion of the pipeline is built on top of the
 [OpenCap GitHub repo](https://github.com/opencap-org/opencap-processing) (a large portion of
-this codebase is inherited from there — vendored directly into this repo; see `VENDORING.md`),
+this codebase is inherited from there — vendored directly into this repo; see `VENDORING.md`,
+and `PROVENANCE.md` for which files are upstream, supervisor-supplied, or written here),
 which already contains the logic for detecting when steps happen — splitting a walking trial
 into strides from heel-strike to heel-strike (heel strike → single support → swing → next
 heel strike).
+
+## Running the GUI
+
+```
+python launch_gui.py
+```
+
+Any python works -- there is no need to `conda activate` first. The launcher
+finds the `opencap-processing` environment (the only place `opensim` is
+installed) and re-executes the GUI under it. On Windows, `launch_gui.bat` does
+the same and can be double-clicked.
+
+Note that the **tests** run under a different interpreter than the app: `pytest`
+lives in base, not in `opencap-processing`.
+
+```
+~/miniconda3/python.exe -m pytest tests -q
+```
+
+See `.claude/skills/run-gui/SKILL.md` for the failure modes and the
+`SYNERGY_PYTHON` override.
 
 ## Pipeline
 

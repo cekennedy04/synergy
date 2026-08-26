@@ -1,5 +1,10 @@
 # Vendoring notes
 
+> **Status note (2026-08-26).** See **[PROVENANCE.md](PROVENANCE.md)** for the current,
+> authoritative map of which files are upstream, supervisor-supplied, or ours. This document is
+> kept for its detailed history of the 2026-08-14 to 2026-08-17 overlay work; sections below that
+> have since been overtaken by events are marked **RESOLVED** or **SUPERSEDED** inline.
+
 This repo vendors the [opencap-org/opencap-processing](https://github.com/opencap-org/opencap-processing)
 codebase directly (not a git submodule), unmodified. Synergy-specific edits are added as separate
 files rather than overwriting upstream files in place — see "Import-name mismatch" below for what
@@ -13,17 +18,13 @@ that means in practice.
   against this repo's untouched files (see "Files NOT modified" below), and re-apply the overlay
   list.
 
-## ⚠ No git commits yet
+## ⚠ No git commits yet — **RESOLVED**
 
-This repo has never been committed to (`git log` shows no commits; `git status` lists every
-file, including the untouched vendored ones, as untracked). That means the "root `utils.py`/
-`utilsKinematics.py` stay byte-identical to upstream" rule above is currently just an assertion in
-this doc — there's no git history to actually verify it against, and nothing here is protected
-from being accidentally overwritten or deleted. Recommend committing soon: first the untouched
-vendored files as a clean baseline (ideally referencing the upstream commit hash above), then the
-Synergy-specific overlay files and fixes as a separate commit on top, so future diffs against
-upstream are actually checkable instead of resting on this file's word for it. Not done yet
-pending your go-ahead (nothing gets committed without you asking for it).
+~~This repo has never been committed to.~~ The repo was committed on 2026-08-17 in exactly the
+order recommended below: `cfcf7ad` vendors the untouched upstream baseline referencing the commit
+hash above, then `3a568fb` adds the Synergy-specific overlay on top. Diffs against upstream are
+now actually checkable rather than resting on this file's word for it, and the
+"stays byte-identical to upstream" rule is verified in PROVENANCE.md tier A.
 
 ## Files added from `utilsKinematics.zip` (sent 2026-08-14)
 
@@ -32,14 +33,18 @@ separate `_UCM`-suffixed copies:
 
 | File | Location | Status |
 |---|---|---|
-| `utils.py` (yours) | `utils_UCM.py` | Byte-identical to upstream HEAD content (only line-ending differed: your copy is LF, upstream ships CRLF). No functional edits detected. |
-| `utilsKinematics.py` (yours) | `utilsKinematics_UCM.py` | Real edits. See "utilsKinematics_UCM.py diff" below. **Not currently imported by anything** — see "Import-name mismatch" below. |
+| `utils.py` (yours) | `utils_UCM.py` *(since deleted, `67a4b2f`)* | Byte-identical to upstream HEAD content (only line-ending differed: your copy is LF, upstream ships CRLF). No functional edits detected. |
+| `utilsKinematics.py` (yours) | `utilsKinematics_UCM.py` *(since deleted, `67a4b2f`)* | Real edits. See "utilsKinematics_UCM.py diff" below. **Not currently imported by anything** — see "Import-name mismatch" below. |
 | `gaitAnalysis-UCM.py` | `Examples/gaitAnalysis-UCM.py` | Added alongside the untouched `Examples/example_gait_analysis.py` it was based on (you said you *added* this one, not replaced). |
-| `getMarkers.py` | repo root | Added; no upstream equivalent, so nothing to diff against. **Never reviewed in depth until 2026-08-17 — see below.** |
+| `getMarkers.py` | repo root *(since deleted, `67a4b2f`)* | Added; no upstream equivalent, so nothing to diff against. **Never reviewed in depth until 2026-08-17 — see below.** |
 
 `utils.py` and `utilsKinematics.py` at the repo root are untouched stock upstream files.
 
 ### What `getMarkers.py` actually does (reviewed 2026-08-17)
+
+> **HISTORICAL.** `getMarkers.py` was deleted in `67a4b2f`, superseded by `xsens_to_opensim.py`'s
+> marker export. The hardcoded-path problems flagged below were never fixed — the file was
+> removed instead.
 
 Read in full for the first time on 2026-08-17 — earlier passes only skimmed the top of the file.
 It does **not** read Xsens files directly (no `.mvnx`, no Xsens SDK calls). It picks up *after*
@@ -61,6 +66,11 @@ checkout or this repo's `Data/` folder without editing those paths — same cate
 "don't touch your live scripts without being asked" approach used elsewhere in this doc.
 
 ## Import-name mismatch — `utilsKinematics_UCM.py` is currently inert
+
+> **SUPERSEDED.** `utilsKinematics_UCM.py` and `utils_UCM.py` were deleted in `67a4b2f` for
+> exactly the reason this section diagnoses — nothing ever imported them. Neither replacing the
+> root `utilsKinematics.py` nor renaming the import was chosen; the files were removed instead.
+> The root `utils.py` / `utilsKinematics.py` remain stock upstream.
 
 `ActivityAnalyses/gait_analysis.py` (and almost certainly its missing `gait_analysis_UCM.py`
 counterpart, per its own `from gait_analysis_UCM import gait_analysis` pattern used elsewhere)
@@ -86,6 +96,10 @@ Everything, including `utils.py` and `utilsKinematics.py` at the repo root —
 
 ## Critical gap: `gait_analysis_UCM.py` is missing
 
+> **RESOLVED.** The file was supplied and added in `67a4b2f`. It sits at the repo root as
+> `gait_analysis_UCM.py` (not `ActivityAnalyses/`), untouched as supplied. The bug-fixed copy is
+> `gait_analysis_UCM_fixed.py`, and `Examples/gaitAnalysis-UCM.py` imports that copy.
+
 `Examples/gaitAnalysis-UCM.py` (line 44) does:
 
 ```python
@@ -100,6 +114,9 @@ Right now `ActivityAnalyses/` only has the stock upstream `gait_analysis.py`, so
 dropped straight into `ActivityAnalyses/gait_analysis_UCM.py`.
 
 ## `utilsKinematics_UCM.py` diff (vs. upstream HEAD / the stock `utilsKinematics.py`)
+
+> **HISTORICAL.** The file described below no longer exists (deleted in `67a4b2f`). Retained
+> because it records what the supervisor's version differed on, should it ever be resupplied.
 
 Your version is based on an **older upstream commit**, from before two features were added
 later: `marker_name_mapping.REVERSE_MARKER_NAME_MAPPING` (marker-name conversion in
@@ -164,7 +181,7 @@ Two files, 5 tests total, verifying the two fixes above without needing OpenSim 
 
 - `test_gaitAnalysis_UCM_chdir.py` (3 tests) — the chdir fix, run from several starting
   directories, checked against real subprocess behavior.
-- `test_utilsKinematics_UCM_modelpath.py` (2 tests) — kept deliberately small. Originally written
+- `test_utilsKinematics_UCM_modelpath.py` (2 tests) — **since deleted** in `67a4b2f` as orphaned, along with its subject. Kept deliberately small. Originally written
   as 7 tests (5 parametrized branch cases + a negative case), trimmed after a second-pass review
   pointed out that `utilsKinematics_UCM.py` isn't imported by anything yet (see "Import-name
   mismatch" above), so building out a full branch-coverage suite for currently-dead code was
