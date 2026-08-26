@@ -934,7 +934,7 @@ def _fake_combine_module(recorder, fail=None):
         if fail is not None:
             raise fail
         recorder.append({"curve_dir": str(curve_dir), "out_dir": str(out_dir),
-                         "name": name, "on_duplicate": on_duplicate})
+                         "name": name, "prefix": prefix, "on_duplicate": on_duplicate})
         written = {}
         for side in sides:
             path = Path(out_dir) / f"{name}_{side}.csv"
@@ -1035,3 +1035,204 @@ def test_combine_still_runs_when_the_per_trial_export_failed(mod, tmp_path):
     assert result.get("curves_matrix_r_path") is None      # stage 5 failed
     assert recorder, "stage 6 must still attempt to combine"
     assert result["combined_matrix_r_path"]
+
+
+# -- Route is encoded in the filenames (2026-08-26) -----------------------
+# Both conversion routes write per-trial curve files into the same session
+# folder. Without the route in the name they are indistinguishable, so
+# running one trial through IK and the next through direct remapping pools
+# two incompatible kinematic sources into one matrix -- silently, with the
+# right shape. The routes differ in exactly the coordinates a synergy or GDI
+# analysis reads.
+
+
+def test_per_trial_curve_filename_records_the_route(mod, tmp_path):
+    recorder = []
+    result = _run_with_combine(mod, tmp_path, recorder)
+
+    name = Path(result["curves_matrix_r_path"]).name
+    assert "ik" in name.split("-"), f"route missing from {name}"
+
+
+def test_the_two_routes_produce_different_filenames(mod, tmp_path):
+    """The whole point: an IK trial and a direct-remapping trial must not
+    collide, and must not look alike to the pooling step."""
+    for sub in ("a", "b"):
+        (tmp_path / sub).mkdir()
+    ik = _run_route(mod, tmp_path / "a", conversion="ik")[0]
+    xtoo = _run_route(mod, tmp_path / "b", conversion="xtoo", xtoo_recorder=[])[0]
+
+    ik_name = Path(ik["curves_matrix_r_path"]).name
+    xtoo_name = Path(xtoo["curves_matrix_r_path"]).name
+    assert ik_name != xtoo_name
+    assert "xtoo" in xtoo_name and "xtoo" not in ik_name
+
+
+def test_pooling_is_restricted_to_one_route(mod, tmp_path):
+    """combine_session is asked for a prefix, so a folder holding both routes
+    yields one combined file per route rather than one mixed file."""
+    recorder = []
+    _run_with_combine(mod, tmp_path, recorder)
+
+    assert recorder[0]["prefix"] is not None
+    assert "ik" in recorder[0]["prefix"]
+
+
+def test_combined_filename_records_the_route_too(mod, tmp_path):
+    recorder = []
+    result = _run_with_combine(mod, tmp_path, recorder)
+
+    assert "ik" in Path(result["combined_matrix_r_path"]).name
+
+
+# -- Batch: process a whole folder of trials (2026-08-26) -----------------
+# One trial at a time meant fifteen runs of ~50 s each to build a session.
+# run_batch iterates the folder and pools once at the end.
+
+
+def _batch_env(tmp_path, n_trials=3):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_dir = tmp_path / "mvnx"
+    mvnx_dir.mkdir()
+    for n in range(1, n_trials + 1):
+        (mvnx_dir / f"CK-{n:03d}.mvnx").write_text("<mvnx/>")
+    return session_dir, mvnx_dir
+
+
+def _batch_modules(tmp_path, session_dir, recorder, fail_on=None):
+    class _Gait:
+        def __init__(self, session, trial, fpa_r, fpa_l, leg='auto', **kw):
+            if fail_on and trial in fail_on:
+                raise RuntimeError(f"no gait events in {trial}")
+            self.leg = leg
+
+        def get_coordinates_normalized_time(self):
+            return {"indiv": [{}, {}, {}, {}], "mean": {}}
+
+    return {
+        "xsens_module": _make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir)),
+        "gait_fixed_module": types.SimpleNamespace(gait_analysis=_Gait),
+        "foot_progression_module": _fake_fp_module_with_export([]),
+        "combine_module": _fake_combine_module(recorder),
+    }
+
+
+def test_batch_processes_every_mvnx_in_the_folder(mod, tmp_path):
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=3)
+    recorder = []
+
+    result = mod.run_batch(str(session_dir), str(mvnx_dir),
+                           **_batch_modules(tmp_path, session_dir, recorder))
+
+    assert [t["trial"] for t in result["trials"]] == ["CK-001", "CK-002", "CK-003"]
+    assert result["succeeded"] == 3
+
+
+def test_batch_pools_once_at_the_end_not_per_trial(mod, tmp_path):
+    """Rebuilding the combined matrix after every trial would be N times the
+    work for the same answer, and only the last one survives anyway."""
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=4)
+    recorder = []
+
+    mod.run_batch(str(session_dir), str(mvnx_dir),
+                  **_batch_modules(tmp_path, session_dir, recorder))
+
+    assert len(recorder) == 1
+
+
+def test_one_failing_trial_does_not_abandon_the_rest(mod, tmp_path):
+    """A trial that fails gait detection -- a mis-recorded or non-walking
+    file -- must be logged and skipped, not end a fifteen-trial run."""
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=3)
+    recorder = []
+
+    result = mod.run_batch(str(session_dir), str(mvnx_dir),
+                           **_batch_modules(tmp_path, session_dir, recorder,
+                                            fail_on={"CK-002"}))
+
+    assert result["succeeded"] == 2
+    assert result["failed"] == 1
+    failed = [t for t in result["trials"] if not t["ok"]]
+    assert failed[0]["trial"] == "CK-002"
+    assert "no gait events" in failed[0]["error"]
+
+
+def test_batch_still_pools_when_some_trials_failed(mod, tmp_path):
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=3)
+    recorder = []
+
+    result = mod.run_batch(str(session_dir), str(mvnx_dir),
+                           **_batch_modules(tmp_path, session_dir, recorder,
+                                            fail_on={"CK-001"}))
+
+    assert recorder, "the surviving trials must still be pooled"
+    assert result["combined_matrix_r_path"]
+
+
+def test_batch_reports_progress_per_trial(mod, tmp_path):
+    """A fifteen-trial run is minutes long; a silent window reads as a hang."""
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=3)
+    messages = []
+
+    mod.run_batch(str(session_dir), str(mvnx_dir),
+                  progress_callback=messages.append,
+                  **_batch_modules(tmp_path, session_dir, [], ))
+
+    joined = " ".join(messages)
+    assert "1 of 3" in joined and "3 of 3" in joined
+
+
+def test_batch_refuses_an_empty_folder(mod, tmp_path):
+    session_dir = tmp_path / "OpenCapData_test"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    with pytest.raises(ValueError, match="No .mvnx"):
+        mod.run_batch(str(session_dir), str(empty))
+
+
+def test_batch_trials_run_in_natural_order(mod, tmp_path):
+    """CK-010 must follow CK-002. Column order in the pooled matrix follows
+    processing order, so a lexical sort would reorder the session."""
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_dir = tmp_path / "mvnx"
+    mvnx_dir.mkdir()
+    for name in ("CK-010", "CK-002"):
+        (mvnx_dir / f"{name}.mvnx").write_text("<mvnx/>")
+
+    result = mod.run_batch(str(session_dir), str(mvnx_dir),
+                           **_batch_modules(tmp_path, session_dir, []))
+
+    assert [t["trial"] for t in result["trials"]] == ["CK-002", "CK-010"]
+
+
+def test_drain_queue_dispatches_a_batch_summary_as_terminal(mod):
+    """A batch ends with its own message kind. Treating it as non-terminal
+    would leave the poller running forever and the Run button disabled."""
+    q = queue.Queue()
+    q.put(("progress", "Trial 1 of 3..."))
+    q.put(("batch", {"succeeded": 3, "failed": 0}))
+    seen = {"progress": [], "batch": [], "result": [], "error": []}
+
+    terminal = mod.drain_queue(
+        q,
+        on_progress=seen["progress"].append,
+        on_result=seen["result"].append,
+        on_error=seen["error"].append,
+        on_batch=seen["batch"].append,
+    )
+
+    assert terminal is True
+    assert seen["batch"] and seen["batch"][0]["succeeded"] == 3
+    assert not seen["result"] and not seen["error"]
+
+
+def test_drain_queue_still_works_without_a_batch_handler(mod):
+    """on_batch is optional -- existing callers pass three handlers."""
+    q = queue.Queue()
+    q.put(("result", {"ok": True}))
+
+    terminal = mod.drain_queue(q, on_progress=lambda m: None,
+                               on_result=lambda r: None, on_error=lambda e: None)
+
+    assert terminal is True

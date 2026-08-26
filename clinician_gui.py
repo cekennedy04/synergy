@@ -21,6 +21,7 @@ os.environ.setdefault("API_TOKEN", "clinician-gui-placeholder-token")
 # Every other import must come after the os.environ.setdefault call above.
 import importlib.util
 import queue
+import re
 import sys
 import threading
 import tkinter as tk
@@ -498,7 +499,14 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
         curves_dir.mkdir(parents=True, exist_ok=True)
         curves_matrix_r_path, curves_matrix_l_path = (
             foot_progression.export_individual_curves_csv(
-                curve_results, curves_dir, _short_session_id(session_dir), trial_name
+                # The route goes in the filename. Both routes write into this
+                # same folder, and without it an IK trial and a direct-remapping
+                # trial are indistinguishable -- so pooling would mix two
+                # incompatible kinematic sources into one matrix, silently and
+                # with exactly the right shape. They differ in precisely the
+                # coordinates a synergy or GDI analysis reads.
+                curve_results, curves_dir,
+                f"{_short_session_id(session_dir)}-{conversion}", trial_name
             )
         )
         curves_matrix_r_path = str(curves_matrix_r_path)
@@ -531,7 +539,10 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
         session_curves_dir = Path(session_dir) / "GaitCurves"
         written = combine.combine_session(
             session_curves_dir, session_curves_dir,
-            name=f"{_short_session_id(session_dir)}_all-trials",
+            name=f"{_short_session_id(session_dir)}_all-trials_{conversion}",
+            # Pool only this route's files. A folder holding both yields one
+            # combined matrix per route rather than one mixed matrix.
+            prefix=f"{_short_session_id(session_dir)}-{conversion}-",
             on_duplicate="error",
         )
         combined_r = written["right"]["matrix_path"]
@@ -567,6 +578,93 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
     }
 
 
+def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
+              combine_module=None, **pipeline_kwargs):
+    """Process every .mvnx in a folder, then pool the session once.
+
+    The GUI is otherwise one trial at a time, which for a fifteen-trial
+    session meant fifteen runs of roughly fifty seconds each. This runs the
+    same per-trial pipeline unchanged and differs only in what surrounds it.
+
+    Two deliberate choices:
+
+    A failing trial is logged and skipped rather than ending the run. One
+    mis-recorded or non-walking file should not cost the other fourteen --
+    and the guardrail rejecting a non-gait trial is a normal outcome here,
+    not an error. Every failure is reported in the result.
+
+    Pooling happens once, at the end. Per-trial runs rebuild the combined
+    matrix each time, which is right when a clinician might stop after any
+    trial; in a batch it would be N times the work for the same answer, since
+    only the final one survives.
+    """
+    mvnx_dir = Path(mvnx_dir)
+    # Natural order: CK-010 follows CK-002. Column order in the pooled matrix
+    # follows processing order, so a lexical sort would reorder the session.
+    files = sorted(
+        mvnx_dir.glob("*.mvnx"),
+        key=lambda path: [int(part) if part.isdigit() else part.lower()
+                          for part in re.split(r"(\d+)", path.stem)],
+    )
+    if not files:
+        raise ValueError(
+            f"No .mvnx files found in {mvnx_dir}. Select the folder holding the "
+            "trial recordings for this session."
+        )
+
+    def _progress(message):
+        if progress_callback is not None:
+            progress_callback(message)
+
+    conversion = conversion or "ik"
+    trials = []
+    for position, path in enumerate(files, start=1):
+        trial_name = path.stem
+        _progress(f"Trial {position} of {len(files)}: {trial_name}...")
+        try:
+            # Per-trial pooling is suppressed: combine once after the loop.
+            result = run_pipeline(
+                session_dir, str(path), conversion=conversion,
+                combine_module=_NO_COMBINE, **pipeline_kwargs
+            )
+            trials.append({"trial": trial_name, "ok": True, "error": None,
+                           "result": result})
+        except Exception as exc:  # noqa: BLE001 -- recorded, not swallowed
+            _progress(f"  {trial_name} skipped: {type(exc).__name__}: {exc}")
+            trials.append({"trial": trial_name, "ok": False,
+                           "error": f"{type(exc).__name__}: {exc}", "result": None})
+
+    succeeded = sum(1 for trial in trials if trial["ok"])
+    combined_r = combined_l = None
+    if succeeded:
+        _progress(f"Combining gait cycles across {succeeded} trial(s)...")
+        try:
+            combine = combine_module if combine_module is not None else _load_combine_curves()
+            curves_dir = Path(session_dir) / "GaitCurves"
+            written = combine.combine_session(
+                curves_dir, curves_dir,
+                name=f"{_short_session_id(session_dir)}_all-trials_{conversion}",
+                prefix=f"{_short_session_id(session_dir)}-{conversion}-",
+                on_duplicate="error",
+            )
+            combined_r = written["right"]["matrix_path"]
+            combined_l = written["left"]["matrix_path"]
+        except Exception as exc:  # noqa: BLE001
+            _progress(f"Combining failed ({type(exc).__name__}): {exc}. "
+                      "Individual trial results are unaffected.")
+
+    return {
+        "session_dir": session_dir,
+        "mvnx_dir": str(mvnx_dir),
+        "conversion": conversion,
+        "trials": trials,
+        "succeeded": succeeded,
+        "failed": len(trials) - succeeded,
+        "combined_matrix_r_path": combined_r,
+        "combined_matrix_l_path": combined_l,
+    }
+
+
 def start_pipeline_thread(session_dir, mvnx_path, result_queue, **pipeline_kwargs):
     """Starts (and returns) a background threading.Thread running
     run_pipeline(), posting progress/result/error messages onto
@@ -596,7 +694,7 @@ def start_pipeline_thread(session_dir, mvnx_path, result_queue, **pipeline_kwarg
     return thread
 
 
-def drain_queue(result_queue, on_progress, on_result, on_error):
+def drain_queue(result_queue, on_progress, on_result, on_error, on_batch=None):
     """Synchronously drains result_queue, dispatching each message to the
     matching callback. No Tk dependency -- ClinicianGUI's
     _poll_pipeline_queue schedules this via root.after(...) and wires
@@ -617,6 +715,13 @@ def drain_queue(result_queue, on_progress, on_result, on_error):
             on_progress(payload)
         elif kind == "result":
             on_result(payload)
+            terminal = True
+        elif kind == "batch":
+            # A batch has its own terminal message: there is no single trial
+            # to render, so it summarises instead. Optional handler, so the
+            # existing three-argument callers keep working.
+            if on_batch is not None:
+                on_batch(payload)
             terminal = True
         elif kind == "error":
             on_error(payload)
@@ -899,6 +1004,25 @@ XTOO_SPATIAL_PROVENANCE = {
 }
 
 CONVERSION_ROUTES = ("ik", "xtoo")
+
+
+class _NoCombine:
+    """Stand-in that makes run_pipeline's pooling stage a no-op.
+
+    Used by run_batch so the combined matrix is built once after the loop
+    rather than rebuilt after every trial.
+    """
+
+    @staticmethod
+    def combine_session(*_args, **_kwargs):
+        raise _SkipCombine()
+
+
+class _SkipCombine(Exception):
+    """Not an error -- signals that pooling is deferred to the batch."""
+
+
+_NO_COMBINE = _NoCombine()
 
 # Shown on screen and in the PDF so a report always names the pipeline that
 # produced it. The two routes differ in what they can measure, not just how.
@@ -1369,6 +1493,10 @@ class ClinicianGUI:
 
         self._build_widgets()
         self._build_results_scroller()
+        # Keep the model in step with whatever is in the fields, however it
+        # got there -- picker, paste, or typing.
+        self.session_dir_var.trace_add("write", self._on_paths_edited)
+        self.mvnx_path_var.trace_add("write", self._on_paths_edited)
         self._revalidate()
 
     def _build_widgets(self):
@@ -1379,7 +1507,13 @@ class ClinicianGUI:
             row=0, column=0, sticky="w"
         )
         self.session_dir_var = tk.StringVar(value="")
-        ttk.Entry(frame, textvariable=self.session_dir_var, width=50, state="readonly").grid(
+        # Typeable, not readonly (2026-08-26). The native folder picker can
+        # crash the process outright -- an access violation inside Windows'
+        # own shell dialog, caught by faulthandler at
+        # tkinter/filedialog.py askdirectory. Nothing in Python can catch
+        # that, but a readonly field made the dialog the ONLY way to set a
+        # path, so a crash left the app unusable. A path can now be pasted.
+        ttk.Entry(frame, textvariable=self.session_dir_var, width=50).grid(
             row=1, column=0, sticky="we"
         )
         ttk.Button(frame, text="Browse...", command=self._pick_session_dir).grid(
@@ -1390,7 +1524,7 @@ class ClinicianGUI:
             row=2, column=0, sticky="w", pady=(10, 0)
         )
         self.mvnx_path_var = tk.StringVar(value="")
-        ttk.Entry(frame, textvariable=self.mvnx_path_var, width=50, state="readonly").grid(
+        ttk.Entry(frame, textvariable=self.mvnx_path_var, width=50).grid(
             row=3, column=0, sticky="we"
         )
         ttk.Button(frame, text="Browse...", command=self._pick_mvnx_file).grid(
@@ -1439,6 +1573,16 @@ class ClinicianGUI:
         ttk.Label(frame, textvariable=self.progress_var, wraplength=400).grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
+
+        # Batch (2026-08-26). A fifteen-trial session was fifteen separate
+        # runs; this points at the folder of recordings instead and pools once
+        # at the end. Deliberately a second button rather than a mode switch:
+        # the single-trial flow is what a clinician uses at the bedside, and
+        # hiding it behind a toggle would cost a click every time.
+        ttk.Button(
+            frame, text="Process whole session (folder of trials)...",
+            command=self._on_batch_clicked,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         # U5: only enabled once a result has been successfully rendered
         # (self.last_shaped/self.last_result set -- see _on_pipeline_result).
@@ -1503,10 +1647,99 @@ class ClinicianGUI:
         # Windows delivers multiples of 120 in event.delta.
         self._results_canvas.yview_scroll(int(-event.delta / 120), "units")
 
+    def _on_batch_clicked(self):
+        """Pick a folder of .mvnx files and process the lot.
+
+        Runs on a worker thread for the same reason a single trial does: a
+        fifteen-trial session is minutes long and a blocked event loop reads
+        as a crash. Progress messages name the trial and its position, so a
+        long run is visibly working rather than merely quiet.
+        """
+        if not self.session_dir:
+            messagebox.showinfo(
+                "Select a session first",
+                "Choose the OpenCap session directory before processing a folder "
+                "of trials -- the results are written into it.",
+            )
+            return
+
+        mvnx_dir = filedialog.askdirectory(
+            parent=self.root, title="Folder containing .mvnx trials", mustexist=True,
+            initialdir=os.path.dirname(self.mvnx_path) or os.path.expanduser("~"),
+        )
+        if not mvnx_dir:
+            return
+
+        self.run_button.state(["disabled"])
+        self.export_button.state(["disabled"])
+        self._pipeline_queue = queue.Queue()
+
+        session_dir = self.session_dir
+        conversion = self.conversion_var.get()
+        result_queue = self._pipeline_queue
+
+        def _target():
+            try:
+                summary = run_batch(
+                    session_dir, mvnx_dir, conversion=conversion,
+                    progress_callback=lambda message: result_queue.put(("progress", message)),
+                )
+            except Exception as exc:  # noqa: BLE001 -- routed like any other failure
+                result_queue.put(("error", map_error_to_message(exc)))
+                return
+            result_queue.put(("batch", summary))
+
+        self._pipeline_thread = threading.Thread(target=_target, daemon=True)
+        self._pipeline_thread.start()
+        self.root.after(100, self._poll_pipeline_queue)
+
+    def _on_batch_result(self, summary):
+        """Report the run. A batch has no single trial to display, so this
+        summarises rather than rendering curves -- the per-trial reports are
+        on disk, and the pooled matrix is the thing that was wanted."""
+        self.last_result = None
+        self.last_shaped = None
+        self._revalidate()
+
+        lines = [
+            f"Processed {summary['succeeded']} of "
+            f"{summary['succeeded'] + summary['failed']} trials.",
+        ]
+        if summary["failed"]:
+            lines.append("")
+            lines.append("Skipped:")
+            lines.extend(
+                f"  {trial['trial']} -- {trial['error']}"
+                for trial in summary["trials"] if not trial["ok"]
+            )
+        if summary["combined_matrix_r_path"]:
+            lines.append("")
+            lines.append("Combined gait cycles written to:")
+            lines.append(f"  {summary['combined_matrix_r_path']}")
+            lines.append(f"  {summary['combined_matrix_l_path']}")
+        else:
+            lines.append("")
+            lines.append("No combined matrix was written -- see the progress log above.")
+
+        self.progress_var.set(
+            f"Batch complete: {summary['succeeded']} processed, {summary['failed']} skipped."
+        )
+        messagebox.showinfo("Session processed", chr(10).join(lines))
+
+    def _on_paths_edited(self, *_args):
+        self.session_dir = self.session_dir_var.get().strip().strip('"')
+        self.mvnx_path = self.mvnx_path_var.get().strip().strip('"')
+        self._revalidate()
+
     def _pick_session_dir(self):
         # Mirrors Examples/gaitAnalysis-UCM.py's
         # _select_extracted_folder_interactively picker pattern.
-        selected = filedialog.askdirectory(parent=self.root)
+        # initialdir keeps the shell from enumerating namespaces it does not
+        # need to; the crash above happened with no initial directory set.
+        selected = filedialog.askdirectory(
+            parent=self.root, mustexist=True,
+            initialdir=self.session_dir or os.path.expanduser("~"),
+        )
         if selected:
             self.session_dir = selected
             self.session_dir_var.set(selected)
@@ -1516,7 +1749,9 @@ class ClinicianGUI:
         # Mirrors Examples/gaitAnalysis-UCM.py's _select_zip_interactively
         # picker pattern.
         selected = filedialog.askopenfilename(
-            parent=self.root, filetypes=[("Xsens MVNX", "*.mvnx"), ("All files", "*.*")]
+            parent=self.root,
+            initialdir=os.path.dirname(self.mvnx_path) or os.path.expanduser("~"),
+            filetypes=[("Xsens MVNX", "*.mvnx"), ("All files", "*.*")],
         )
         if selected:
             self.mvnx_path = selected
@@ -1561,6 +1796,7 @@ class ClinicianGUI:
             on_progress=self.progress_var.set,
             on_result=self._on_pipeline_result,
             on_error=self._on_pipeline_error,
+            on_batch=self._on_batch_result,
         )
         if not terminal:
             self.root.after(100, self._poll_pipeline_queue)
