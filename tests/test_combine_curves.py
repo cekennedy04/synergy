@@ -162,3 +162,73 @@ def test_index_sidecar_is_written_alongside(cc, tmp_path):
     lines = sidecar.read_text().splitlines()
     assert lines[0] == "column,trial,stride_in_trial"
     assert lines[1] == "1,S-T01,1"
+
+
+# -- Duplicate detection (2026-08-26) ------------------------------------
+# A real case: CK-001 was exported twice under different filenames after the
+# session prefix was shortened. Both files hold the same strides. Pooling them
+# double-counts that trial with the correct row count, the expected shape and
+# no error -- the silent corruption this module has to refuse.
+
+
+def test_content_identical_files_are_refused(cc, tmp_path):
+    """Naming cannot catch this: the two filenames share no common stem. Only
+    the contents prove they are the same trial's strides."""
+    _write(tmp_path / "sess-T01_right.csv", 3, 100.0)
+    duplicate = tmp_path / "OpenCapData_long_prefix-T01_right.csv"
+    duplicate.write_bytes((tmp_path / "sess-T01_right.csv").read_bytes())
+
+    with pytest.raises(ValueError, match="same strides"):
+        cc.combine_curve_matrices(tmp_path, side="right")
+
+
+def test_the_duplicate_error_names_both_files(cc, tmp_path):
+    """The user has to know which one to delete, so both names appear."""
+    _write(tmp_path / "sess-T01_right.csv", 2, 100.0)
+    duplicate = tmp_path / "old-T01_right.csv"
+    duplicate.write_bytes((tmp_path / "sess-T01_right.csv").read_bytes())
+
+    with pytest.raises(ValueError) as caught:
+        cc.combine_curve_matrices(tmp_path, side="right")
+
+    message = str(caught.value)
+    assert "sess-T01_right.csv" in message
+    assert "old-T01_right.csv" in message
+
+
+def test_genuinely_different_trials_are_not_flagged(cc, tmp_path):
+    """The guard must not fire on a normal session. Two trials that happen to
+    have the same stride count are still different data."""
+    _write(tmp_path / "S-T01_right.csv", 3, 100.0)
+    _write(tmp_path / "S-T02_right.csv", 3, 200.0)
+
+    combined, index = cc.combine_curve_matrices(tmp_path, side="right")
+
+    assert combined.shape[1] == 6
+    assert len({entry["trial"] for entry in index}) == 2
+
+
+def test_duplicates_may_be_resolved_by_keeping_the_newest(cc, tmp_path):
+    """An escape hatch for exactly the observed case -- a stale export left
+    behind by a naming change. Off by default: silently dropping a file is
+    the wrong default when the alternative is a corrupted pool."""
+    import time
+    old = tmp_path / "OpenCapData_long-T01_right.csv"
+    _write(old, 2, 100.0)
+    time.sleep(0.01)
+    new = tmp_path / "sess-T01_right.csv"
+    new.write_bytes(old.read_bytes())
+
+    combined, index = cc.combine_curve_matrices(
+        tmp_path, side="right", on_duplicate="keep_newest"
+    )
+
+    assert combined.shape[1] == 2
+    assert {entry["trial"] for entry in index} == {"sess-T01"}
+
+
+def test_unknown_duplicate_policy_is_rejected(cc, tmp_path):
+    _write(tmp_path / "S-T01_right.csv", 1, 100.0)
+
+    with pytest.raises(ValueError, match="on_duplicate"):
+        cc.combine_curve_matrices(tmp_path, side="right", on_duplicate="whatever")

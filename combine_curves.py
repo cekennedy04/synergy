@@ -27,6 +27,7 @@ Usage:
 """
 import argparse
 import csv
+import hashlib
 import re
 from pathlib import Path
 
@@ -54,7 +55,55 @@ def discover_trial_files(curve_dir, side="right", prefix=None):
     return sorted(files, key=lambda path: _natural_key(path.name))
 
 
-def combine_curve_matrices(curve_dir, side="right", prefix=None):
+DUPLICATE_POLICIES = ("error", "keep_newest")
+
+
+def _resolve_duplicates(files, on_duplicate):
+    """Refuse, or drop, files whose contents are byte-identical.
+
+    Detection is by content rather than by name because the real case has no
+    naming in common: a trial exported before and after a filename change
+    yields `OpenCapData_<uuid>-CK-001_right.csv` and `ca505b02-CK-001_right.csv`,
+    which share no stem. Pooling both double-counts that trial and produces a
+    matrix with the correct row count, the expected shape, and no error.
+
+    Two genuinely different trials will not be byte-identical, so this cannot
+    fire on a normal session.
+    """
+    if on_duplicate not in DUPLICATE_POLICIES:
+        raise ValueError(
+            f"unknown on_duplicate policy {on_duplicate!r}; expected one of "
+            f"{list(DUPLICATE_POLICIES)}."
+        )
+
+    by_digest = {}
+    for path in files:
+        digest = hashlib.md5(path.read_bytes()).hexdigest()
+        by_digest.setdefault(digest, []).append(path)
+
+    duplicates = {d: paths for d, paths in by_digest.items() if len(paths) > 1}
+    if not duplicates:
+        return files
+
+    if on_duplicate == "error":
+        listing = "; ".join(
+            " and ".join(path.name for path in paths) for paths in duplicates.values()
+        )
+        raise ValueError(
+            f"These files hold the same strides: {listing}. Pooling them would "
+            "count that trial twice while producing a matrix of exactly the right "
+            "shape, so it is refused. Delete the stale copy, or pass "
+            "on_duplicate='keep_newest' to keep only the most recently written."
+        )
+
+    drop = set()
+    for paths in duplicates.values():
+        newest = max(paths, key=lambda path: path.stat().st_mtime)
+        drop.update(path for path in paths if path is not newest)
+    return [path for path in files if path not in drop]
+
+
+def combine_curve_matrices(curve_dir, side="right", prefix=None, on_duplicate="error"):
     """-> (combined matrix, index rows).
 
     The index is a list of {column, trial, stride_in_trial}, one entry per
@@ -62,6 +111,7 @@ def combine_curve_matrices(curve_dir, side="right", prefix=None):
     in a spreadsheet.
     """
     files = discover_trial_files(curve_dir, side=side, prefix=prefix)
+    files = _resolve_duplicates(files, on_duplicate)
     if not files:
         raise FileNotFoundError(
             f"No curve files matched {curve_dir}/*_{side}.csv"
@@ -113,11 +163,14 @@ def write_combined(path, combined, index):
     return {"matrix_path": str(path), "index_path": str(index_path)}
 
 
-def combine_session(curve_dir, out_dir, name="combined", prefix=None, sides=("right", "left")):
+def combine_session(curve_dir, out_dir, name="combined", prefix=None,
+                    sides=("right", "left"), on_duplicate="error"):
     """Combine both sides of a session and report what was written."""
     written = {}
     for side in sides:
-        combined, index = combine_curve_matrices(curve_dir, side=side, prefix=prefix)
+        combined, index = combine_curve_matrices(
+            curve_dir, side=side, prefix=prefix, on_duplicate=on_duplicate
+        )
         target = Path(out_dir) / f"{name}_{side}.csv"
         written[side] = write_combined(target, combined, index)
         written[side].update({

@@ -919,3 +919,119 @@ def test_provenance_reflects_the_route_that_actually_ran(mod, tmp_path):
     assert xtoo["spatial_displacement_validated"] is True
     assert "Pinned root" not in xtoo["translation_type"]
     assert "proxy" not in xtoo["gait_speed_method"].lower()
+
+
+# -- Combined session matrix from the GUI (2026-08-26) --------------------
+# The GUI processes one trial at a time, so the per-trial matrices accumulate
+# in the session's GaitCurves folder. Every run now also rebuilds the combined
+# matrix across everything processed so far -- which is what a pooled analysis
+# actually consumes, and what previously only existed by running a script.
+
+
+def _fake_combine_module(recorder, fail=None):
+    def combine_session(curve_dir, out_dir, name="combined", prefix=None,
+                        sides=("right", "left"), on_duplicate="error"):
+        if fail is not None:
+            raise fail
+        recorder.append({"curve_dir": str(curve_dir), "out_dir": str(out_dir),
+                         "name": name, "on_duplicate": on_duplicate})
+        written = {}
+        for side in sides:
+            path = Path(out_dir) / f"{name}_{side}.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("0.0\n")
+            written[side] = {"matrix_path": str(path),
+                             "index_path": str(path.with_name(f"{path.stem}_index.csv")),
+                             "rows": 3838, "strides": 9, "trials": 2}
+        return written
+
+    return types.SimpleNamespace(combine_session=combine_session)
+
+
+def _run_with_combine(mod, tmp_path, recorder, fail=None):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    return mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=_make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir)),
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=_fake_fp_module_with_export([]),
+        combine_module=_fake_combine_module(recorder, fail=fail),
+    )
+
+
+def test_every_run_rebuilds_the_combined_session_matrix(mod, tmp_path):
+    recorder = []
+
+    result = _run_with_combine(mod, tmp_path, recorder)
+
+    assert recorder, "combine_session was never called"
+    assert result["combined_matrix_r_path"].endswith("_right.csv")
+    assert result["combined_matrix_l_path"].endswith("_left.csv")
+
+
+def test_combining_reads_the_sessions_own_curve_folder(mod, tmp_path):
+    """Pooling must draw on the trials processed for THIS session, not a
+    batch directory that may hold other participants or other routes."""
+    recorder = []
+
+    _run_with_combine(mod, tmp_path, recorder)
+
+    assert recorder[0]["curve_dir"].endswith("GaitCurves")
+    assert "OpenCapData_test" in recorder[0]["curve_dir"]
+
+
+def test_combining_refuses_duplicates_rather_than_double_counting(mod, tmp_path):
+    """A stale export from a naming change holds the same strides under a
+    different filename. Silently dropping one is the wrong default when the
+    alternative is a pool that counts a trial twice."""
+    recorder = []
+
+    _run_with_combine(mod, tmp_path, recorder)
+
+    assert recorder[0]["on_duplicate"] == "error"
+
+
+def test_a_failed_combine_does_not_lose_the_run(mod, tmp_path):
+    """Combining is the last stage. If it fails -- most likely because a
+    duplicate was found -- the joint angles, markers, metrics and this trial's
+    own curve matrix are all still valid and must still be returned."""
+    result = _run_with_combine(mod, tmp_path, [], fail=ValueError("same strides"))
+
+    assert result["mot_path"]
+    assert result["curves_matrix_r_path"]
+    assert result.get("combined_matrix_r_path") is None
+
+
+def test_the_combined_matrix_is_listed_in_the_output_files(mod, tmp_path):
+    recorder = []
+    result = _run_with_combine(mod, tmp_path, recorder)
+
+    labels = {e["label"] for e in mod.shape_output_files_for_display(result)}
+
+    assert any("combined" in label.lower() for label in labels), labels
+
+
+def test_combine_still_runs_when_the_per_trial_export_failed(mod, tmp_path):
+    """Stage 5 binds the curves directory inside its own try block. Reusing
+    that binding meant a failed per-trial export left it undefined, so the
+    combine stage reported a NameError instead of the real cause."""
+    recorder = []
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fp = _fake_fp_module_with_export([])
+    fp.export_individual_curves_csv = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full"))
+
+    result = mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=_make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir)),
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=fp,
+        combine_module=_fake_combine_module(recorder),
+    )
+
+    assert result.get("curves_matrix_r_path") is None      # stage 5 failed
+    assert recorder, "stage 6 must still attempt to combine"
+    assert result["combined_matrix_r_path"]

@@ -46,6 +46,7 @@ _GAIT_ANALYSIS_EXAMPLE_PATH = os.path.join(REPO_ROOT, "Examples", "gaitAnalysis-
 _JOINT_CONFIDENCE_PATH = os.path.join(REPO_ROOT, "joint_confidence.py")
 _REPORT_EXPORT_PATH = os.path.join(REPO_ROOT, "report_export.py")
 _XTOO_PATH = os.path.join(REPO_ROOT, "xtoo.py")
+_COMBINE_CURVES_PATH = os.path.join(REPO_ROOT, "combine_curves.py")
 _REPORT_FORMATTING_PATH = os.path.join(REPO_ROOT, "report_formatting.py")
 _MODULE_LOADING_PATH = os.path.join(REPO_ROOT, "module_loading.py")
 
@@ -125,6 +126,11 @@ def _load_joint_confidence():
     inject fake pipeline stages (KTD9's pattern applied to U4's own
     display-shaping seam)."""
     return _load_module_by_path("joint_confidence_for_clinician_gui", _JOINT_CONFIDENCE_PATH)
+
+
+def _load_combine_curves():
+    """Lazy, path-based load matching the other pipeline modules."""
+    return _load_module_by_path("combine_curves_for_clinician_gui", _COMBINE_CURVES_PATH)
 
 
 def _load_xtoo():
@@ -313,7 +319,7 @@ def _resolve_trial_name(mvnx_path):
 def run_pipeline(session_dir, mvnx_path, progress_callback=None,
                   xsens_module=None, gait_fixed_module=None,
                   foot_progression_module=None, xtoo_module=None,
-                  conversion=None):
+                  combine_module=None, conversion=None):
     """Runs the full conversion + gait-analysis pipeline for one trial
     (KTD3, KTD4's Approach step 1): build_orientations_sto -> calibrate_model
     -> run_imu_ik (xsens_to_opensim.py), then compute_foot_progression_angles,
@@ -385,7 +391,7 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
     _progress("Computing foot progression angles...")
     return _run_gait_stages(
         session_dir, mvnx_path, trial_name, paths, mot_path, conversion,
-        gait_fixed_module, foot_progression_module, _progress,
+        gait_fixed_module, foot_progression_module, combine_module, _progress,
     )
 
 
@@ -429,7 +435,7 @@ def _run_ik_conversion(xsens, paths, mvnx_path, _progress):
 
 def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
                      conversion, gait_fixed_module, foot_progression_module,
-                     _progress):
+                     combine_module, _progress):
     """Everything downstream of the .mot: foot progression, gait analysis for
     both legs, and the stride-normalised curve matrix. Shared by both
     conversion routes -- only the way the .mot was produced differs."""
@@ -501,6 +507,39 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
         _progress(f"Curve matrix export failed ({type(exc).__name__}); "
                   "other results are unaffected.")
 
+    # Stage 6: pool every trial processed for this session so far. The GUI
+    # handles one trial at a time, so the per-trial matrices accumulate in the
+    # session's own GaitCurves folder -- this rebuilds the combined matrix
+    # across all of them after each run, which is what a pooled analysis (GDI,
+    # UCM) actually consumes.
+    #
+    # Duplicates are refused rather than silently de-duplicated. A trial
+    # exported twice under different filenames -- as happens after a naming
+    # change -- would otherwise be counted twice, in a matrix with exactly the
+    # right shape and no error.
+    #
+    # Non-fatal, like the per-trial export: a failure here still leaves valid
+    # joint angles, markers, metrics and this trial's own curve matrix.
+    _progress("Combining gait cycles across this session...")
+    combined_r = combined_l = None
+    try:
+        combine = combine_module if combine_module is not None else _load_combine_curves()
+        # Recomputed rather than reused from stage 5: that binding lives
+        # inside stage 5's try block, so a failed per-trial export would leave
+        # it undefined and this stage would report a NameError instead of the
+        # real cause.
+        session_curves_dir = Path(session_dir) / "GaitCurves"
+        written = combine.combine_session(
+            session_curves_dir, session_curves_dir,
+            name=f"{_short_session_id(session_dir)}_all-trials",
+            on_duplicate="error",
+        )
+        combined_r = written["right"]["matrix_path"]
+        combined_l = written["left"]["matrix_path"]
+    except Exception as exc:  # noqa: BLE001 -- see the note above
+        _progress(f"Combining across trials failed ({type(exc).__name__}): "
+                  f"{exc}. This trial's own results are unaffected.")
+
     _progress("Finalizing results...")
     return {
         "session_dir": session_dir,
@@ -519,6 +558,8 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
         "sto_path": paths["sto_path"],
         "curves_matrix_r_path": curves_matrix_r_path,
         "curves_matrix_l_path": curves_matrix_l_path,
+        "combined_matrix_r_path": combined_r,
+        "combined_matrix_l_path": combined_l,
         "fpa_r": fpa_r,
         "fpa_l": fpa_l,
         "gait_r": gait_r,
@@ -1146,7 +1187,9 @@ def _mot_series_from_coordinate_values(coordinate_values):
 # want them. Labels carry the extension because that is what they will look
 # for on disk (2026-08-25).
 OUTPUT_FILE_LABELS = (
-    # First: this is the file a UCM or GDI analysis actually consumes.
+    # First: what a pooled analysis consumes -- every trial in this session.
+    ("combined_matrix_r_path", "Combined gait cycles, all trials, right (.csv)"),
+    ("combined_matrix_l_path", "Combined gait cycles, all trials, left (.csv)"),
     ("curves_matrix_r_path", "Gait-cycle curve matrix, right (.csv)"),
     ("curves_matrix_l_path", "Gait-cycle curve matrix, left (.csv)"),
     ("mot_path", "Joint angles (.mot)"),
