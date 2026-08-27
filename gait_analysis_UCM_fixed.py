@@ -163,6 +163,16 @@ class gait_analysis(kinematics):
         self.trimming_start = trimming_start
         self.trimming_end = trimming_end
         self.dflag=0
+        # Auto-trim instrumentation (2026-08-27). Purely observational: set
+        # here, written in segment_walking, read by nothing in this class.
+        # It exists because the 2026-08-24 left/right swap (edit #13) lived
+        # inside trimend(), so ONLY trials that entered the auto-trim retry
+        # path were corrupted by it. A trial whose events came back correctly
+        # ordered at prominence 0.3/0.25/0.2 never called trimend and is
+        # clean. Recording that distinction is what lets a re-run target the
+        # affected trials instead of the whole archive.
+        self.usedAutoTrim = False
+        self.nAutoTrims = 0
         self.rhs=[]
         self.lhs=[]
         self.rto=[]
@@ -1228,6 +1238,7 @@ class gait_analysis(kinematics):
             rHS,lHS,rTO,lTO = manual_steps(self)
             
         if trimflag==1:
+            self.usedAutoTrim = True
             j=1
             checkflag=self.promflag
 
@@ -1293,6 +1304,7 @@ class gait_analysis(kinematics):
                     )
                 print("Trying auto-Trim")
                 rHS,lHS,rTO,lTO=trimend(self, trimarray[j])
+                self.nAutoTrims += 1
                 # print(j)
                 j+=1
                 checkflag=self.promflag
