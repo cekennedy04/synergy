@@ -226,6 +226,32 @@ def get_feature_set(name):
         ) from None
 
 
+def canonical_row_indices(feature_set=DEFAULT_FEATURE_SET):
+    """Row indices of this feature set inside the canonical 459-row vector.
+
+    The pooled cohort matrices on disk are stored in canonical 9-variable
+    order (`control_kinematics.csv` is 459 x n_cycles), and every reduced set
+    is a subset of those variables. Building a reduced reference therefore
+    means selecting rows, which is exactly what the supervisor's
+    `indiv_data[153::]` slices did -- generalised here so a non-contiguous
+    set (reduced5 drops hip_rotation from the middle) works too.
+    """
+    feature_set = get_feature_set(feature_set)
+    canonical = list(_CANONICAL_9)
+    indices = []
+    for template in feature_set.features:
+        try:
+            position = canonical.index(template)
+        except ValueError:
+            raise ValueError(
+                f"feature {template!r} is not one of the canonical nine, so its "
+                "rows cannot be located in a pooled cohort matrix."
+            ) from None
+        start = position * GDI_N_POINTS
+        indices.extend(range(start, start + GDI_N_POINTS))
+    return np.array(indices, dtype=int)
+
+
 class GdiReferenceMissingError(FileNotFoundError):
     """The normative reference data GDI is defined against is not available.
     Distinct from a generic FileNotFoundError so callers can tell "you have
