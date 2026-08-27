@@ -20,6 +20,7 @@ if opensim needs stubbing -- not actually needed here since every stage that
 would import opensim is replaced by a fake module instead.
 """
 import importlib.util
+import json
 import os
 import queue
 import subprocess
@@ -1236,3 +1237,179 @@ def test_drain_queue_still_works_without_a_batch_handler(mod):
                                on_result=lambda r: None, on_error=lambda e: None)
 
     assert terminal is True
+
+
+# -- Trial isolation (2026-08-27) -----------------------------------------
+# A fifteen-trial batch was killed around trial 11-12 with exit 127 and no
+# Python traceback -- twice, from a clean start. Because the process died
+# rather than raising, run_batch's skip-and-continue path never ran and the
+# batch ended early with pooling silently skipped. Each trial now gets its
+# own interpreter, which turns that death into an ordinary per-trial failure.
+
+
+def test_a_child_that_dies_without_an_exception_is_a_trial_failure_not_a_crash(mod):
+    """The exit-127 case. There is no Python exception to report, so the
+    outcome must still be a recorded failure rather than an invented one."""
+    ok, result, error = mod._decode_trial_outcome(127, payload=None, stderr_tail="")
+
+    assert ok is False
+    assert result is None
+    assert "127" in error and "without reporting a Python error" in error
+
+
+def test_a_dead_child_keeps_its_last_output_for_diagnosis(mod):
+    ok, _result, error = mod._decode_trial_outcome(
+        127, payload=None, stderr_tail="Processing 6 gait cycles, leg: l.")
+
+    assert ok is False
+    assert "Processing 6 gait cycles" in error
+
+
+def test_a_child_reporting_its_own_exception_keeps_that_message(mod):
+    ok, _result, error = mod._decode_trial_outcome(
+        1, payload={"ok": False, "error": "NonGaitTrialError: only 1 heel strike"})
+
+    assert ok is False
+    assert error == "NonGaitTrialError: only 1 heel strike"
+
+
+def test_a_successful_child_returns_its_result(mod):
+    ok, result, error = mod._decode_trial_outcome(
+        0, payload={"ok": True, "result": {"trial_name": "CK-001"}})
+
+    assert ok is True
+    assert result == {"trial_name": "CK-001"}
+    assert error is None
+
+
+def test_isolated_results_name_the_live_objects_they_had_to_drop(mod):
+    """gait_r/gait_l cannot cross a process boundary. Dropping them silently
+    would read as the pipeline having failed to produce them."""
+    trimmed = mod._serialisable_result(
+        {"trial_name": "CK-001", "mot_path": "a.mot",
+         "gait_r": object(), "gait_l": object()})
+
+    assert trimmed["trial_name"] == "CK-001"
+    assert "gait_r" not in trimmed and "gait_l" not in trimmed
+    assert trimmed["dropped_by_isolation"] == ["gait_r", "gait_l"]
+    assert json.dumps(trimmed), "an isolated result must be serialisable"
+
+
+def test_a_result_without_live_objects_gains_no_dropped_key(mod):
+    trimmed = mod._serialisable_result({"trial_name": "CK-001"})
+
+    assert trimmed == {"trial_name": "CK-001"}
+
+
+def test_isolation_really_spawns_a_process_and_reads_its_payload(mod, tmp_path):
+    """Proves the plumbing -- argv config in, JSON payload out -- with a
+    stand-in child, since the real pipeline needs OpenSim."""
+    child = (
+        "import json, sys\n"
+        "config = json.loads(sys.argv[1])\n"
+        "payload = {'ok': True, 'result': {'trial_name': config['mvnx_path'],\n"
+        "                                  'conversion': config['conversion']}}\n"
+        "open(config['out_path'], 'w').write(json.dumps(payload))\n"
+    )
+
+    ok, result, error = mod._run_trial_isolated(
+        str(tmp_path), "CK-007.mvnx", "ik", child_source=child)
+
+    assert ok is True, error
+    assert result == {"trial_name": "CK-007.mvnx", "conversion": "ik"}
+
+
+def test_a_real_child_process_dying_silently_is_survived(mod, tmp_path):
+    """os._exit writes no payload and raises nothing -- the shape of the
+    failure that killed the fifteen-trial run."""
+    child = "import os\nos._exit(127)\n"
+
+    ok, _result, error = mod._run_trial_isolated(
+        str(tmp_path), "CK-011.mvnx", "ik", child_source=child)
+
+    assert ok is False
+    assert "127" in error
+
+
+def test_batch_isolates_by_default(mod, tmp_path, monkeypatch):
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=2)
+    seen = []
+
+    def _fake_isolated(session, path, conversion):
+        seen.append(Path(path).stem)
+        return True, {"trial_name": Path(path).stem}, None
+
+    monkeypatch.setattr(mod, "_run_trial_isolated", _fake_isolated)
+    result = mod.run_batch(str(session_dir), str(mvnx_dir),
+                           combine_module=_fake_combine_module([]))
+
+    assert seen == ["CK-001", "CK-002"], "each trial must get its own process"
+    assert result["succeeded"] == 2
+
+
+def test_a_dead_trial_does_not_abandon_the_rest_of_the_batch(mod, tmp_path, monkeypatch):
+    """The regression this whole change exists for: trial 2 of 3 dies with no
+    exception, and trial 3 must still run and the session must still pool."""
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=3)
+    recorder = []
+
+    def _fake_isolated(session, path, conversion):
+        if Path(path).stem == "CK-002":
+            return False, None, "TrialProcessDied: exited with code 127"
+        return True, {"trial_name": Path(path).stem}, None
+
+    monkeypatch.setattr(mod, "_run_trial_isolated", _fake_isolated)
+    result = mod.run_batch(str(session_dir), str(mvnx_dir),
+                           combine_module=_fake_combine_module(recorder))
+
+    assert result["succeeded"] == 2 and result["failed"] == 1
+    assert [t["trial"] for t in result["trials"]] == ["CK-001", "CK-002", "CK-003"]
+    assert recorder, "the surviving trials must still be pooled"
+
+
+def test_a_dead_trial_is_reported_in_the_progress_log(mod, tmp_path, monkeypatch):
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=1)
+    messages = []
+
+    monkeypatch.setattr(mod, "_run_trial_isolated",
+                        lambda s, p, c: (False, None, "TrialProcessDied: code 127"))
+    mod.run_batch(str(session_dir), str(mvnx_dir), progress_callback=messages.append,
+                  combine_module=_fake_combine_module([]))
+
+    assert any("TrialProcessDied" in m for m in messages)
+
+
+def test_injected_modules_force_in_process_execution(mod, tmp_path, monkeypatch):
+    """Live module objects cannot cross a process boundary, so injection
+    must keep the in-process path rather than being silently discarded --
+    which would run the real OpenSim pipeline instead of the fake."""
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=2)
+
+    def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("isolation ran despite injected modules")
+
+    monkeypatch.setattr(mod, "_run_trial_isolated", _must_not_run)
+    result = mod.run_batch(str(session_dir), str(mvnx_dir),
+                           **_batch_modules(tmp_path, session_dir, []))
+
+    assert result["succeeded"] == 2
+
+
+def test_demanding_isolation_alongside_injection_is_refused(mod, tmp_path):
+    """Silently choosing one over the other would mislead either way."""
+    session_dir, mvnx_dir = _batch_env(tmp_path, n_trials=1)
+
+    with pytest.raises(ValueError, match="cannot cross a process boundary"):
+        mod.run_batch(str(session_dir), str(mvnx_dir), isolate_trials=True,
+                      **_batch_modules(tmp_path, session_dir, []))
+
+
+def test_isolation_drops_values_that_merely_fail_to_serialise(mod):
+    """The first version listed gait_r/gait_l by name and still died on the
+    numpy arrays in fpa_r/fpa_l. Type, not name, decides."""
+    trimmed = mod._serialisable_result(
+        {"trial_name": "CK-001", "fpa_r": {1, 2, 3}, "gait_r": object()})
+
+    assert trimmed["trial_name"] == "CK-001"
+    assert sorted(trimmed["dropped_by_isolation"]) == ["fpa_r", "gait_r"]
+    assert json.dumps(trimmed)
