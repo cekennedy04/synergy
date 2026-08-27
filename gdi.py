@@ -54,6 +54,20 @@ could not be attributed to a feature set from the recovered code, they are
 `None` and `compute_gdi` refuses rather than guessing. Regenerating them is
 Phase 3.3, and doing so invalidates any previously reported score.
 
+**The promoted constants belong to the regenerated references, not the
+archived ones.** Every shipped set's constants were derived on 2026-08-27 from
+the 166-cycle healthy-control cohort, and they are only valid against the
+bases produced in the same run (written by `gdi_reference.py` to
+`context/gdi_reference_2026-08-27/`). Pairing them with the *archived*
+matrices of the same filename is the same class of error this module exists to
+prevent, and it is not hypothetical: scoring the control cohort through the
+archived bases with these constants gives 100.8 for gdi9 and 96.6 for
+reduced4, but **118.0 for reduced5** -- controls reading as far better than
+normal. That reduced5's archived basis is the one that misbehaves is
+independent support for the msflag note below: a basis built from the MS
+cohort projects control cycles differently. Point `reference_dir` at the
+regenerated set, where all four score controls at exactly 100.0 +/- 10.0.
+
 **This module cannot produce a score without reference data.** `matrix` and
 `control_mean` come from a normative control dataset that is NOT in this
 repository. That is a missing dataset, not a missing feature -- GDI is
@@ -149,12 +163,15 @@ GDI9 = GdiFeatureSet(
     features=_CANONICAL_9,
     matrix_filename="matrix_control.csv",
     control_filename="controlcalc_control.csv",
+    ln_control_mean=4.716953,
+    ln_control_sd=0.292494,
     provenance=(
-        "Canonical Schwartz & Rozumalski set. matrix_control.csv is 459x15 and "
-        "controlcalc_control.csv is 1x15, so they pair. No normative constants "
-        "could be attributed to it: the only candidate in the recovered code is "
-        "the fallback `(ln_result - 4.69)/0.30`, which sits in a branch that "
-        "references an undefined `ln_result` and therefore never ran."
+        "Canonical Schwartz & Rozumalski set. Constants regenerated 2026-08-27 "
+        "by gdi_reference.py from the 166-cycle pooled healthy-control cohort "
+        "(control_kinematics.csv), 15 components, 98.67% of variance; held-out "
+        "controls score 100.32 +/- 10.26. They corroborate the recovered "
+        "fallback `(ln_result - 4.69)/0.30` to within 0.57%, which was a real "
+        "calibration stranded in a branch referencing an undefined `ln_result`."
     ),
 )
 
@@ -163,12 +180,17 @@ REDUCED6 = GdiFeatureSet(
     features=_CANONICAL_9[3:],
     matrix_filename="matrix_ms_reduced_old.csv",
     control_filename="controlCalc_ms_reduced_old.csv",
+    ln_control_mean=4.642758,
+    ln_control_sd=0.300381,
     provenance=(
         "The canonical nine minus the three pelvis terms, recovered from the "
         "supervisor's `indiv_data[153::]` slice (rows 153-458 = 306 = 6 x 51). "
         "matrix_ms_reduced_old.csv is 306x27 and pairs with a 1x27 controlCalc; "
         "old2/old3 (306x31) and old4 (306x34) are the same variables with more "
-        "components retained. No normative constants attributable."
+        "components retained. Constants regenerated 2026-08-27 from the "
+        "166-cycle healthy-control cohort, 15 components, 99.07% of variance; "
+        "held-out controls score 100.18 +/- 10.31. No archived constant existed "
+        "for this set to compare against."
     ),
 )
 
@@ -177,14 +199,24 @@ REDUCED5 = GdiFeatureSet(
     features=_CANONICAL_9[3:5] + _CANONICAL_9[6:],
     matrix_filename="matrix_ms_reduced.csv",
     control_filename="controlCalc_ms_reduced.csv",
-    ln_control_mean=3.64317,
-    ln_control_sd=0.54211,
+    ln_control_mean=4.448830,
+    ln_control_sd=0.281448,
     provenance=(
         "The live path in the supervisor's current script: "
         "`np.concatenate((indiv_data[153:255], indiv_data[306:459]))` = hip "
         "flexion/adduction plus knee, ankle and fpa (255 = 5 x 51). Constants "
-        "are the script's `msmean`/`mssd`, used under `msflag==1`, which is the "
-        "same branch that loads matrix_ms_reduced.csv."
+        "regenerated 2026-08-27 from the 166-cycle healthy-control cohort, 15 "
+        "components, 99.45% of variance; held-out controls score 100.03 +/- "
+        "10.27. They corroborate the commented-out 4.443685139 to within 0.12% "
+        "-- that value was a correct reduced5 calibration which the 2026-08-25 "
+        "recovery mis-attached to a 9-variable feature list. "
+        "SUPERSEDED: the script's live `msflag` constants (3.64317 / 0.54211) "
+        "are 22% from the control-derived mean with nearly double the SD, while "
+        "every other archived constant matches its regeneration within 0.6%. "
+        "That gap is consistent with msmean/mssd having been computed from the "
+        "MS cohort rather than from controls, which would make scores under "
+        "them deviation relative to MS rather than GDI. Unconfirmed -- the "
+        "derivation is not in any recovered source."
     ),
 )
 
@@ -193,14 +225,18 @@ REDUCED4 = GdiFeatureSet(
     features=_CANONICAL_9[3:5] + _CANONICAL_9[6:8],
     matrix_filename="matrix_sci_reduced.csv",
     control_filename="controlcalc_sci_reduced.csv",
-    ln_control_mean=4.518094,
-    ln_control_sd=0.415455,
+    ln_control_mean=4.264782,
+    ln_control_sd=0.316835,
     provenance=(
         "The SCI path: `indiv_data[153:255]` + `[306:408]`, dropping fpa as "
         "well as pelvis (204 = 4 x 51). Constants are the script's literal "
-        "`(ln_result - 4.518094)/0.415455` under `sciflag==1`. Note "
-        "matrix.csv is byte-identical in shape (204x14) and appears to be a "
-        "copy of matrix_sci_reduced.csv under the generic name."
+        "regenerated 2026-08-27 from the 166-cycle healthy-control cohort, 15 "
+        "components, 99.71% of variance; held-out controls score 100.01 +/- "
+        "10.12. The archived `sciflag` pair (4.518094 / 0.415455) is 5.9% away "
+        "and is superseded; if it was derived from the SCI cohort it carries "
+        "the same concern recorded on reduced5. Note matrix.csv has the same "
+        "shape (204x14) and appears to be a copy of matrix_sci_reduced.csv "
+        "under the generic name."
     ),
 )
 
@@ -215,7 +251,11 @@ DEFAULT_FEATURE_SET = GDI9
 
 def get_feature_set(name):
     """Look a feature set up by name, listing the alternatives on a miss."""
-    if isinstance(name, GdiFeatureSet):
+    # Duck-typed, not isinstance: this repo loads modules by path (see
+    # module_loading.py), so the same gdi.py can be live under two different
+    # module objects at once and an isinstance check would reject a perfectly
+    # good feature set built from the other one.
+    if hasattr(name, "features") and hasattr(name, "vector_length"):
         return name
     try:
         return FEATURE_SETS[name]

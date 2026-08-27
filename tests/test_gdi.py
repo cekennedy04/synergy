@@ -286,26 +286,63 @@ def test_score_follows_the_published_formula(gdi, tmp_path, scoring_set):
         100.0 - 10.0 * expected_z)
 
 
-def test_the_constants_come_from_the_feature_set_not_the_module(gdi, tmp_path):
+def test_the_constants_come_from_the_feature_set_not_the_module(gdi):
     """They are properties of one control group projected through one matrix,
     not of GDI. The previous version kept them module-global, which is what
     made a wrong pairing possible."""
-    assert gdi.REDUCED4.ln_control_mean == pytest.approx(4.518094)
-    assert gdi.REDUCED5.ln_control_mean == pytest.approx(3.64317)
-    assert gdi.REDUCED4.ln_control_mean != gdi.REDUCED5.ln_control_mean
+    means = {name: fs.ln_control_mean for name, fs in gdi.FEATURE_SETS.items()}
+
+    assert len(set(means.values())) == len(means)  # all four differ
+    assert not hasattr(gdi, "LN_CONTROL_MEAN")
+
+
+@pytest.mark.parametrize("name,ln_mean,ln_sd", [
+    ("gdi9", 4.716953, 0.292494),
+    ("reduced6", 4.642758, 0.300381),
+    ("reduced5", 4.448830, 0.281448),
+    ("reduced4", 4.264782, 0.316835),
+])
+def test_the_promoted_control_constants_are_pinned(gdi, name, ln_mean, ln_sd):
+    """Regenerated 2026-08-27 by gdi_reference.py from the 166-cycle pooled
+    healthy-control cohort at 15 components, each validated held-out (control
+    means 100.0-100.3, SDs 10.1-10.3). Pinned because a silent change here
+    shifts every score the project produces."""
+    feature_set = gdi.FEATURE_SETS[name]
+
+    assert feature_set.ln_control_mean == pytest.approx(ln_mean)
+    assert feature_set.ln_control_sd == pytest.approx(ln_sd)
+
+
+def test_every_shipped_set_scores_against_healthy_controls(gdi):
+    """GDI is defined as distance from a non-disabled control group. The
+    cohort-derived constants that previously shipped (msflag 3.64317, sciflag
+    4.518094) are superseded for that reason -- under them an average member
+    of the impaired cohort scores ~100, which is not GDI."""
+    for feature_set in gdi.FEATURE_SETS.values():
+        assert feature_set.can_score
+        assert "healthy-control cohort" in feature_set.provenance
+    assert gdi.REDUCED5.ln_control_mean != pytest.approx(3.64317)
+    assert gdi.REDUCED4.ln_control_mean != pytest.approx(4.518094)
 
 
 def test_a_set_without_constants_refuses_to_score(gdi, tmp_path):
     """The old module promoted a commented-out constant to a live default and
     would have scored anything. An unattributable calibration must refuse, not
-    produce a plausible wrong number."""
-    _write_reference(tmp_path, gdi.REDUCED6, n_components=27)
-    reference = gdi.load_gdi_reference(tmp_path, gdi.REDUCED6)
-    vector = np.ones(gdi.REDUCED6.vector_length)
+    produce a plausible wrong number. Every shipped set now has regenerated
+    constants, so this uses a set built without them -- which is the state any
+    new feature set starts in."""
+    uncalibrated = gdi.GdiFeatureSet(
+        name="uncalibrated",
+        features=gdi.REDUCED6.features,
+        matrix_filename=gdi.REDUCED6.matrix_filename,
+        control_filename=gdi.REDUCED6.control_filename,
+    )
+    _write_reference(tmp_path, uncalibrated, n_components=27)
+    reference = gdi.load_gdi_reference(tmp_path, uncalibrated)
 
-    assert gdi.REDUCED6.can_score is False
+    assert uncalibrated.can_score is False
     with pytest.raises(gdi.GdiConstantsMissingError, match="normative constants"):
-        gdi.compute_gdi(vector, reference)
+        gdi.compute_gdi(np.ones(uncalibrated.vector_length), reference)
 
 
 def test_the_old_unattributable_constant_is_not_calibrating_anything(gdi):

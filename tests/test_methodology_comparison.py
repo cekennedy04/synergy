@@ -171,9 +171,11 @@ def test_gdi_with_an_empty_reference_directory_still_reports_blocked(mc, tmp_pat
     assert "matrix_ms_reduced.csv" in result["reason"]
 
 
-def test_a_set_without_normative_constants_reports_blocked_not_a_score(mc, tmp_path):
-    """A loadable reference is not enough. reduced6 has a matrix but no
-    attributed ln constants, and must say so rather than score."""
+def test_a_set_without_normative_constants_reports_blocked_not_a_score(mc, tmp_path,
+                                                                       monkeypatch):
+    """A loadable reference is not enough: a set with no attributed ln
+    constants must say so rather than score. Every shipped set now has
+    regenerated constants, so this strips them from one."""
     n_components, vector_length = 27, 306
     matrix = np.ones((n_components, vector_length)) / vector_length
     with open(tmp_path / "matrix_ms_reduced_old.csv", "w", newline="") as handle:
@@ -181,7 +183,19 @@ def test_a_set_without_normative_constants_reports_blocked_not_a_score(mc, tmp_p
     with open(tmp_path / "controlCalc_ms_reduced_old.csv", "w", newline="") as handle:
         csv.writer(handle).writerow(np.zeros(n_components))
 
-    result = mc.gdi_comparison({}, reference_dir=tmp_path, feature_set="reduced6")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_gdi_for_mc_test", Path(mc.__file__).parent / "gdi.py")
+    gdi = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gdi)
+    uncalibrated = gdi.GdiFeatureSet(
+        name="uncalibrated6", features=gdi.REDUCED6.features,
+        matrix_filename=gdi.REDUCED6.matrix_filename,
+        control_filename=gdi.REDUCED6.control_filename,
+    )
+
+    result = mc.gdi_comparison({}, reference_dir=tmp_path,
+                               feature_set=uncalibrated)
 
     assert result["available"] is False
     assert result["scores"] == {}
