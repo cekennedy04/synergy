@@ -148,23 +148,52 @@ def test_gdi_reports_blocked_without_reference_data(mc):
 
 
 def test_gdi_blocked_reason_names_the_required_files(mc):
-    result = mc.gdi_comparison({}, reference_dir=None)
+    """The filenames come from the selected feature set, so the message stays
+    correct when the set changes -- it used to hardcode one pair."""
+    result = mc.gdi_comparison({}, reference_dir=None, feature_set="reduced5")
 
     assert "matrix_ms_reduced.csv" in result["reason"]
     assert "controlCalc_ms_reduced.csv" in result["reason"]
+    assert "reduced5" in result["reason"]
+
+
+def test_a_different_feature_set_names_its_own_files(mc):
+    result = mc.gdi_comparison({}, reference_dir=None, feature_set="reduced6")
+
+    assert "matrix_ms_reduced_old.csv" in result["reason"]
+    assert "matrix_ms_reduced.csv" not in result["reason"]
 
 
 def test_gdi_with_an_empty_reference_directory_still_reports_blocked(mc, tmp_path):
-    result = mc.gdi_comparison({}, reference_dir=tmp_path)
+    result = mc.gdi_comparison({}, reference_dir=tmp_path, feature_set="reduced5")
 
     assert result["available"] is False
     assert "matrix_ms_reduced.csv" in result["reason"]
 
 
+def test_a_set_without_normative_constants_reports_blocked_not_a_score(mc, tmp_path):
+    """A loadable reference is not enough. reduced6 has a matrix but no
+    attributed ln constants, and must say so rather than score."""
+    n_components, vector_length = 27, 306
+    matrix = np.ones((n_components, vector_length)) / vector_length
+    with open(tmp_path / "matrix_ms_reduced_old.csv", "w", newline="") as handle:
+        csv.writer(handle).writerows(matrix.T)
+    with open(tmp_path / "controlCalc_ms_reduced_old.csv", "w", newline="") as handle:
+        csv.writer(handle).writerow(np.zeros(n_components))
+
+    result = mc.gdi_comparison({}, reference_dir=tmp_path, feature_set="reduced6")
+
+    assert result["available"] is False
+    assert result["scores"] == {}
+    assert "normative constants" in result["reason"]
+
+
 def test_gdi_computes_for_every_methodology_once_reference_exists(mc, tmp_path):
     """The slot fills automatically -- no code change needed when the
     collaborator supplies the control dataset."""
-    n_components, vector_length = 15, 459
+    # reduced5 is the set the supervisor's live script actually uses, and the
+    # only shipped set with both a reference pair and attributed constants.
+    n_components, vector_length = 28, 255
     matrix = np.ones((n_components, vector_length)) / vector_length
     with open(tmp_path / "matrix_ms_reduced.csv", "w", newline="") as handle:
         csv.writer(handle).writerows(matrix.T)
@@ -172,9 +201,8 @@ def test_gdi_computes_for_every_methodology_once_reference_exists(mc, tmp_path):
         csv.writer(handle).writerow(np.zeros(n_components))
 
     def curves(side, value):
-        names = ["pelvis_tilt", "pelvis_list", "pelvis_rotation",
-                 f"hip_flexion_{side}", f"hip_adduction_{side}", f"hip_rotation_{side}",
-                 f"knee_angle_{side}", f"ankle_angle_{side}", f"subtalar_angle_{side}"]
+        names = [f"hip_flexion_{side}", f"hip_adduction_{side}",
+                 f"knee_angle_{side}", f"ankle_angle_{side}", f"fpa_{side}"]
         return {"mean": {n: [value] * 101 for n in names}}
 
     results = {
@@ -182,7 +210,8 @@ def test_gdi_computes_for_every_methodology_once_reference_exists(mc, tmp_path):
         "OpenCap": {"curves_r": curves("r", 3.0), "curves_l": curves("l", 3.0)},
     }
 
-    result = mc.gdi_comparison(results, reference_dir=tmp_path)
+    result = mc.gdi_comparison(results, reference_dir=tmp_path,
+                               feature_set="reduced5")
 
     assert result["available"] is True
     assert set(result["scores"]) == {"Xsens", "OpenCap"}
