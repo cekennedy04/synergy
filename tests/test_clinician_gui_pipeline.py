@@ -568,31 +568,6 @@ def test_drain_queue_keeps_run_disabled_until_a_terminal_message(mod):
     assert state["run_enabled"] is True
 
 
-# -- Non-gait guardrail reaches the clinician correctly (2026-08-25) -----
-# gait_analysis_UCM_fixed now raises NonGaitTrialError when a trial segments
-# but is not walking. Without dedicated handling that fell through
-# run_pipeline's generic `except Exception` into GaitAnalysisFailedError,
-# whose headline tells the clinician to "try a longer or cleaner recording"
-# -- actively wrong advice, since re-recording the same transfer will be
-# rejected again for the same reason.
-
-
-def _make_fake_gait_module_that_rejects_non_gait(message):
-    """Mirrors the real module's shape: the exception class hangs off the
-    module, because clinician_gui loads it by path at runtime and cannot
-    import the class at module level."""
-    class NonGaitTrialError(Exception):
-        pass
-
-    class _FakeGaitAnalysis:
-        def __init__(self, *args, **kwargs):
-            raise NonGaitTrialError(message)
-
-    return types.SimpleNamespace(
-        gait_analysis=_FakeGaitAnalysis, NonGaitTrialError=NonGaitTrialError
-    )
-
-
 def _run_pipeline_expecting_error(mod, tmp_path, fake_gait):
     session_dir = tmp_path / "OpenCapData_test"
     mvnx_path = tmp_path / "trial1.mvnx"
@@ -607,33 +582,13 @@ def _run_pipeline_expecting_error(mod, tmp_path, fake_gait):
     return caught.value
 
 
-def test_non_gait_rejection_maps_to_its_own_error_not_generic_gait_failure(mod, tmp_path):
-    detail = "Trial rejected: only 1 heel strike(s) detected on the less-covered leg"
-    fake_gait = _make_fake_gait_module_that_rejects_non_gait(detail)
-
-    exc = _run_pipeline_expecting_error(mod, tmp_path, fake_gait)
-
-    assert isinstance(exc, mod.NonGaitTrialRejectedError)
-    assert not isinstance(exc, mod.GaitAnalysisFailedError)
-    assert detail in str(exc)
+# -- Gait-analysis failures reach the clinician as their own error --------
 
 
-def test_non_gait_message_does_not_tell_the_clinician_to_re_record(mod):
-    """The specific regression this fix exists for. Re-recording the same
-    transfer produces the same rejection, so that advice wastes a session."""
-    message = mod.map_error_to_message(
-        mod.NonGaitTrialRejectedError("Trial rejected: only 1 heel strike(s)")
-    )
-
-    assert "longer or cleaner recording" not in message
-    assert "will not change this result" in message
-    assert "three full gait cycles" in message
-
-
-def test_a_gait_module_without_the_error_class_still_maps_to_generic_failure(mod, tmp_path):
-    """Backward compatibility: run_pipeline pulls NonGaitTrialError off the
-    loaded module, so a module that predates it (or a test fake without it)
-    must keep working rather than raising AttributeError."""
+def test_a_gait_analysis_failure_maps_to_generic_gait_failure(mod, tmp_path):
+    """Anything gait_analysis raises is a detection failure as far as the
+    GUI is concerned, and must surface as GaitAnalysisFailedError rather
+    than the unlabelled fallback message."""
     fake_gait = _make_fake_gait_fixed_module(raise_exc=Exception("detection failed"))
 
     exc = _run_pipeline_expecting_error(mod, tmp_path, fake_gait)
@@ -1267,10 +1222,10 @@ def test_a_dead_child_keeps_its_last_output_for_diagnosis(mod):
 
 def test_a_child_reporting_its_own_exception_keeps_that_message(mod):
     ok, _result, error = mod._decode_trial_outcome(
-        1, payload={"ok": False, "error": "NonGaitTrialError: only 1 heel strike"})
+        1, payload={"ok": False, "error": "ValueError: no heel-strike events detected"})
 
     assert ok is False
-    assert error == "NonGaitTrialError: only 1 heel strike"
+    assert error == "ValueError: no heel-strike events detected"
 
 
 def test_a_successful_child_returns_its_result(mod):

@@ -1240,11 +1240,23 @@ So the check becomes possible by re-exporting the CK trials to `.xlsx` from MVN 
 enabling sensor-data output in the `.mvnx` export options. The raw `.mvn` files are present but are
 a proprietary binary format this pipeline cannot read.
 
-### Non-gait trial guardrail (2026-08-24)
+### Non-gait trial guardrail (2026-08-24) — REMOVED 2026-08-27
 
-Closes the failure mode recorded above: a bed-to-shower-chair transfer produced a complete,
-clean-looking clinical report with no warning. `gait_analysis.__init__` now calls
-`_validate_gait_pattern()` immediately after segmentation and before any metric is computed,
+> **Removed 2026-08-27.** The guardrail no longer exists. `_validate_gait_pattern()`,
+> `NonGaitTrialError`, `MIN_HEEL_STRIKES_PER_LEG`, `PHYSIOLOGICAL_CADENCE_STEPS_PER_MIN`, the
+> `validate_gait_pattern` kwarg, `clinician_gui.NonGaitTrialRejectedError` and its message branch,
+> and `tests/test_gait_pattern_validation.py` were all deleted. There are now **no hard cutoffs on
+> physiological gait** — no minimum step/cycle count and no cadence window. Any trial that segments
+> is analysed and reported. The failure mode below is therefore live again: a non-walking recording
+> can still produce a complete, plausible-looking clinical report. The planned mitigation is a
+> reporting one, not a blocking one — the re-run survey in
+> `docs/plans/2026-08-27-001-feat-rerun-visualizer-joint-reduction-plan.md` emits cycle count and
+> cadence as manifest **columns**, so the signal survives without any trial being refused. The rest
+> of this section is kept as provenance for the thresholds and the data behind them, in past tense.
+
+Closed the failure mode recorded above: a bed-to-shower-chair transfer produced a complete,
+clean-looking clinical report with no warning. `gait_analysis.__init__` called
+`_validate_gait_pattern()` immediately after segmentation and before any metric was computed,
 raising `NonGaitTrialError`.
 
 **Screening is event-count and event-timing only, by necessity.** A minimum-forward-velocity
@@ -1275,16 +1287,17 @@ Two thresholds, both empirically grounded rather than guessed:
 | observed cadence range | 124.2 – 133.3 steps/min |
 | margin to window bounds | 84.2 low, 26.7 high |
 
-`validate_gait_pattern=False` overrides, for a genuinely short but real trial. A screening
-heuristic should not be able to hard-block a clinician, and the override is asserted by a test so
-it cannot quietly disappear.
+`validate_gait_pattern=False` overrode the check, for a genuinely short but real trial. A
+screening heuristic should not be able to hard-block a clinician — which is the reasoning that was
+followed to its conclusion on 2026-08-27, when the check was removed outright rather than left as a
+default-on block.
 
-Note what this does and does not do: it runs *after* segmentation, so a non-gait trial still pays
-the auto-trim retry cost before being rejected. It prevents the bad report, not the wasted CPU.
+Note what it did and did not do: it ran *after* segmentation, so a non-gait trial still paid the
+auto-trim retry cost before being rejected. It prevented the bad report, not the wasted CPU.
 
-Nine tests in `tests/test_gait_pattern_validation.py`, including the real-world cycle counts
-(4, 5, 6) pinned as a regression against a future threshold change quietly starting to reject real
-data. **115 tests pass.**
+Nine tests covered it in `tests/test_gait_pattern_validation.py`, including the real-world cycle
+counts (4, 5, 6) pinned as a regression against a future threshold change quietly starting to
+reject real data. That file was deleted with the guardrail.
 
 ### Spatial provenance stamped onto every report
 
@@ -1395,9 +1408,9 @@ earlier sections carry ⚠ SUPERSEDED banners).
 | **Conversion fidelity** — our `.mot` vs Xsens `<jointAngle>` | r 0.976–0.994, RMS 2.68–4.97°, **mean 3.75°** (n=14, 84 comparisons) | Both sides derive from the **same IMU orientations**. This measures coordinate and model-mapping fidelity **only** — not accuracy. Excludes `Trial8`. |
 | **Cross-modality agreement** — our `.mot` vs OpenCap video | knee r 0.980/0.986 (3.76°/3.28°); hip flexion r 0.924/0.889 (4.75°/6.13°); hip adduction r 0.902/0.857 (3.72°/3.92°); **knee + hip flexion mean 4.48° RMS** (n=14) | OpenCap is itself a video-based estimate, not gold-standard mocap. Excludes `Trial8`. **Not interchangeable with conversion fidelity above** — different quantity, different reference. |
 | Ankle disagreement is not ours | ours vs OpenCap r 0.296/0.345; ours vs Xsens ankle r 0.985/0.976 | Xsens's own ankle disagrees with OpenCap just as badly (r 0.388/0.249). OpenCap ankle is 3.0× noisier frame-to-frame and reports 80.8° ROM where normal gait is ~30°. Ball-of-foot explanation **refuted** (R 0.388→0.295, L 0.249→−0.069). |
-| Non-gait guardrail | 30/30 real trial-legs accepted, 0 false rejections, 2/2 non-gait rejected | Thresholds ≥3 heel strikes per leg (contralateral leg binds) and cadence 40–160 steps/min. Observed real cadence 124.2–133.3. Runs *after* segmentation, so a non-gait trial still pays the auto-trim cost. |
+| Non-gait guardrail | **removed 2026-08-27** | Historical result while it existed: 30/30 real trial-legs accepted, 0 false rejections, 2/2 non-gait rejected, at ≥3 heel strikes per leg and cadence 40–160 steps/min. No screen runs now — a non-gait trial is analysed and reported like any other. |
 | MVNX v4 parsing | 3- or 9-value `centerOfMass` | Layout confirmed empirically, not from schema. Truncation guarded by a vertical-component tripwire on 9-value rows only. |
-| Test suite | **115 tests pass** | This is a **pass rate, not a coverage measurement**. No coverage analysis has been run on this repo. |
+| Test suite | **287 tests pass** | This is a **pass rate, not a coverage measurement**. No coverage analysis has been run on this repo. |
 
 ### Excluded, and by which argument
 
@@ -1438,7 +1451,10 @@ correction, not a reduction in error on like data.
 Two gaps found by auditing the GUI against changes made elsewhere in the pipeline. Both were
 silent — the code ran fine, it just told the clinician the wrong thing.
 
-**1. The non-gait guardrail gave actively wrong advice.** `NonGaitTrialError` was not referenced in
+**1. The non-gait guardrail gave actively wrong advice.** *(Moot as of 2026-08-27: the guardrail
+and `NonGaitTrialRejectedError` were both removed. A gait-analysis failure now maps to
+`GaitAnalysisFailedError` again, which is correct, because a detection failure is the only kind
+left.)* `NonGaitTrialError` was not referenced in
 `clinician_gui.py` at all, so a guardrail rejection fell through `run_pipeline`'s generic
 `except Exception` into `GaitAnalysisFailedError`, whose headline reads *"Try a longer or cleaner
 recording of the same activity."* For a rejected transfer that is wrong advice: a longer, cleaner

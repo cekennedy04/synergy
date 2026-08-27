@@ -207,15 +207,6 @@ class ImuKinematicsError(Exception):
     review) (R5)."""
 
 
-class NonGaitTrialRejectedError(Exception):
-    """The trial segmented, but the gait guardrail rejected it as not
-    walking. Distinct from GaitAnalysisFailedError: detection did not fail,
-    it succeeded and found too little rhythmic gait to support the metrics.
-    The advice a clinician needs differs completely -- "this is not a gait
-    trial" rather than "try a longer or cleaner recording."
-    """
-
-
 class ReportExportError(Exception):
     """Wraps an OSError raised while writing the PDF report file itself
     (e.g. a Windows PermissionError when the destination file is still open
@@ -282,16 +273,6 @@ def map_error_to_message(exc):
             "a sensor was misplaced or misoriented during recording, or the "
             "model's base IMU label/heading axis doesn't match this trial's "
             "sensor setup."
-        )
-    elif isinstance(exc, NonGaitTrialRejectedError):
-        message = (
-            "This recording does not contain enough continuous walking to "
-            "compute gait metrics, so no report was produced. Gait analysis "
-            "needs at least three full gait cycles on each leg at a "
-            "walking-like cadence. A transfer, a turn, a stand-to-sit, or a "
-            "few isolated steps will not qualify. Check that this is the "
-            "trial you meant to run -- re-recording the same activity will "
-            "not change this result."
         )
     elif isinstance(exc, ReportExportError):
         message = (
@@ -473,13 +454,6 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
             allow_manual_entry=False, modelName=model_name,
         )
     except Exception as exc:
-        # gait_analysis_UCM_fixed is loaded by path at runtime, so its
-        # exception classes cannot be imported at module level -- pull the
-        # class off the loaded module instead of matching on __name__, which
-        # would silently stop working if the class were ever renamed.
-        non_gait_error = getattr(gait_fixed, "NonGaitTrialError", None)
-        if non_gait_error is not None and isinstance(exc, non_gait_error):
-            raise NonGaitTrialRejectedError(str(exc)) from exc
         raise GaitAnalysisFailedError(str(exc)) from exc
 
     # Stage 5: the stride-normalised curve matrix -- (n_coordinates x 101)
@@ -714,9 +688,8 @@ def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
     Two deliberate choices:
 
     A failing trial is logged and skipped rather than ending the run. One
-    mis-recorded or non-walking file should not cost the other fourteen --
-    and the guardrail rejecting a non-gait trial is a normal outcome here,
-    not an error. Every failure is reported in the result.
+    mis-recorded or non-walking file should not cost the other fourteen.
+    Every failure is reported in the result.
 
     Pooling happens once, at the end. Per-trial runs rebuild the combined
     matrix each time, which is right when a clinician might stop after any
