@@ -1362,6 +1362,27 @@ class gait_analysis(kinematics):
             hsCont = rHS
             toCont = rTO
 
+        # Edit #14 (2026-08-27, found by the Phase 1.1 re-run survey). Edit #5
+        # added an empty-heel-strike guard, but only inside the `leg=='auto'`
+        # branch above -- and clinician_gui never takes that branch, because it
+        # asks for leg='r' and leg='l' explicitly. With a leg supplied, an
+        # empty hsIps made n_gait_cycles = len(hsIps)-1 = -1, which survives
+        # both adjustments below and reaches np.zeros((-1, 3)) as
+        # "ValueError: negative dimensions are not allowed" -- a numpy message
+        # naming nothing the operator can act on.
+        #
+        # Observed on real data, not hypothesised: Trial3_1 in session
+        # ca505b02 failed exactly this way on both legs, 2 of 92 trial-legs
+        # surveyed. Those trials need the manual event picker, and the survey
+        # can only route them there if the failure says what it is.
+        if len(hsIps) == 0:
+            raise Exception(
+                "No heel-strike events were detected for the '" + leg + "' leg, so "
+                'no gait cycle can be segmented. This is a detection failure rather '
+                "than a short trial -- check the trial's marker data quality, or "
+                'supply the events manually.'
+            )
+
         if len(hsIps)-1 < n_gait_cycles:
             print('You requested {} gait cycles, but only {} were found. '
                   'Proceeding with this number.'.format(n_gait_cycles,len(hsIps)-1))
