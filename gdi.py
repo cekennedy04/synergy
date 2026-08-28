@@ -242,11 +242,20 @@ REDUCED4 = GdiFeatureSet(
 
 FEATURE_SETS = {fs.name: fs for fs in (GDI9, REDUCED6, REDUCED5, REDUCED4)}
 
-# The canonical set is the default because it is what "GDI" means without
-# qualification. It cannot currently score (no attributable constants), which
-# is the honest state of things rather than a regression -- the previous
-# default could not score either, for a worse reason.
-DEFAULT_FEATURE_SET = GDI9
+# reduced6 is the project default as of 2026-08-28, by explicit decision: the
+# supervisor's 2026-08-27 note asks for "6 joints instead of 26 joints", and
+# the six recovered here are the canonical nine minus pelvis.
+#
+# GDI9 remains the standards-canonical set and is still shipped; it is simply
+# not what this project scores against. Two practical consequences of the
+# choice, both in its favour: reduced6 drops the pelvis terms, so neither the
+# `pelvis_tilt` +20 offset nor the `pelvis_rotation` wrap can misalign a
+# subject vector against the reference, and its 15 components capture 99.07%
+# of control variance against 98.67% for the nine.
+#
+# Scores are NOT comparable across feature sets. Changing this constant
+# changes every number the project reports.
+DEFAULT_FEATURE_SET = REDUCED6
 
 
 def get_feature_set(name):

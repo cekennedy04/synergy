@@ -112,6 +112,17 @@ def test_the_ninth_variable_is_fpa_not_subtalar(gdi):
     assert not any("subtalar" in name for name in gdi.GDI9.features)
 
 
+def test_the_project_default_is_reduced6(gdi):
+    """Decided 2026-08-28 from the supervisor's "6 joints instead of 26" note.
+    Pinned because scores are not comparable across feature sets, so changing
+    this silently changes every number the project reports."""
+    assert gdi.DEFAULT_FEATURE_SET is gdi.REDUCED6
+    assert gdi.DEFAULT_FEATURE_SET.n_features == 6
+    # No pelvis terms, so neither pelvis adjustment can misalign a subject
+    # vector against the reference -- see the constant's comment.
+    assert not any("pelvis" in name for name in gdi.DEFAULT_FEATURE_SET.features)
+
+
 def test_an_unknown_feature_set_lists_the_real_ones(gdi):
     with pytest.raises(KeyError, match="reduced6"):
         gdi.get_feature_set("reduced7")
