@@ -82,12 +82,15 @@ def test_the_circular_mean_does_not_land_opposite_the_data(mod):
 def test_a_flexion_series_is_not_unwrapped(mod):
     """Flexion is bounded and sagittal; unwrapping would invent 360-degree
     jumps in a quantity that has none."""
-    # A series that genuinely crosses the seam: as headings these are a
-    # steady increase (170 -> 185 -> 200); read literally they lurch downward.
-    values = [170.0, -175.0, -160.0]
+    # A series that genuinely crosses the seam: as headings these rise
+    # steadily (150 -> 205); read literally they lurch downward at the seam.
+    # Eight points, because `change` compares the first three against the last
+    # three and would be identically zero on a three-point series.
+    order = list(range(1, 9))
+    values = [mod.wrap_degrees(150.0 + 8.0 * i) for i in range(8)]
 
-    circular_r, circular_change = mod.trend([1, 2, 3], values, circular=True)
-    plain_r, plain_change = mod.trend([1, 2, 3], values, circular=False)
+    circular_r, circular_change = mod.trend(order, values, circular=True)
+    plain_r, plain_change = mod.trend(order, values, circular=False)
 
     assert circular_r == pytest.approx(1.0)      # unwrapped: rising
     assert plain_r < 0                            # literal: apparently falling
