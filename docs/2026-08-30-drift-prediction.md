@@ -99,3 +99,19 @@ relationship is robust; the signed one is not universal, and SB is unexplained.
 - Only HH (-1.5 deg) is clean enough for its scores to be read as gait.
 - The open question is not a threshold: it is whether FPA belongs in the scored set given this
   pipeline's heading behaviour. That changes what every number in the study means.
+
+---
+
+# Resolved, 2026-08-31
+
+The cause was not the recordings. `compute_foot_progression_angles` measured its reference heading
+in the wrong plane and evaluated `arctan2(0, 0)` under this project's pinned root, so FPA carried
+the session's heading wander directly into `reduced6`. Fixed in 16c78e8, recorded as edit #15 in
+`VENDORING.md`.
+
+AN re-scored after the fix: right-leg GDI trend goes from r = -0.917 (-18.4 points) to r = +0.270
+(+1.9), with every non-FPA variable numerically unchanged. See `2026-08-31-an-gdi-decline.md`.
+
+The six-participant relationship above (r = -0.947, -0.72 points per degree) therefore measured a
+defect in this repository, not a property of the capture. KM, MS and SB need the same before/after
+check once their re-runs finish.
