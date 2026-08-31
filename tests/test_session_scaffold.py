@@ -150,6 +150,50 @@ def test_the_scaffold_is_named_by_code_and_never_by_name(mod, tmp_path):
     assert "AL" in result["session_dir"].name
 
 
+def test_the_scaffold_carries_the_metadata_the_pipeline_reads(mod, tmp_path):
+    """Without it compute_foot_progression_angles walks the session for any
+    .yaml, finds none, and passes None into get_model_name_from_metadata --
+    surfacing as "expected str, bytes or os.PathLike object, not NoneType"
+    from inside the FPA stage, naming neither the missing file nor the
+    session. It skipped every trial of the first real batch run."""
+    opencap = tmp_path / "opencap"
+    session = _opencap_session(opencap, "OpenCapData_1", "Ada Lovelace")
+    participant = _participant(tmp_path / "participants", "AL")
+
+    result = mod.build_scaffold("AL", participant,
+                                {"path": session, "subject_id": "Ada Lovelace",
+                                 "code": "AL"}, tmp_path / "out")
+
+    text = result["metadata"].read_text(encoding="utf-8")
+    # get_model_name_from_metadata rebuilds "<openSimModel>_scaled.osim", so
+    # the stored value must NOT already carry the suffix.
+    assert text.strip() == "openSimModel: LaiUhlrich2022"
+    assert result["model"].name == "LaiUhlrich2022_scaled.osim"
+
+
+def test_the_metadata_never_carries_the_subject_name(mod, tmp_path):
+    """The OpenCap metadata is not copied -- it holds subjectID, which may be
+    a real name, and only the model reference is needed."""
+    opencap = tmp_path / "opencap"
+    session = _opencap_session(opencap, "OpenCapData_1", "Ada Lovelace")
+    participant = _participant(tmp_path / "participants", "AL")
+
+    result = mod.build_scaffold("AL", participant,
+                                {"path": session, "subject_id": "Ada Lovelace",
+                                 "code": "AL"}, tmp_path / "out")
+
+    text = result["metadata"].read_text(encoding="utf-8")
+    assert "Ada" not in text and "Lovelace" not in text
+    assert "subjectID" not in text
+
+
+def test_a_model_without_the_scaled_suffix_is_refused(mod, tmp_path):
+    """The openSimModel value is the stem minus "_scaled"; a model not
+    carrying it cannot be reduced without guessing."""
+    with pytest.raises(mod.ScaffoldError, match="_scaled"):
+        mod.write_metadata(tmp_path, "generic.osim")
+
+
 def test_the_model_is_copied_so_the_session_survives_the_export_moving(mod,
                                                                       tmp_path):
     opencap = tmp_path / "opencap"

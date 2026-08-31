@@ -41,6 +41,12 @@ from pathlib import Path
 
 METADATA_NAME = "sessionMetadata.yaml"
 
+# `get_model_name_from_metadata` reconstructs the filename as
+# `<openSimModel> + "_scaled" + ".osim"`, so the value recorded is the model
+# stem with that suffix removed -- writing the full filename would have the
+# pipeline look for "LaiUhlrich2022_scaled_scaled.osim".
+_SCALED_SUFFIX = "_scaled"
+
 # The layout xsens_to_opensim.py --session-dir writes into, and the layout
 # gait_analysis reads back. Created empty; the converter fills them.
 SESSION_SUBDIRS = ("OpenSimData/Model", "OpenSimData/Kinematics", "MarkerData")
@@ -184,15 +190,43 @@ def build_scaffold(participant_code, participant_dir, opencap_session, out_root,
     # Copied, not linked: this install uses file copies rather than symlinks,
     # and a session must stay valid if the OpenCap export is moved away.
     shutil.copy2(model_source, model_dest)
+    write_metadata(session_dir, model_source.name)
 
     return {
         "participant": str(participant_code).upper(),
         "session_dir": session_dir,
         "model": model_dest,
+        "metadata": session_dir / METADATA_NAME,
         "model_source": model_source,
         "n_trials": len(trials),
         "trials": trials,
     }
+
+
+def write_metadata(session_dir, model_filename):
+    """The minimal sessionMetadata.yaml the pipeline actually reads.
+
+    Not copied from the OpenCap session: that file carries `subjectID`, which
+    may be a real name, and this writes only what is needed to resolve the
+    model. Without it `compute_foot_progression_angles` walks the session for
+    any .yaml, finds none, and passes None into
+    `utils.get_model_name_from_metadata` -- surfacing as "expected str, bytes
+    or os.PathLike object, not NoneType" from inside the FPA stage, which
+    names neither the missing file nor the session. Observed on the first
+    real batch run, where it skipped every trial.
+    """
+    stem = Path(model_filename).stem
+    if not stem.endswith(_SCALED_SUFFIX):
+        raise ScaffoldError(
+            f"model {model_filename!r} does not end in {_SCALED_SUFFIX!r}, so "
+            "the openSimModel value the pipeline reconstructs from cannot be "
+            "derived. get_model_name_from_metadata appends that suffix."
+        )
+    metadata_path = Path(session_dir) / METADATA_NAME
+    metadata_path.write_text(
+        "openSimModel: {}\n".format(stem[:-len(_SCALED_SUFFIX)]),
+        encoding="utf-8")
+    return metadata_path
 
 
 def build_all(participants_root, opencap_root, out_root, only=None, force=False):
