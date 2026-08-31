@@ -3,7 +3,7 @@
 Date: 2026-08-27
 Source: `to_do/8_27_to_do.pdf`, `context/model modified python opensim Actual (5).pdf`,
 `context/replay-os-small/`, `context/gait_analysis/`, `context/control_kinematics (2)/`
-Status: proposed, not started
+Status: superseded in part — see the 2026-08-30 addendum at the end before acting on Task 1
 
 Three tasks, ordered by what unblocks what. Task 1 and Task 3 are independent and can run in
 parallel; Task 2 is a dependency of Task 1's fallback chain but not of its main path.
@@ -317,3 +317,101 @@ Task 1's re-run output to be trustworthy before the control pool is rebuilt from
 
 Task 3.1 is worth doing immediately regardless — GDI is currently broken in two ways and cannot
 return a number, and that is independent of everything else here.
+
+
+---
+
+# Addendum, 2026-08-30
+
+What actually happened, and where the plan above is now wrong. Read this first.
+
+## Task 1's premise did not survive contact with the data
+
+The plan assumed an archive of previously-processed participants, some corrupted by the
+left/right swap, to be surveyed and selectively re-run. **That archive does not exist on this
+machine.**
+
+- The only processed session was the CK/XT/Trial set, and the survey found **0 corrupt out of 92
+  trial-legs**. Nothing there needs re-running.
+- `context/Data for Alex/` holds six participants x 15 `.mvnx`, and the user confirmed **none had
+  been analysed**. There are no prior results for the swap to have corrupted.
+- `S01_04162026/` and `XsensOpensim/` are empty directories; their `.zip`s were never extracted.
+
+So Phases 1.2 and 1.3 as written have an empty work list. What replaced them is **first-pass
+processing** of ~90 trials, which is an execution problem rather than a cleanup one.
+
+`rerun_survey.py` keeps its value: it established the 0/92 result, it found a real crash
+(`Trial3_1`, no heel strikes on either leg, previously surfacing as an opaque numpy message), and
+it remains the right tool the moment previously-processed results turn up. It cannot be run on a
+raw `.mvnx` — it reads converted `.mot` — so surveying an unprocessed participant costs a full
+conversion and saves nothing.
+
+**Still open:** where the results behind `control_kinematics.csv` and the `matrix_ms_reduced*`
+family were produced. Those are pooled outputs of *some* prior analysis, and a pooled matrix cannot
+be surveyed -- once cycles are concatenated, whether any of them came through the auto-trim path is
+unrecoverable. If that prior analysis ran the buggy code, the GDI control reference regenerated in
+Phase 3.3 inherits it.
+
+## What the model bottleneck turned out to be
+
+The plan did not anticipate that the Xsens participants had no scaled `.osim`. Neither of the two
+options considered (scale from `.mvnx` segment geometry; use the generic unscaled model) was
+needed: every Xsens participant also has an OpenCap session, and OpenCap scales per subject. Each
+Xsens session now borrows **that participant's own** scaled model. Verified as genuinely
+per-participant -- six copied models, six distinct hashes.
+
+`session_scaffold.py` builds these. It matches by subject identity and refuses ambiguity, writes
+only the minimal `sessionMetadata.yaml` the FPA stage needs, and never puts a subject name on disk
+(the OpenCap `subjectID` is a real name; this repository is public).
+
+## Task 3: what changed, including a retraction
+
+Phases 3.1, 3.2 and 3.3 are done. Two claims recorded earlier in this plan and in the collaborator
+draft **did not survive adversarial review** and are withdrawn:
+
+1. **The MS-derivation inference is retracted.** Controls do score 118 through the archived
+   `matrix_ms_reduced.csv`, but that file is not an orthonormal basis -- column norms 0.031 to
+   1.000, `MtM` off the identity by ~1.0. Rescaling a *control*-derived basis to those norms
+   overshoots 118, so no MS cohort is needed to explain it. `matrix_ms_reduced_old.csv` is equally
+   non-orthonormal and scores an unremarkable 97.6. `load_gdi_reference` now refuses a
+   non-orthonormal matrix, which is the defect shape checks could never see.
+
+2. **The held-out check validates nothing on this cohort.** A random orthonormal basis scores
+   held-out controls at 99.8 +/- 10.2 against the true basis's 100.2 +/- 10.3. Pooled control
+   cycles have median pairwise correlation 0.89, so a held-out cycle already lies inside the
+   training span whatever basis is used. The regenerated references are *reproducible*, not
+   *validated*; real validation needs an independent control group this project does not have.
+
+**Open question 1 in the plan is resolved.** The "26" was `jointcheck.COMPARISON_COORDINATES` --
+26 coordinates in the comparison figure -- not the 38-column export width. The reduction applies
+to what gets scored, not what gets exported, and the recommendation to keep the export wide is
+confirmed by its contents: rows 33-35 are `comx/comy/comz` and 20-22 are lumbar, all UCM inputs
+that no GDI feature set uses. `curve_features.py` performs the projection at feature-build time.
+
+`reduced6` is the project default as of 2026-08-28. A side benefit found while building the
+bridge: this pipeline's raw `pelvis_tilt` runs ~21.5 degrees against the pooled control matrix's
+~12, so whatever convention difference that is, `gdi9` would inherit it and `reduced6` -- no
+pelvis terms -- does not.
+
+## Task 2
+
+Phase 2.1 is built (`motion_scrubber.py`). `showMotion` was confirmed as a dead end: a static C++
+helper owning its own loop. Row index is the slider domain because a real file's `dt` runs
+0.016667, 0.017, 0.016, 0.017 -- reconstructing time arithmetically drifts. The data layer parses
+`.mot` directly so it is testable without OpenSim. **The Tk-vs-Simbody event-loop risk the plan
+flags has NOT been exercised** -- nothing has yet opened a visualizer window. Phase 2.2 should
+prototype that before building on it.
+
+## A data finding, not a code change
+
+Scoring AN's complete session against the control reference shows the **right leg degrading
+monotonically across the session** (r = -0.917, -1.44 GDI/trial, 90.3 over the first three trials
+to 71.9 over the last three) while the **left leg does not** (r = +0.486). Asymmetry is what makes
+it diagnostic: fatigue or a session-wide drift would move both legs. Treat as a measurement
+artefact until ruled out, and check whether other participants show it before pooling their trials.
+
+## Sequencing now
+
+    first-pass processing (~90 trials, resumable) ──> rescore everyone (3.4)
+    Phase 2.2 event picker ── independent, unblocked
+    cohort labels (control vs patient) ── blocks any clinical reading of a score
