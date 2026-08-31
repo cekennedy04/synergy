@@ -21,14 +21,31 @@ of the mean-centred version's, and the first singular value (3917 against 837
 for the second) is the DC direction that centring removes. The SVD is
 therefore taken on the **raw** matrix, not a centred one.
 
-**Controls scoring 100 is not a validation.** `ln_control_mean` and
-`ln_control_sd` are *defined* as the mean and SD of the control group's own log
-distances, so that group's mean GDI is exactly 100 and its SD exactly 10 by
-construction, for any basis whatsoever -- including a random one. That
-identity is worth asserting as a arithmetic self-check, and this module does
-assert it, but it proves nothing about the reference. `held_out_report` is the
-real test: build on part of the cohort, score the rest, and see whether the
-unseen controls still land near 100.
+**Neither built-in check validates the reference. Both are much weaker than
+they look.**
+
+`self_consistency` is a pure identity: `ln_control_mean` and `ln_control_sd`
+are *defined* as the control group's own log-distance mean and SD, so that
+group scores exactly 100 +/- 10 through any basis whatsoever, a random one
+included. It catches an implementation slip and nothing else.
+
+`held_out_report` was written to escape that tautology by scoring cycles the
+reference never saw. **On this cohort it does not escape it.** Substituting a
+random orthonormal basis -- carrying no information about the controls -- into
+the same five-fold procedure gives held-out 99.8 +/- 10.2 against the true
+basis's 100.2 +/- 10.3. It also cannot see over-fitting at any component
+count, returning ~100 even at 130 components from 132 training columns. The
+cause is the data: pooled control gait cycles have median pairwise correlation
+0.89, so a held-out cycle already lies almost inside the training span whatever
+basis is chosen, and the residual it would need to detect is not there.
+
+So a passing held-out report is not evidence the basis is good. Use it only to
+catch the opposite -- a report far from 100 means something is genuinely
+broken. Real validation needs an independent control group, which this project
+does not have. What the regenerated references do offer is narrower and worth
+stating honestly: orthonormality by construction, a recorded component count
+and variance captured, and a sidecar naming the cohort and both constants.
+That is reproducibility, not validation.
 
 **Regenerating invalidates comparisons.** A new basis, a new control mean and
 new constants mean the resulting scores are not comparable to any number

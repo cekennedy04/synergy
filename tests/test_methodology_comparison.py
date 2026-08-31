@@ -139,6 +139,14 @@ def test_a_clean_coordinate_is_usable(mc):
 # -- blocked analyses must say so ----------------------------------------
 
 
+def _orthonormal(n_components, vector_length):
+    """A real basis with orthonormal rows. load_gdi_reference now requires
+    one: GDI's distance is only meaningful through an orthonormal projection,
+    and two archived matrices turned out to be rescaled rather than bases."""
+    rng = np.random.default_rng(0)
+    return np.linalg.qr(rng.normal(size=(vector_length, n_components)))[0].T
+
+
 def test_gdi_reports_blocked_without_reference_data(mc):
     result = mc.gdi_comparison({}, reference_dir=None)
 
@@ -177,7 +185,7 @@ def test_a_set_without_normative_constants_reports_blocked_not_a_score(mc, tmp_p
     constants must say so rather than score. Every shipped set now has
     regenerated constants, so this strips them from one."""
     n_components, vector_length = 27, 306
-    matrix = np.ones((n_components, vector_length)) / vector_length
+    matrix = _orthonormal(n_components, vector_length)
     with open(tmp_path / "matrix_ms_reduced_old.csv", "w", newline="") as handle:
         csv.writer(handle).writerows(matrix.T)
     with open(tmp_path / "controlCalc_ms_reduced_old.csv", "w", newline="") as handle:
@@ -208,7 +216,7 @@ def test_gdi_computes_for_every_methodology_once_reference_exists(mc, tmp_path):
     # reduced5 is the set the supervisor's live script actually uses, and the
     # only shipped set with both a reference pair and attributed constants.
     n_components, vector_length = 28, 255
-    matrix = np.ones((n_components, vector_length)) / vector_length
+    matrix = _orthonormal(n_components, vector_length)
     with open(tmp_path / "matrix_ms_reduced.csv", "w", newline="") as handle:
         csv.writer(handle).writerows(matrix.T)
     with open(tmp_path / "controlCalc_ms_reduced.csv", "w", newline="") as handle:

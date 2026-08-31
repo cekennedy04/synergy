@@ -51,9 +51,11 @@ def _write_reference(directory, feature_set, n_components=15, control=None,
     """Write a synthetic reference pair under this feature set's filenames."""
     directory = Path(directory)
     length = feature_set.vector_length if vector_length is None else vector_length
-    matrix = np.arange(n_components * length, dtype=float).reshape(
-        n_components, length
-    ) / (n_components * length)
+    # A real orthonormal basis, as load_gdi_reference now requires: GDI's
+    # distance is only meaningful through an orthonormal projection, and an
+    # arange-filled matrix is not one.
+    rng = np.random.default_rng(0)
+    matrix = np.linalg.qr(rng.normal(size=(length, n_components)))[0].T
     # load_gdi_reference transposes on load, so write the transpose.
     with open(directory / feature_set.matrix_filename, "w", newline="") as handle:
         csv.writer(handle).writerows(matrix.T)
@@ -324,16 +326,45 @@ def test_the_promoted_control_constants_are_pinned(gdi, name, ln_mean, ln_sd):
     assert feature_set.ln_control_sd == pytest.approx(ln_sd)
 
 
-def test_every_shipped_set_scores_against_healthy_controls(gdi):
-    """GDI is defined as distance from a non-disabled control group. The
-    cohort-derived constants that previously shipped (msflag 3.64317, sciflag
-    4.518094) are superseded for that reason -- under them an average member
-    of the impaired cohort scores ~100, which is not GDI."""
+def test_every_shipped_set_can_score(gdi):
+    """GDI is defined as distance from a non-disabled control group, so the
+    superseded archived constants must not be what ships."""
     for feature_set in gdi.FEATURE_SETS.values():
         assert feature_set.can_score
-        assert "healthy-control cohort" in feature_set.provenance
     assert gdi.REDUCED5.ln_control_mean != pytest.approx(3.64317)
     assert gdi.REDUCED4.ln_control_mean != pytest.approx(4.518094)
+
+
+def test_a_rescaled_basis_is_refused_at_load(gdi, tmp_path, scoring_set):
+    """The defect shape checks cannot see. Two archived matrices have column
+    norms from 0.03 to 1.0; projections onto the shrunken columns collapse the
+    distance, so healthy controls read 118 through one of them while every
+    shape check passes. GDI's distance is only meaningful through an
+    orthonormal projection."""
+    matrix = _write_reference(tmp_path, scoring_set, n_components=15)
+    # Same basis, columns rescaled -- exactly the archived failure mode.
+    rescaled = matrix.copy()
+    rescaled[3:, :] *= 0.05
+    with open(tmp_path / scoring_set.matrix_filename, "w", newline="") as handle:
+        csv.writer(handle).writerows(rescaled.T)
+
+    with pytest.raises(ValueError, match="orthonormal"):
+        gdi.load_gdi_reference(tmp_path, scoring_set)
+
+
+def test_reproducing_a_historic_result_can_opt_out_of_the_check(gdi, tmp_path,
+                                                                scoring_set):
+    """The archived matrices still need to be loadable on purpose."""
+    matrix = _write_reference(tmp_path, scoring_set, n_components=15)
+    rescaled = matrix.copy()
+    rescaled[3:, :] *= 0.05
+    with open(tmp_path / scoring_set.matrix_filename, "w", newline="") as handle:
+        csv.writer(handle).writerows(rescaled.T)
+
+    reference = gdi.load_gdi_reference(tmp_path, scoring_set,
+                                       check_orthonormality=False)
+
+    assert reference["matrix"].shape[0] == 15
 
 
 def test_a_set_without_constants_refuses_to_score(gdi, tmp_path):
@@ -369,10 +400,23 @@ def test_the_old_unattributable_constant_is_not_calibrating_anything(gdi):
     assert not hasattr(gdi, "LN_CONTROL_SD")
 
 
-def test_ten_points_is_one_standard_deviation(gdi):
-    """The clinical interpretation the score exists to support."""
-    assert gdi.REDUCED5.ln_control_sd > 0
-    assert 100.0 - 10.0 * 1.0 == 90.0
+def test_ten_points_is_one_standard_deviation(gdi, tmp_path, scoring_set):
+    """The clinical interpretation the score exists to support, exercised
+    through compute_gdi rather than asserted as arithmetic on literals: a
+    subject one log-SD further from the control mean scores 10 points lower."""
+    _write_reference(tmp_path, scoring_set, n_components=15)
+    reference = gdi.load_gdi_reference(tmp_path, scoring_set)
+    vector = gdi.build_gdi_feature_vector(_mean_curves("r", value=2.0), "r",
+                                          scoring_set)
+    baseline = gdi.compute_gdi(vector, reference)
+
+    # Push the subject exactly one ln-SD further away.
+    subject = reference["matrix"] @ vector
+    offset = subject - reference["control_mean"]
+    farther = dict(reference)
+    farther["control_mean"] = subject - offset * math.exp(scoring_set.ln_control_sd)
+
+    assert gdi.compute_gdi(vector, farther) == pytest.approx(baseline - 10.0)
 
 
 def test_wrong_length_vector_is_rejected_with_both_numbers(gdi, tmp_path,

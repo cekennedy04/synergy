@@ -56,17 +56,27 @@ Phase 3.3, and doing so invalidates any previously reported score.
 
 **The promoted constants belong to the regenerated references, not the
 archived ones.** Every shipped set's constants were derived on 2026-08-27 from
-the 166-cycle healthy-control cohort, and they are only valid against the
-bases produced in the same run (written by `gdi_reference.py` to
-`context/gdi_reference_2026-08-27/`). Pairing them with the *archived*
-matrices of the same filename is the same class of error this module exists to
-prevent, and it is not hypothetical: scoring the control cohort through the
-archived bases with these constants gives 100.8 for gdi9 and 96.6 for
-reduced4, but **118.0 for reduced5** -- controls reading as far better than
-normal. That reduced5's archived basis is the one that misbehaves is
-independent support for the msflag note below: a basis built from the MS
-cohort projects control cycles differently. Point `reference_dir` at the
-regenerated set, where all four score controls at exactly 100.0 +/- 10.0.
+the 166-cycle healthy-control cohort at 15 components, and are only valid
+against the bases produced in the same run (written by `gdi_reference.py`).
+Scoring the control cohort through the *archived* matrices with them gives
+100.8 (gdi9), 96.6 (reduced4), 97.6 (reduced6) and 118.0 (reduced5).
+
+The reason is column scaling, not provenance. Two of the archived matrices are
+not orthonormal bases at all: `matrix_ms_reduced.csv` and
+`matrix_ms_reduced_old.csv` have column norms from 0.03 to 1.0 and MtM
+departing from the identity by ~1.0, so projections onto most of their columns
+are shrunk 5-30x and distances collapse. Taking a purely *control*-derived
+basis and rescaling its columns to the archived norms overshoots the observed
+118, so the effect needs no other explanation.
+
+An earlier version of this comment inferred from reduced5's 118 that its basis
+was MS-derived. That inference does not hold: reduced6's matrix is equally
+non-orthonormal and scores an unremarkable 97.6, and controls projected
+through the archived reduced5 basis have an empirical ln-distance of 3.94 --
+nearer the archived msflag 3.64317 than the control-derived 4.44883, which
+points the opposite way. The open question is narrower: which basis and
+component count msmean/mssd were derived through. Do not repeat the stronger
+claim.
 
 **This module cannot produce a score without reference data.** `matrix` and
 `control_mean` come from a normative control dataset that is NOT in this
@@ -90,11 +100,16 @@ import numpy as np
 GDI_CYCLE_POINTS = tuple(range(0, 101, 2))
 GDI_N_POINTS = len(GDI_CYCLE_POINTS)  # 51
 
+# How far a reference matrix may depart from orthonormality before it is
+# refused. Generous: a genuine SVD basis lands at ~1e-6, the loosest
+# legitimate archived one at ~1e-3, and the two rescaled files at ~1.0.
+ORTHONORMALITY_TOLERANCE = 1e-2
+
 # The canonical nine, in reference-matrix order. Order matters: it must match
 # the row order of the reference matrix, so do not sort or regroup. Every
-# reduced set below is a contiguous tail of this list, which is not a
-# coincidence -- the reductions were built as row slices of the 459-row
-# vector (`indiv_data[153::]` and friends).
+# reduced set below is a subset of it, built as row slices of the 459-row
+# vector (`indiv_data[153::]` and friends). reduced6 is a contiguous tail;
+# reduced5 and reduced4 are NOT -- they drop hip_rotation from the middle.
 _CANONICAL_9 = (
     "pelvis_tilt",
     "pelvis_list",
@@ -188,8 +203,8 @@ REDUCED6 = GdiFeatureSet(
         "matrix_ms_reduced_old.csv is 306x27 and pairs with a 1x27 controlCalc; "
         "old2/old3 (306x31) and old4 (306x34) are the same variables with more "
         "components retained. Constants regenerated 2026-08-27 from the "
-        "166-cycle healthy-control cohort, 15 components, 99.07% of variance; "
-        "held-out controls score 100.18 +/- 10.31. No archived constant existed "
+        "166-cycle healthy-control cohort, 15 components, 99.07% of variance. "
+        "No archived constant existed "
         "for this set to compare against."
     ),
 )
@@ -206,17 +221,14 @@ REDUCED5 = GdiFeatureSet(
         "`np.concatenate((indiv_data[153:255], indiv_data[306:459]))` = hip "
         "flexion/adduction plus knee, ankle and fpa (255 = 5 x 51). Constants "
         "regenerated 2026-08-27 from the 166-cycle healthy-control cohort, 15 "
-        "components, 99.45% of variance; held-out controls score 100.03 +/- "
-        "10.27. They corroborate the commented-out 4.443685139 to within 0.12% "
+        "components, 99.45% of variance. They corroborate the commented-out 4.443685139 to within 0.12% "
         "-- that value was a correct reduced5 calibration which the 2026-08-25 "
         "recovery mis-attached to a 9-variable feature list. "
-        "SUPERSEDED: the script's live `msflag` constants (3.64317 / 0.54211) "
-        "are 22% from the control-derived mean with nearly double the SD, while "
-        "every other archived constant matches its regeneration within 0.6%. "
-        "That gap is consistent with msmean/mssd having been computed from the "
-        "MS cohort rather than from controls, which would make scores under "
-        "them deviation relative to MS rather than GDI. Unconfirmed -- the "
-        "derivation is not in any recovered source."
+        "The live `msflag` constants (3.64317 / 0.54211) are 18% below this and "
+        "are superseded as a CONTROL reference, since GDI is defined against a "
+        "non-disabled group. Nothing here establishes which cohort they came "
+        "from: the archived matrix_ms_reduced.csv is not orthonormal, which "
+        "accounts for the anomalies once attributed to cohort provenance."
     ),
 )
 
@@ -231,8 +243,7 @@ REDUCED4 = GdiFeatureSet(
         "The SCI path: `indiv_data[153:255]` + `[306:408]`, dropping fpa as "
         "well as pelvis (204 = 4 x 51). Constants are the script's literal "
         "regenerated 2026-08-27 from the 166-cycle healthy-control cohort, 15 "
-        "components, 99.71% of variance; held-out controls score 100.01 +/- "
-        "10.12. The archived `sciflag` pair (4.518094 / 0.415455) is 5.9% away "
+        "components, 99.71% of variance. The archived `sciflag` pair (4.518094 / 0.415455) is 5.9% away "
         "and is superseded; if it was derived from the SCI cohort it carries "
         "the same concern recorded on reduced5. Note matrix.csv has the same "
         "shape (204x14) and appears to be a copy of matrix_sci_reduced.csv "
@@ -318,7 +329,8 @@ def gdi_features(side, feature_set=DEFAULT_FEATURE_SET):
     return get_feature_set(feature_set).feature_names(side)
 
 
-def load_gdi_reference(directory, feature_set=DEFAULT_FEATURE_SET):
+def load_gdi_reference(directory, feature_set=DEFAULT_FEATURE_SET,
+                       check_orthonormality=True):
     """Load the normative reference data for one feature set.
 
     Validates two things the previous version did not check together: that the
@@ -361,6 +373,27 @@ def load_gdi_reference(directory, feature_set=DEFAULT_FEATURE_SET):
             f"dimensions but {feature_set.control_filename} has "
             f"{control_mean.shape[0]} values. These come from the same control "
             "dataset and must agree."
+        )
+
+    # Orthonormality, checked because two archived matrices are not bases at
+    # all: matrix_ms_reduced.csv and matrix_ms_reduced_old.csv have column
+    # norms from 0.03 to 1.0. Projections onto their scaled-down columns
+    # shrink 5-30x, distances collapse, and the score comes out wrong while
+    # looking entirely plausible -- healthy controls read 118 through one of
+    # them and 97.6 through the other. Shape checks cannot see this.
+    column_norms = np.linalg.norm(matrix, axis=1)
+    gram_error = float(np.abs(matrix @ matrix.T - np.eye(matrix.shape[0])).max())
+    if check_orthonormality and gram_error > ORTHONORMALITY_TOLERANCE:
+        raise ValueError(
+            f"{feature_set.matrix_filename} is not an orthonormal basis: its "
+            f"rows depart from orthonormality by {gram_error:.3g} (tolerance "
+            f"{ORTHONORMALITY_TOLERANCE}), with norms spanning "
+            f"{column_norms.min():.3g} to {column_norms.max():.3g}. GDI's "
+            "distance is only meaningful through an orthonormal projection; a "
+            "rescaled basis shrinks distances and inflates every score without "
+            "failing any shape check. Regenerate it with gdi_reference.py, or "
+            "pass check_orthonormality=False if you specifically intend to "
+            "reproduce a historic result."
         )
 
     if matrix.shape[1] != feature_set.vector_length:
