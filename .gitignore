@@ -7,6 +7,9 @@ Data/*
 **/Data/
 context/
 to_do/
+data/
+drive-download-*/
+drive-download-*.zip
 *.mvnx
 *.xlsx
 *.crdownload
