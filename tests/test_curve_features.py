@@ -199,3 +199,30 @@ def test_scores_come_back_one_per_stride(cf, gdi, row_order, tmp_path):
 
     assert scores.shape == (7,)
     assert np.all(np.isfinite(scores))
+
+
+def test_the_cli_reports_a_bad_reference_instead_of_a_traceback(cf, gdi,
+                                                                tmp_path, capsys):
+    """An unusable reference is an operator-actionable condition, and every one
+    of these errors is already a full sentence saying what to do. A stack trace
+    buries that -- the same complaint edit #14 in VENDORING.md records against
+    numpy's 'negative dimensions are not allowed'."""
+    curves = tmp_path / "curves.csv"
+    row_order = cf.exported_row_order()
+    np.savetxt(curves, _matrix(row_order), delimiter=",")
+    # A reference directory with the right filenames and a non-basis matrix.
+    reference = tmp_path / "ref"
+    reference.mkdir()
+    length = gdi.REDUCED6.vector_length
+    np.savetxt(reference / gdi.REDUCED6.matrix_filename,
+               np.ones((length, 4)), delimiter=",")
+    np.savetxt(reference / gdi.REDUCED6.control_filename,
+               np.zeros((1, 4)), delimiter=",")
+
+    code = cf.main(["--curves", str(curves), "--side", "right",
+                    "--reference", str(reference), "--feature-set", "reduced6"])
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "Cannot load the GDI reference." in out
+    assert "orthonormal" in out

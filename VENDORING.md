@@ -2073,3 +2073,53 @@ before 2026-08-31, on both routes. Pre-fix curve exports are retained per sessio
 results, independently of anything in this repository — there by ~5 degrees rather than totally,
 which is small enough to have gone unnoticed and large enough to move a score.
 
+
+---
+
+### Found in the vendored GDI driver, deliberately NOT ported (2026-08-31)
+
+Recorded because the natural instinct on seeing `context/replay-os-small/gaitAnalysis.py` is to
+port its cycle-selection stage into the live pipeline. Do not. The stage is broken, the live
+pipeline has no equivalent, and it does not need one. Full analysis in
+`docs/2026-08-31-gdi-vs-ucm-audit.md`.
+
+**The per-cycle selection is index-confused** (`gaitAnalysis.py:413`, and again at `:659` for the
+left leg). It computes a functional depth per cycle, argsorts it, then writes:
+
+```python
+c = np.argsort(overalldepth)                     # c[k] = index of the k-th most central cycle
+data3 = reduceddat[:, (abs(rsco) < 3).flatten()] # MAD outlier rejection
+c2    = c[(abs(rsco) < 3).flatten()]
+if len(c2) > 5:
+    data2 = reduceddat[:, (c < 6).flatten()]     # both defects are on this line
+```
+
+`(c < 6)` masks the *ranks*, not the cycles. With eight cycles of depth `[5,1,9,2,8,3,7,4]` the six
+most central are columns `[1,3,5,7,0,6]`; this selects columns `[0,1,2,4,6,7]`, which includes the
+two **deepest**. The intended expression is `reduceddat[:, c[:6]]`.
+
+The same line indexes `reduceddat` rather than `data3`, so whenever more than five cycles survive
+MAD rejection — the normal case — **the outlier rejection is computed and then discarded.**
+
+**The depth measure misses a point per variable** (`gaitAnalysis.py:395`, `:641`).
+`reduceddat[starts[j]+1 : starts[j+1]-2]` plus the two endpoints covers 50 of each variable's 51
+indices — index 49 of each block is never included — and the sum is divided by 50.
+
+**Two aliases that are safe today and must not be "tidied".** `diff = subject` and `rsco = ap`
+create references, not copies. Both happen to be correct because each column is read before it is
+written; a refactor that reorders those reads would silently corrupt the distance.
+
+**Why nothing was ported.** `joint_confidence.py` is the only repo file containing `argsort` and it
+sorts timestamps. The live route scores every stride (`curve_features.score_curves`) and averages
+the scores, which needs no cycle selection at all: `session_drift.py` already consumes it that way.
+If per-cycle selection is ever wanted, write it fresh against the corrected expression above.
+
+**Also present in the supplied `context/gait_analysis/gait_analysis.py`,** which the GDI driver
+imports and which is missing every repair this file records: edits #3, #4, #5, #12 and #14. Its
+`getpelvis` still carries edit #15's vertical-plane heading. This is the argument for retiring the
+vendored GDI path rather than repairing it.
+
+**One correction to an earlier claim.** Edit #13's left/right return-order swap is **not** in the
+supplied copy — all three of its returns are `rHS, lHS, rTO, lTO`
+(`context/gait_analysis/gait_analysis.py:772, 871, 906`). Whatever copy the swap was found in, it
+was not this one, and results processed through the supplied file are unaffected by it.

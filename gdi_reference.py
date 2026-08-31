@@ -155,6 +155,45 @@ def build_reference(control_matrix, n_components=None, variance=None):
     projected = basis.T @ control_matrix          # (n_components x n_cycles)
     control_mean = projected.mean(axis=1)
 
+    # OPEN QUESTION FOR THE COLLABORATOR -- what is one column of
+    # control_kinematics.csv?
+    #
+    # Everything below treats each column as one independent observation: the
+    # control mean is a mean over columns, and ln_control_mean/ln_control_sd
+    # are the moments of the per-column log distances. The 166 columns are not
+    # independent. Measured on the file (docs/2026-08-31-gdi-vs-ucm-audit.md,
+    # section 2):
+    #
+    #   correlation between columns, by separation in file order
+    #     lag 1  +0.267      lag 2  -0.001      lag 3  +0.052
+    #     random pair -0.006
+    #
+    #   within-pair vs across-boundary, per variable
+    #     pelvis_list +0.669/+0.037   pelvis_rot  +0.728/+0.089
+    #     ankle_angle +0.585/-0.032   hip_flexion +0.498/+0.238
+    #     hip_adduct  +0.447/+0.040   knee_angle  +0.447/+0.054
+    #     fpa         +0.456/+0.033   hip_rotation+0.365/+0.052
+    #
+    # Correlation lives entirely at lag 1 and vanishes at lag 2, on every one
+    # of the nine variables. So the cohort is 83 pairs, not 166 independent
+    # units. It is NOT two limbs of the same cycle -- the three pelvis
+    # variables, which both limbs of one cycle share, differ within a pair by
+    # a median of 7.4 degrees. That leaves two readings the data cannot
+    # separate: two cycles of one limb, or two limbs of one subject.
+    #
+    # WHY IT MATTERS. If the pair is the intended unit, every contributing
+    # unit is currently weighted twice in both the basis and the mean, and the
+    # SD conflates within-pair with between-pair variability. Collapsing each
+    # pair to one column and scoring the 83 pair-means against today's shipped
+    # constants gives 103.9 +/- 9.3 where 100.0 +/- 10.0 is required -- worth
+    # +3.9 GDI points and a 7% scale compression. Rebuilding at 83 units is a
+    # one-line change here (average the pairs before the SVD); knowing whether
+    # to is not something the file can answer.
+    #
+    # Do NOT guess. A wrong choice here is invisible downstream: it produces a
+    # plausible number, shifts every score by about four points, and is exactly
+    # the class of error the digest check in gdi.py exists to stop being made
+    # silently a second time. Ask, then record the answer here.
     distances = np.linalg.norm(projected - control_mean[:, None], axis=0)
     if np.any(distances <= 0.0):
         raise ValueError(
@@ -275,10 +314,22 @@ def write_reference(reference, out_dir, feature_set, gdi=None):
             "ln_control_sd": reference["ln_control_sd"],
             "matrix_file": feature_set.matrix_filename,
             "control_file": feature_set.control_filename,
+            # One column of the pooled cohort is one gait cycle, so both
+            # constants above are moments of per-cycle log distances and only
+            # a per-cycle score is calibrated against them. Recorded here
+            # because it is not recoverable from the matrix.
+            "scoring_unit": gdi.SCORING_UNIT_CYCLE,
+            # Paste this onto the feature set in gdi.py alongside the
+            # constants: load_gdi_reference refuses a matrix whose digest does
+            # not match, which is the only check that can tell a correct basis
+            # from a correct-looking one belonging to another cohort.
+            "reference_digest": gdi.reference_digest(
+                reference["basis"].T, reference["control_mean"]),
             "note": (
                 "Scores from this reference are not comparable to any produced "
                 "against a different one. Set ln_control_mean/ln_control_sd on "
-                "the feature set in gdi.py to these values to enable scoring."
+                "the feature set in gdi.py to these values to enable scoring, "
+                "and reference_digest to the value above."
             ),
         }, handle, indent=2)
     return matrix_path, control_path, sidecar

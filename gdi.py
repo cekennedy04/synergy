@@ -105,6 +105,27 @@ GDI_N_POINTS = len(GDI_CYCLE_POINTS)  # 51
 # legitimate archived one at ~1e-3, and the two rescaled files at ~1.0.
 ORTHONORMALITY_TOLERANCE = 1e-2
 
+# What one score is computed from. This is a property of the *calibration*,
+# not a stylistic choice: `ln_control_mean`/`ln_control_sd` are the mean and SD
+# of the control cohort's log distances, and the cohort's columns are
+# individual gait cycles. A subject's mean curve is a different kind of object
+# -- averaging strides removes stride-to-stride noise, so a mean curve sits
+# closer to the control mean than any of the cycles it was built from, and
+# scoring it against a per-cycle norm reads high. Always high, never low.
+#
+# Measured on the 90 exported trial-legs in `context/gait_curves/`: the mean
+# curve scores +0.53 above the mean of the per-stride scores on average, +3.30
+# at worst, and the gap tracks within-trial stride variability (r = 0.62)
+# rather than stride count (r = -0.16). It grows as a subject approaches
+# normal, because a subject far from the control mean is dominated by
+# systematic deviation that averaging cannot remove -- so the bias is worst
+# exactly where discrimination matters most.
+#
+# See docs/2026-08-31-gdi-vs-ucm-audit.md section 3.
+SCORING_UNIT_CYCLE = "cycle"
+SCORING_UNIT_MEAN_CURVE = "mean_curve"
+SCORING_UNITS = (SCORING_UNIT_CYCLE, SCORING_UNIT_MEAN_CURVE)
+
 # The canonical nine, in reference-matrix order. Order matters: it must match
 # the row order of the reference matrix, so do not sort or regroup. Every
 # reduced set below is a subset of it, built as row slices of the 459-row
@@ -151,6 +172,19 @@ class GdiFeatureSet:
     ln_control_mean: float = None
     ln_control_sd: float = None
     provenance: str = ""
+    # The unit the constants above were calibrated on. Every shipped set is
+    # `cycle`: the 166 columns of the pooled control cohort are gait cycles,
+    # and both constants are moments of the per-cycle log distances.
+    scoring_unit: str = SCORING_UNIT_CYCLE
+    # sha256 of the exact (matrix, control_mean) pair these constants were
+    # derived from -- see `reference_digest()`. Shape and orthonormality checks
+    # cannot tell two well-formed bases apart, so they cannot catch a matrix
+    # from a *different cohort* being paired with these constants. That
+    # pairing produces a plausible wrong number: the archived gdi9 basis with
+    # the regenerated constants scores healthy controls at 100.8, and the
+    # archived reduced4 basis at 96.6 -- both close enough to normal to pass
+    # unnoticed, and both wrong. `None` disables the check.
+    reference_digest: str = None
 
     @property
     def n_features(self):
@@ -188,6 +222,7 @@ GDI9 = GdiFeatureSet(
         "fallback `(ln_result - 4.69)/0.30` to within 0.57%, which was a real "
         "calibration stranded in a branch referencing an undefined `ln_result`."
     ),
+    reference_digest="ee05c4a85881b8a1079d001e5b1ef87f1d7ad17afe3734db5211fcfb5741d587",
 )
 
 REDUCED6 = GdiFeatureSet(
@@ -207,6 +242,7 @@ REDUCED6 = GdiFeatureSet(
         "No archived constant existed "
         "for this set to compare against."
     ),
+    reference_digest="4e3072c8db729fb818381ca16d71a32664189622c05e29d3dc1acac9c7036f88",
 )
 
 REDUCED5 = GdiFeatureSet(
@@ -230,6 +266,7 @@ REDUCED5 = GdiFeatureSet(
         "from: the archived matrix_ms_reduced.csv is not orthonormal, which "
         "accounts for the anomalies once attributed to cohort provenance."
     ),
+    reference_digest="e5876a2dda9a3625a96a8601ebb1546cc2dd2cfdfc43bd43453c6e491731c87f",
 )
 
 REDUCED4 = GdiFeatureSet(
@@ -249,9 +286,17 @@ REDUCED4 = GdiFeatureSet(
         "shape (204x14) and appears to be a copy of matrix_sci_reduced.csv "
         "under the generic name."
     ),
+    reference_digest="e4e5dde54df94f43772f064bf2442ba688cf4978b97b1b74a68385ad82fab1ef",
 )
 
 FEATURE_SETS = {fs.name: fs for fs in (GDI9, REDUCED6, REDUCED5, REDUCED4)}
+
+# Every constant above was derived treating each of control_kinematics.csv's
+# 166 columns as one independent observation. They are not: the cohort is 83
+# correlated pairs. Whether the constants should be rebuilt at 83 units --
+# worth +3.9 points and a 7% scale compression -- turns on a question only the
+# collaborator can answer. Stated in full, with the measurements behind it, at
+# the OPEN QUESTION comment in gdi_reference.build_reference.
 
 # reduced6 is the project default as of 2026-08-28, by explicit decision: the
 # supervisor's 2026-08-27 note asks for "6 joints instead of 26 joints", and
@@ -312,6 +357,23 @@ def canonical_row_indices(feature_set=DEFAULT_FEATURE_SET):
     return np.array(indices, dtype=int)
 
 
+def reference_digest(matrix, control_mean):
+    """Fingerprint of one (matrix, control_mean) pair.
+
+    Taken over the parsed float64 values rather than the file bytes, so it is
+    insensitive to line endings, trailing newlines and CSV float formatting --
+    all of which differ between the MATLAB that wrote the archived files and
+    the `csv` module that writes the regenerated ones, while the numbers are
+    the same. Little-endian is pinned so the digest is portable.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(matrix, dtype="<f8").tobytes())
+    digest.update(np.ascontiguousarray(control_mean, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
+
 class GdiReferenceMissingError(FileNotFoundError):
     """The normative reference data GDI is defined against is not available.
     Distinct from a generic FileNotFoundError so callers can tell "you have
@@ -329,8 +391,16 @@ def gdi_features(side, feature_set=DEFAULT_FEATURE_SET):
     return get_feature_set(feature_set).feature_names(side)
 
 
+class GdiReferenceMismatchError(ValueError):
+    """The reference on disk is not the one this feature set's normative
+    constants were calibrated against. Distinct from a shape or orthonormality
+    error: the matrix is a perfectly good basis, it just belongs to a different
+    cohort or a different component count, and pairing it with these constants
+    silently shifts every score."""
+
+
 def load_gdi_reference(directory, feature_set=DEFAULT_FEATURE_SET,
-                       check_orthonormality=True):
+                       check_orthonormality=True, check_digest=True):
     """Load the normative reference data for one feature set.
 
     Validates two things the previous version did not check together: that the
@@ -406,10 +476,40 @@ def load_gdi_reference(directory, feature_set=DEFAULT_FEATURE_SET,
             "uses the same 51-point sampling."
         )
 
+    # Which cohort this basis came from. Orthonormality and shape both pass on
+    # a well-formed basis built from the wrong control sample, so neither check
+    # above can see the archived/regenerated confusion -- the archived gdi9
+    # basis scores healthy controls at 100.8 and the archived reduced4 basis at
+    # 96.6 when paired with the constants below. Both look normal. Both are
+    # wrong. The digest is the only thing that distinguishes them.
+    digest = reference_digest(matrix, control_mean)
+    if check_digest and feature_set.reference_digest is not None \
+            and digest != feature_set.reference_digest:
+        raise GdiReferenceMismatchError(
+            f"the reference in {directory} is not the one feature set "
+            f"{feature_set.name!r} is calibrated against: expected digest "
+            f"{feature_set.reference_digest[:16]}..., got {digest[:16]}.... The "
+            f"matrix loaded cleanly and is a valid {matrix.shape[0]}-component "
+            "orthonormal basis, so nothing else here can catch this -- but "
+            f"ln_control_mean={feature_set.ln_control_mean} / "
+            f"ln_control_sd={feature_set.ln_control_sd} were derived through a "
+            "different one, and using them together shifts every score by an "
+            "unknown amount while still looking plausible. Regenerate the "
+            "constants for this reference with gdi_reference.py, or pass "
+            "check_digest=False if you specifically intend to reproduce a "
+            "historic result."
+        )
+
     return {
         "matrix": matrix,
         "control_mean": control_mean,
         "feature_set": feature_set,
+        "digest": digest,
+        # False when the pairing was not verified -- either the feature set
+        # carries no expected digest, or the caller opted out. Callers that
+        # report a score should say so.
+        "digest_verified": bool(
+            check_digest and feature_set.reference_digest is not None),
     }
 
 
@@ -492,6 +592,58 @@ def compute_gdi(feature_vector, reference, feature_set=None):
     return 100.0 - 10.0 * z_score
 
 
+def gdi_for_side(curves, side, reference, feature_set=None):
+    """GDI for one side of one trial, computed on the calibrated unit.
+
+    `curves` is one side's gait-analysis result -- `curves['indiv']`, a list of
+    101-point normalised cycles, and `curves['mean']`, their average.
+
+    Under `scoring_unit == "cycle"` (every shipped feature set) each cycle is
+    scored and the *scores* are averaged, which is both what the reference is
+    calibrated for and what the supervisor's original script did
+    (`GDI_r.mean()`). This function previously scored `curves['mean']`
+    unconditionally, which read high on every trial -- see SCORING_UNIT_CYCLE
+    above for the measured size, and docs/2026-08-31-gdi-vs-ucm-audit.md
+    section 3 for why the two are not interchangeable.
+    """
+    if feature_set is None:
+        feature_set = reference.get("feature_set", DEFAULT_FEATURE_SET)
+    feature_set = get_feature_set(feature_set)
+    unit = getattr(feature_set, "scoring_unit", SCORING_UNIT_CYCLE)
+
+    if unit == SCORING_UNIT_MEAN_CURVE:
+        vector = build_gdi_feature_vector(curves["mean"], side, feature_set)
+        return compute_gdi(vector, reference, feature_set)
+
+    if unit != SCORING_UNIT_CYCLE:
+        raise ValueError(
+            f"feature set {feature_set.name!r} declares scoring_unit "
+            f"{unit!r}; expected one of {list(SCORING_UNITS)}."
+        )
+
+    cycles = curves.get("indiv")
+    if not cycles:
+        # Deliberately not falling back to curves['mean']. That fallback is
+        # exactly the defect being fixed: it returns a number, the number is
+        # always too high, and nothing downstream can tell it apart from a
+        # correctly-computed one.
+        raise KeyError(
+            f"feature set {feature_set.name!r} is calibrated per gait cycle "
+            f"({feature_set.ln_control_mean} / {feature_set.ln_control_sd} are "
+            "moments of the control cohort's per-cycle log distances), but "
+            "these curves carry no 'indiv' cycles to score. Pass the full "
+            "gait-analysis result, or use a feature set whose scoring_unit is "
+            f"{SCORING_UNIT_MEAN_CURVE!r}."
+        )
+
+    scores = [
+        compute_gdi(build_gdi_feature_vector(cycle, side, feature_set),
+                    reference, feature_set)
+        for cycle in cycles
+    ]
+    return float(np.mean(scores))
+
+
 def gdi_for_trial(results, reference, feature_set=None):
     """GDI for both sides of one trial, plus their average.
 
@@ -506,7 +658,6 @@ def gdi_for_trial(results, reference, feature_set=None):
     for side, key in (("r", "curves_r"), ("l", "curves_l")):
         if key not in results:
             raise KeyError(f"results has no {key!r}; cannot score the {side} side.")
-        vector = build_gdi_feature_vector(results[key]["mean"], side, feature_set)
-        scores[side] = compute_gdi(vector, reference, feature_set)
+        scores[side] = gdi_for_side(results[key], side, reference, feature_set)
     scores["average"] = (scores["r"] + scores["l"]) / 2.0
     return scores

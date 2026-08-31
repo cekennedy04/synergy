@@ -225,15 +225,20 @@ def test_gdi_computes_for_every_methodology_once_reference_exists(mc, tmp_path):
     def curves(side, value):
         names = [f"hip_flexion_{side}", f"hip_adduction_{side}",
                  f"knee_angle_{side}", f"ankle_angle_{side}", f"fpa_{side}"]
-        return {"mean": {n: [value] * 101 for n in names}}
+        one = {n: [value] * 101 for n in names}
+        # reduced5 is calibrated per gait cycle, so a result that carries only
+        # a mean curve cannot be scored against it -- see gdi.SCORING_UNIT_CYCLE.
+        return {"mean": one, "indiv": [one]}
 
     results = {
         "Xsens": {"curves_r": curves("r", 2.0), "curves_l": curves("l", 2.0)},
         "OpenCap": {"curves_r": curves("r", 3.0), "curves_l": curves("l", 3.0)},
     }
 
+    # check_digest=False: the matrix above is random, so it is deliberately
+    # not the reference reduced5's shipped constants were derived through.
     result = mc.gdi_comparison(results, reference_dir=tmp_path,
-                               feature_set="reduced5")
+                               feature_set="reduced5", check_digest=False)
 
     assert result["available"] is True
     assert set(result["scores"]) == {"Xsens", "OpenCap"}
@@ -280,3 +285,23 @@ def test_summarise_reports_stride_counts_and_ranges(mc, tmp_path):
 def test_missing_curve_files_raise_rather_than_report_an_empty_comparison(mc, tmp_path):
     with pytest.raises(FileNotFoundError, match="Run the curve export first"):
         mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], ["pelvis_tilt"])
+
+
+def test_a_wrong_cohort_reference_is_reported_not_raised(mc, tmp_path):
+    """Same contract as a missing reference: an unusable reference produces a
+    stated reason, never an exception and never a fabricated score. A basis
+    from another cohort loads cleanly and is a valid orthonormal basis, so
+    only the digest catches it."""
+    n_components, vector_length = 28, 255
+    matrix = _orthonormal(n_components, vector_length)
+    with open(tmp_path / "matrix_ms_reduced.csv", "w", newline="") as handle:
+        csv.writer(handle).writerows(matrix.T)
+    with open(tmp_path / "controlCalc_ms_reduced.csv", "w", newline="") as handle:
+        csv.writer(handle).writerow(np.zeros(n_components))
+
+    result = mc.gdi_comparison({}, reference_dir=tmp_path,
+                               feature_set="reduced5")
+
+    assert result["available"] is False
+    assert result["scores"] == {}
+    assert "digest" in result["reason"]

@@ -166,7 +166,18 @@ def main(argv=None):
 
     gdi = _load_gdi()
     feature_set = gdi.get_feature_set(args.feature_set or gdi.DEFAULT_FEATURE_SET)
-    reference = gdi.load_gdi_reference(args.reference, feature_set)
+    try:
+        reference = gdi.load_gdi_reference(args.reference, feature_set)
+    except (gdi.GdiReferenceMissingError, gdi.GdiReferenceMismatchError,
+            ValueError) as exc:
+        # A stack trace here names nothing the operator can act on, and every
+        # one of these errors is already a full sentence explaining what to do
+        # about it. Same reasoning as edit #14 in VENDORING.md.
+        print("Cannot load the GDI reference.")
+        print()
+        print(str(exc))
+        return 1
+
     matrix = load_curve_matrix(args.curves)
     scores = score_curves(matrix, args.side, reference, feature_set, gdi)
 

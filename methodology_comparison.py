@@ -167,7 +167,7 @@ def classify(name, summary_by_method):
 
 
 def gdi_comparison(results_by_method, reference_dir=None, repo_root=REPO_ROOT,
-                   feature_set=None):
+                   feature_set=None, check_digest=True):
     """GDI for each methodology, or a clear statement of what blocks it.
 
     `results_by_method` maps a methodology label to a run_gait_analysis result
@@ -179,6 +179,10 @@ def gdi_comparison(results_by_method, reference_dir=None, repo_root=REPO_ROOT,
     normative constants were never attributed reports blocked rather than
     scoring, for the same reason a missing reference does: the alternative is
     a plausible wrong number.
+
+    `check_digest` guards the same failure one level deeper: a reference that
+    loads cleanly and is a valid orthonormal basis, but belongs to a different
+    control cohort than the feature set's constants. Leave it on outside tests.
     """
     spec = importlib.util.spec_from_file_location(
         "_gdi_for_comparison", Path(repo_root) / "gdi.py"
@@ -204,8 +208,14 @@ def gdi_comparison(results_by_method, reference_dir=None, repo_root=REPO_ROOT,
             "scores": {},
         }
     try:
-        reference = gdi.load_gdi_reference(reference_dir, feature_set)
-    except gdi.GdiReferenceMissingError as exc:
+        reference = gdi.load_gdi_reference(reference_dir, feature_set,
+                                           check_digest=check_digest)
+    except (gdi.GdiReferenceMissingError, gdi.GdiReferenceMismatchError) as exc:
+        # A mismatched reference is reported, not raised: this function's whole
+        # contract is that an unusable reference produces a stated reason
+        # rather than either an exception or a fabricated score, and "the basis
+        # belongs to another cohort" is exactly as unusable as "the file is not
+        # there".
         return {"available": False, "reason": str(exc), "scores": {}}
 
     if not feature_set.can_score:

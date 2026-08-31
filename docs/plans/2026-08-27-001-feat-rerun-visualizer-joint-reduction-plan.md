@@ -415,3 +415,94 @@ artefact until ruled out, and check whether other participants show it before po
     first-pass processing (~90 trials, resumable) ──> rescore everyone (3.4)
     Phase 2.2 event picker ── independent, unblocked
     cohort labels (control vs patient) ── blocks any clinical reading of a score
+
+---
+
+# Addendum, 2026-08-31 — the supervisor's GDI suspicion, audited and acted on
+
+Triggered by `to_do/8_31_to_do.pdf`: *"gait analysis code for gdi is different from ucm ... they
+are likely wrong since it takes csvs of everyones gait cycles and does matrix math to find the
+difference between the mean of each gait cycle."* Full audit in
+`docs/2026-08-31-gdi-vs-ucm-audit.md`; this records only what it changes about the plan.
+
+## The suspicion was right about the conclusion, wrong about the mechanism
+
+Subtracting the control mean **is** GDI, and per-foot separation is correct by design — so the two
+things the note points at are not defects. But the scores are wrong anyway. Healthy controls score
+**94.5 ± 7.0** through the archived MS path as the driver actually runs it (`selected_index=2` is
+hardcoded), against the required 100.0 ± 10.0. The SCI path gives 103.5 ± 7.2. Both scales are
+compressed to ~70% of nominal, so every deviation either has ever reported is understated by about
+a third. Two distinct causes, cleanly separated: the MS matrix is not an orthonormal basis, while
+the SCI matrix is fine (`|MMᵀ−I| = 1.07e-3`) and its *constants* belong to another cohort.
+
+## Open question 3 is now partly answered, and one Task 1 premise is retracted
+
+**Retraction.** Task 1's survey premise — that past results came from a `trimend` carrying edit
+#13's left/right return-order swap — does not hold for the supplied file. All three of
+`context/gait_analysis/gait_analysis.py`'s returns are `rHS, lHS, rTO, lTO` (lines 772, 871, 906).
+Whatever copy the swap was found in, it was not this one. Results processed through the supplied
+file are unaffected by that swap; they remain affected by edits #3, #4, #5, #12, #14 and #15, all
+of which the supplied copy is missing.
+
+**Provenance, narrowed.** `control_kinematics.csv`'s 166 columns are **83 correlated pairs**, not
+166 independent units: lag-1 correlation +0.267 collapsing to ~0 at lag 2, within-pair +0.37 to
++0.73 on every one of the nine variables against ~+0.04 across pair boundaries. The pairing is not
+two limbs of one cycle (the pelvis variables differ within a pair by a median 7.4°). Collapsing to
+83 units shifts controls to 103.9 ± 9.3 against today's constants — worth **+3.9 points and 7%
+scale compression** if the pair is the intended unit. *Which* kind of pair remains the open
+question, and it is the one worth asking the collaborator.
+
+## Phase 3.1 gains a third field, and a check the plan did not anticipate
+
+The plan's reasoning — "a matrix built for 5 variables, a control mean of a different width, and
+normative constants from a third cohort will each produce a plausible number and a wrong one" —
+was right and did not go far enough. Shape and orthonormality both **pass** on a well-formed basis
+built from the wrong control sample. The archived gdi9 basis scores healthy controls at 100.8 and
+the archived reduced4 basis at 96.6 when paired with the regenerated constants: normal-looking,
+and wrong. Two additions, both shipped:
+
+- **`GdiFeatureSet.reference_digest`** — sha256 of the exact (matrix, control_mean) pair the
+  constants were derived from. `load_gdi_reference` refuses a mismatch
+  (`GdiReferenceMismatchError`), waivable with `check_digest=False` to reproduce a historic result.
+  `gdi_reference.py` writes the digest into the sidecar. All four archived pairings are now
+  refused; the regenerated four load and verify. **This closes recommendation 4 of the audit** —
+  "do not report GDI against the archived references" is now enforced rather than advised.
+- **`GdiFeatureSet.scoring_unit`** — see below.
+
+## Phase 3.4's scoring unit was ambiguous, and one of the two consumers had it wrong
+
+`gdi_for_trial` scored `curves['mean']` while the constants are moments of the control cohort's
+**per-cycle** log distances. `session_drift.py` already scored per stride and was consistent;
+`methodology_comparison.py` went through the mean-curve path and was not. Fixed: `gdi_for_side`
+scores on the unit the feature set declares, every shipped set declares `cycle`, and a
+cycle-calibrated set handed only a mean curve now **raises rather than falling back** — a fallback
+returns a number that is always too high and is indistinguishable downstream.
+
+Measured on all 90 exported trial-legs, the mean-curve convention read **+0.53 high on average,
++3.30 at worst**, always positive, tracking within-trial stride variability (r = 0.62) rather than
+stride count (r = -0.16). An earlier estimate of +12 to +46 points, from pseudo-subjects built out
+of random control cycles, is **withdrawn**: that construction sits near the control mean, so its
+distance is almost all stride noise and averaging destroys nearly all of it. Real subjects are
+dominated by systematic deviation that averaging cannot remove.
+
+**No previously reported number changes.** Every published figure — including the AN decline in
+`docs/2026-08-31-an-gdi-decline.md` — came through `session_drift.py`'s per-stride path, which was
+already the calibrated convention.
+
+## What this adds to the sequencing
+
+    Phase 3.4 rescore ── unblocked, and now digest-guarded
+    ask the collaborator what a control_kinematics.csv column is ── blocks any
+        decision to rebuild the constants at 83 units
+
+**The vendored GDI driver stays, as reference (decided 2026-08-31).** The audit ended by
+recommending its retirement — defects 1-4 of its ranked table all live in code the live pipeline
+already replaced, and nothing imports it. It is kept anyway because it is the provenance record:
+the feature-set slices, the `msflag`/`sciflag` constants and the per-cycle scoring convention were
+all recovered by reading it, and those recoveries cite its line numbers. It is not repaired, and
+`VENDORING.md` records why its cycle-selection stage must not be ported.
+
+**The one open question is now in the code**, not only in the docs: the `OPEN QUESTION` comment in
+`gdi_reference.build_reference` states what a `control_kinematics.csv` column is assumed to be, the
+measurements showing the assumption is wrong, what rebuilding at 83 units would cost, and an
+instruction not to guess. `gdi.py` points to it from beside the constants it would change.

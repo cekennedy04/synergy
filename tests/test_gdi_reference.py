@@ -196,7 +196,11 @@ def test_the_written_reference_loads_back_through_gdi(ref, gdi, cohort, tmp_path
     reference = ref.build_reference(selected, n_components=12)
 
     ref.write_reference(reference, tmp_path, gdi.REDUCED6, gdi)
-    loaded = gdi.load_gdi_reference(tmp_path, gdi.REDUCED6)
+    # check_digest=False: a reference regenerated at a different component
+    # count is deliberately not the one REDUCED6's shipped constants belong
+    # to, and load_gdi_reference refuses that pairing by design. The round
+    # trip under test is the file layout, not the calibration.
+    loaded = gdi.load_gdi_reference(tmp_path, gdi.REDUCED6, check_digest=False)
 
     assert loaded["matrix"].shape == (12, 306)
     assert loaded["control_mean"].shape == (12,)

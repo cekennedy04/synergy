@@ -260,7 +260,12 @@ def test_a_matrix_built_for_another_feature_set_is_caught_at_load(gdi, tmp_path)
 def test_reference_loads_transposed_and_remembers_its_feature_set(gdi, tmp_path):
     _write_reference(tmp_path, gdi.REDUCED6, n_components=27)
 
-    reference = gdi.load_gdi_reference(tmp_path, gdi.REDUCED6)
+    # check_digest=False: this is a synthetic basis written under a shipped
+    # feature set's filenames, which is exactly the pairing the digest check
+    # exists to refuse. The shape/transposition contract under test is
+    # independent of it.
+    reference = gdi.load_gdi_reference(tmp_path, gdi.REDUCED6,
+                                       check_digest=False)
 
     assert reference["matrix"].shape == (27, 306)
     assert reference["control_mean"].shape == (27,)
@@ -432,8 +437,10 @@ def test_gdi_for_trial_scores_both_sides_and_averages(gdi, tmp_path, scoring_set
     _write_reference(tmp_path, scoring_set, n_components=15)
     reference = gdi.load_gdi_reference(tmp_path, scoring_set)
     results = {
-        "curves_r": {"mean": _mean_curves("r", value=2.0)},
-        "curves_l": {"mean": _mean_curves("l", value=3.0)},
+        "curves_r": {"mean": _mean_curves("r", value=2.0),
+                     "indiv": [_mean_curves("r", value=2.0)]},
+        "curves_l": {"mean": _mean_curves("l", value=3.0),
+                     "indiv": [_mean_curves("l", value=3.0)]},
     }
 
     scores = gdi.gdi_for_trial(results, reference)
@@ -451,3 +458,134 @@ def test_gdi_features_exclude_translations_and_com(gdi):
             for name in feature_set.feature_names(side):
                 assert not name.startswith("com")
                 assert "_t" not in name.replace("pelvis_tilt", "")
+
+
+# -- the scoring unit ------------------------------------------------------
+# Regression cover for docs/2026-08-31-gdi-vs-ucm-audit.md section 3:
+# gdi_for_trial used to score curves['mean'] against constants calibrated on
+# individual gait cycles, which reads high on every trial.
+
+
+def test_gdi_for_side_scores_cycles_not_the_mean_curve(gdi, tmp_path,
+                                                       scoring_set):
+    """The whole point of the fix: with cycles that differ from each other,
+    the mean of the per-cycle scores is NOT the score of the mean curve, and
+    the calibrated answer is the former."""
+    _write_reference(tmp_path, scoring_set, n_components=15)
+    reference = gdi.load_gdi_reference(tmp_path, scoring_set)
+
+    cycles = [_mean_curves("r", value=v) for v in (1.0, 3.0, 5.0)]
+    mean_curve = _mean_curves("r", value=3.0)  # the average of those three
+    curves = {"mean": mean_curve, "indiv": cycles}
+
+    scored = gdi.gdi_for_side(curves, "r", reference)
+    per_cycle = [
+        gdi.compute_gdi(gdi.build_gdi_feature_vector(c, "r", scoring_set),
+                        reference, scoring_set)
+        for c in cycles
+    ]
+    on_the_mean = gdi.compute_gdi(
+        gdi.build_gdi_feature_vector(mean_curve, "r", scoring_set),
+        reference, scoring_set)
+
+    assert scored == pytest.approx(sum(per_cycle) / 3)
+    # The two conventions genuinely disagree here -- if they did not, this
+    # test would be asserting nothing.
+    assert scored != pytest.approx(on_the_mean)
+
+
+def test_a_cycle_calibrated_set_refuses_to_score_a_bare_mean_curve(
+        gdi, tmp_path, scoring_set):
+    """Refusing beats falling back. A fallback to curves['mean'] returns a
+    number that is always too high and indistinguishable downstream."""
+    _write_reference(tmp_path, scoring_set, n_components=15)
+    reference = gdi.load_gdi_reference(tmp_path, scoring_set)
+
+    with pytest.raises(KeyError, match="per gait cycle"):
+        gdi.gdi_for_side({"mean": _mean_curves("r")}, "r", reference)
+
+
+def test_every_shipped_feature_set_declares_a_scoring_unit(gdi):
+    """The constants were all derived from per-cycle log distances over the
+    166-column pooled cohort, so every shipped set must say so."""
+    for feature_set in gdi.FEATURE_SETS.values():
+        assert feature_set.scoring_unit == gdi.SCORING_UNIT_CYCLE
+
+
+def test_a_mean_curve_set_still_scores_the_mean_curve(gdi, tmp_path, scoring_set):
+    """The unit is a property of the calibration, not a hardcoded rule: a set
+    calibrated on mean curves must score them."""
+    import dataclasses
+    feature_set = dataclasses.replace(
+        scoring_set, scoring_unit=gdi.SCORING_UNIT_MEAN_CURVE)
+    _write_reference(tmp_path, feature_set, n_components=15)
+    reference = gdi.load_gdi_reference(tmp_path, feature_set)
+
+    curves = {"mean": _mean_curves("r", value=2.0)}  # no 'indiv' at all
+    scored = gdi.gdi_for_side(curves, "r", reference, feature_set)
+
+    expected = gdi.compute_gdi(
+        gdi.build_gdi_feature_vector(curves["mean"], "r", feature_set),
+        reference, feature_set)
+    assert scored == pytest.approx(expected)
+
+
+# -- reference provenance --------------------------------------------------
+
+
+def test_a_basis_from_another_cohort_is_refused(gdi, tmp_path):
+    """The gap the orthonormality check cannot see. A well-formed basis from
+    the wrong cohort passes every shape and orthonormality test and shifts
+    every score -- the archived gdi9 basis scores healthy controls at 100.8."""
+    _write_reference(tmp_path, gdi.GDI9, n_components=15)
+
+    with pytest.raises(gdi.GdiReferenceMismatchError, match="digest"):
+        gdi.load_gdi_reference(tmp_path, gdi.GDI9)
+
+
+def test_the_digest_check_can_be_waived_for_historic_results(gdi, tmp_path):
+    _write_reference(tmp_path, gdi.GDI9, n_components=15)
+
+    reference = gdi.load_gdi_reference(tmp_path, gdi.GDI9, check_digest=False)
+
+    assert reference["digest_verified"] is False
+    assert reference["matrix"].shape == (15, 459)
+
+
+def test_a_set_without_an_expected_digest_reports_itself_unverified(
+        gdi, tmp_path, scoring_set):
+    """`scoring_set` is a synthetic set carrying no expected digest, so the
+    check cannot run -- and the reference must say so rather than imply it
+    passed."""
+    _write_reference(tmp_path, scoring_set, n_components=15)
+
+    reference = gdi.load_gdi_reference(tmp_path, scoring_set)
+
+    assert scoring_set.reference_digest is None
+    assert reference["digest_verified"] is False
+    assert len(reference["digest"]) == 64
+
+
+def test_gdi_for_side_accepts_the_real_runtime_type(gdi, tmp_path, scoring_set):
+    """`get_coordinates_normalized_time` returns pandas DataFrames, not dicts
+    of lists. The feature builder indexes curves positionally (`curve[point]`),
+    which on a DataFrame column is *label* lookup -- correct only because the
+    frames carry a default RangeIndex. Pinned because everything else in this
+    file tests dicts, and the two types take different code paths in pandas."""
+    pd = pytest.importorskip("pandas")
+    _write_reference(tmp_path, scoring_set, n_components=15)
+    reference = gdi.load_gdi_reference(tmp_path, scoring_set)
+
+    names = list(scoring_set.feature_names("r"))
+    frames = [pd.DataFrame({name: [value] * 101 for name in names})
+              for value in (1.0, 3.0, 5.0)]
+    curves = {"mean": frames[1], "indiv": frames}
+
+    scored = gdi.gdi_for_side(curves, "r", reference)
+    expected = [
+        gdi.compute_gdi(gdi.build_gdi_feature_vector(frame, "r", scoring_set),
+                        reference, scoring_set)
+        for frame in frames
+    ]
+
+    assert scored == pytest.approx(sum(expected) / 3)
