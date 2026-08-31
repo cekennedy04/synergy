@@ -577,6 +577,13 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
 _ISOLATION_IMPOSSIBLE_KWARGS = ("xsens_module", "gait_fixed_module",
                                 "foot_progression_module", "xtoo_module")
 
+# How long one trial may take before its process is treated as hung. Measured
+# per-trial time on this pipeline is 21-63s end to end (IK dominates), so ten
+# minutes is roughly an order of magnitude of headroom -- generous enough that
+# a merely slow trial is never killed, tight enough that one bad trial costs
+# ten minutes rather than the whole unattended run.
+TRIAL_TIMEOUT_SECONDS = 600.0
+
 # Parts of run_pipeline's result cannot cross a process boundary: the live
 # gait_analysis objects under gait_r/gait_l, and the numpy arrays under
 # fpa_r/fpa_l. Nothing in the batch path reads any of them -- _on_batch_result
@@ -646,7 +653,7 @@ def _decode_trial_outcome(returncode, payload, stderr_tail=""):
 
 
 def _run_trial_isolated(session_dir, mvnx_path, conversion, python_executable=None,
-                        child_source=None):
+                        child_source=None, timeout_s=TRIAL_TIMEOUT_SECONDS):
     """Run one trial in its own interpreter. Never raises for a failed trial.
 
     python_executable/child_source are injection points for the tests: the
@@ -661,11 +668,25 @@ def _run_trial_isolated(session_dir, mvnx_path, conversion, python_executable=No
             "conversion": conversion,
             "out_path": out_path,
         })
-        completed = subprocess.run(
-            [python_executable or sys.executable, "-c",
-             child_source or _TRIAL_CHILD_SOURCE, config],
-            capture_output=True, text=True,
-        )
+        try:
+            completed = subprocess.run(
+                [python_executable or sys.executable, "-c",
+                 child_source or _TRIAL_CHILD_SOURCE, config],
+                capture_output=True, text=True, timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as expired:
+            # Isolation contains a child that DIES; without this it does not
+            # contain one that HANGS, because subprocess.run waits forever by
+            # default and the batch stops making progress with no error. A
+            # trial that has not finished in timeout_s is not going to.
+            return False, None, (
+                f"TrialTimeout: the trial's process was still running after "
+                f"{timeout_s:.0f}s and was terminated. Observed per-trial time on "
+                "this pipeline is under two minutes, so this is a hang rather "
+                "than slow progress."
+                + (f" Last output: {(expired.stdout or '')[-200:].strip()}"
+                   if expired.stdout else "")
+            )
         payload = None
         if os.path.exists(out_path):
             try:

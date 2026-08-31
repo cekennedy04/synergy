@@ -596,6 +596,28 @@ def test_a_gait_analysis_failure_maps_to_generic_gait_failure(mod, tmp_path):
     assert isinstance(exc, mod.GaitAnalysisFailedError)
 
 
+def test_a_hanging_trial_is_terminated_and_reported(mod, tmp_path):
+    """Isolation contained a child that dies; without a timeout it did not
+    contain one that hangs -- subprocess.run waits forever by default, so the
+    batch stopped making progress with no error to record."""
+    forever = "import time\nwhile True: time.sleep(1)\n"
+
+    ok, result, error = mod._run_trial_isolated(
+        str(tmp_path), str(tmp_path / "t.mvnx"), "ik",
+        child_source=forever, timeout_s=1.0)
+
+    assert ok is False
+    assert result is None
+    assert "TrialTimeout" in error
+    assert "hang rather than slow progress" in error
+
+
+def test_the_trial_timeout_leaves_room_for_a_merely_slow_trial(mod):
+    """Measured per-trial time is 21-63s end to end. The bound must not kill
+    a slow trial, only a stuck one."""
+    assert mod.TRIAL_TIMEOUT_SECONDS >= 300.0
+
+
 # -- Trial-level resume (2026-08-30) --------------------------------------
 # A batch was interrupted twelve trials into a fifteen-trial participant, and
 # without this a rerun would have redone all fifteen.
