@@ -72,7 +72,7 @@ def process_one(gui, session_dir, mvnx_dir, route, progress=None):
     """One participant, one route. Returns run_batch's own result dict."""
     started = time.monotonic()
     result = gui.run_batch(str(session_dir), str(mvnx_dir), conversion=route,
-                           progress_callback=progress)
+                           progress_callback=progress, skip_existing=True)
     result["elapsed_s"] = round(time.monotonic() - started, 1)
     return result
 

@@ -33,9 +33,10 @@ class _FakeGui:
         self._ok, self._failed, self._raises = trials_ok, trials_failed, raises
 
     def run_batch(self, session_dir, mvnx_dir, conversion=None,
-                  progress_callback=None):
+                  progress_callback=None, skip_existing=False):
         self.calls.append({"session_dir": session_dir, "mvnx_dir": mvnx_dir,
-                           "conversion": conversion})
+                           "conversion": conversion,
+                           "skip_existing": skip_existing})
         if self._raises is not None:
             raise self._raises
         trials = ([{"trial": f"T{i}", "ok": True, "error": None}
@@ -133,6 +134,8 @@ def test_each_participant_is_processed_once_with_its_own_folders(mod, tmp_path,
 
     assert len(gui.calls) == 2
     assert all(call["conversion"] == "ik" for call in gui.calls)
+    # Trial-level resume, so an interrupted participant is not redone whole.
+    assert all(call["skip_existing"] is True for call in gui.calls)
     # each session paired with its own participant's trials, not another's
     for call in gui.calls:
         code = Path(call["session_dir"]).name.replace("XsensSession_", "")

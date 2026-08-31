@@ -596,6 +596,81 @@ def test_a_gait_analysis_failure_maps_to_generic_gait_failure(mod, tmp_path):
     assert isinstance(exc, mod.GaitAnalysisFailedError)
 
 
+# -- Trial-level resume (2026-08-30) --------------------------------------
+# A batch was interrupted twelve trials into a fifteen-trial participant, and
+# without this a rerun would have redone all fifteen.
+
+
+def _curve_file(mod, session_dir, trial_name, conversion="ik"):
+    """Write a curve export where run_batch will look for it.
+
+    The prefix comes from _short_session_id, not the folder name: it strips
+    "OpenCapData_" and truncates at the first hyphen, so hardcoding the
+    directory name here would silently never match.
+    """
+    curves = Path(session_dir) / "GaitCurves"
+    curves.mkdir(parents=True, exist_ok=True)
+    short = mod._short_session_id(session_dir)
+    path = curves / f"{short}-{conversion}-{trial_name}_left.csv"
+    path.write_text("1,2\n")
+    return path
+
+
+def test_a_trial_with_its_curve_export_counts_as_done(mod, tmp_path):
+    """The curve matrix is the LAST per-trial artefact, so its presence means
+    every earlier stage succeeded. A .mot alone would not: a run can die
+    between IK and gait analysis."""
+    session = tmp_path / "XsensSession_AL"
+    _curve_file(mod, session, "AL-001")
+
+    assert mod._trial_already_done(session, "AL-001", "ik") is True
+    assert mod._trial_already_done(session, "AL-002", "ik") is False
+
+
+def test_resume_is_keyed_on_the_route_not_just_the_trial(mod, tmp_path):
+    """ik and xtoo write separate files and one does not substitute for the
+    other; sharing a key would mark a participant done after one route."""
+    session = tmp_path / "XsensSession_AL"
+    _curve_file(mod, session, "AL-001", conversion="ik")
+
+    assert mod._trial_already_done(session, "AL-001", "ik") is True
+    assert mod._trial_already_done(session, "AL-001", "xtoo") is False
+
+
+def test_a_session_with_no_curves_directory_is_not_done(mod, tmp_path):
+    assert mod._trial_already_done(tmp_path / "empty", "AL-001", "ik") is False
+
+
+def test_skip_existing_does_not_reprocess_a_finished_trial(mod, tmp_path):
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_dir = tmp_path / "mvnx"
+    mvnx_dir.mkdir()
+    for name in ("T1", "T2"):
+        (mvnx_dir / f"{name}.mvnx").write_text("<mvnx/>")
+    _curve_file(mod, session_dir, "T1")
+
+    result = mod.run_batch(
+        str(session_dir), str(mvnx_dir), skip_existing=True,
+        isolate_trials=False, combine_module=_fake_combine_module([]),
+        xsens_module=_make_fake_xsens_module(
+            resolve_paths=_resolve_paths_for(session_dir)),
+        gait_fixed_module=_make_fake_gait_fixed_module(),
+        foot_progression_module=_make_fake_foot_progression_module(),
+    )
+
+    by_trial = {t["trial"]: t for t in result["trials"]}
+    assert by_trial["T1"].get("skipped") is True
+    assert by_trial["T2"].get("skipped") is not True
+
+
+def test_skip_existing_is_off_by_default(mod, tmp_path):
+    """Reprocessing must stay the default: a stale curve file from a changed
+    pipeline would otherwise be treated as current work."""
+    import inspect
+    assert inspect.signature(mod.run_batch).parameters[
+        "skip_existing"].default is False
+
+
 # -- Raw file outputs surfaced to the user (2026-08-25) -------------------
 # run_pipeline already computes the .trc and .sto paths but discarded them,
 # returning only mot_path. Researchers need the raw files to take into their

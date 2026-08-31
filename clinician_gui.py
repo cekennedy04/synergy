@@ -677,8 +677,26 @@ def _run_trial_isolated(session_dir, mvnx_path, conversion, python_executable=No
     return _decode_trial_outcome(completed.returncode, payload, tail)
 
 
+def _trial_already_done(session_dir, trial_name, conversion):
+    """True when this trial's curve export for this route is already on disk.
+
+    The curve matrix is the last per-trial artefact written, so its presence
+    means every stage before it succeeded -- a .mot alone does not, since a
+    run can die between IK and gait analysis. Keyed on the route as well as
+    the trial because ik and xtoo write separate files and one does not
+    substitute for the other.
+
+    Added 2026-08-30 after a batch was interrupted twelve trials into a
+    fifteen-trial participant and a rerun would have redone all fifteen.
+    """
+    curves_dir = Path(session_dir) / "GaitCurves"
+    prefix = f"{_short_session_id(session_dir)}-{conversion or 'ik'}-{trial_name}"
+    return bool(list(curves_dir.glob(f"{prefix}_*.csv")))
+
+
 def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
-              combine_module=None, isolate_trials=None, **pipeline_kwargs):
+              combine_module=None, isolate_trials=None, skip_existing=False,
+              **pipeline_kwargs):
     """Process every .mvnx in a folder, then pool the session once.
 
     The GUI is otherwise one trial at a time, which for a fifteen-trial
@@ -741,6 +759,11 @@ def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
     for position, path in enumerate(files, start=1):
         trial_name = path.stem
         _progress(f"Trial {position} of {len(files)}: {trial_name}...")
+        if skip_existing and _trial_already_done(session_dir, trial_name, conversion):
+            _progress(f"  {trial_name} already processed; skipping.")
+            trials.append({"trial": trial_name, "ok": True, "error": None,
+                           "result": None, "skipped": True})
+            continue
         if isolate:
             ok, result, error = _run_trial_isolated(
                 session_dir, str(path), conversion)
