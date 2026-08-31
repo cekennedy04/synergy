@@ -227,6 +227,90 @@ def discover_trials(folder, extension='.mot'):
     return sorted(name for name in trial_names if name != 'neutral')
 
 
+# Below this, the root is not translating and no walking direction can be
+# recovered from displacement. The IMU route pins it exactly, so the measured
+# range is 0.0; the threshold is generous rather than exact so a nearly-static
+# trial is caught too.
+MIN_PROGRESSION_METRES = 0.10
+
+
+def walking_heading(pelvis_positions, model=None, coordinates_table=None,
+                    state=None):
+    """The direction the subject walked, in degrees, for FPA to be measured against.
+
+    Repaired 2026-08-31. The supervisor's `getpelvis` computed this as
+    `arctan2(y_end - y_start, x_end - x_start)`, and both terms were wrong for
+    this pipeline:
+
+    1. **Wrong plane.** OpenSim's ground frame has Y *vertical*; walking
+       happens in X-Z. Measured on a real OpenCap trial where the pelvis
+       genuinely travels 6.0 m: the original returns -0.77 degrees, driven by
+       8 cm of vertical bob, where the ground-plane direction is +5.78
+       degrees. So it never measured walking direction on any route -- it
+       returned approximately zero whenever the subject walked roughly along
+       +X, which looked correct by luck.
+    2. **Degenerate under a pinned root.** The IMU route leaves pelvis_tx/ty/tz
+       exactly constant, so the original evaluates arctan2(0, 0) = 0 for every
+       trial. FPA then collapses to absolute foot yaw in the lab frame, which
+       tracks the orientation estimate's heading drift directly. Across six
+       participants that drift reached 36 degrees within a session and moved
+       GDI by up to 30 points -- the score was measuring the sensors, not the
+       subject.
+
+    The intent is unchanged: a single per-trial heading that foot angles are
+    expressed relative to. What changes is that it is now measured in the
+    ground plane, and that when the root does not translate the pelvis's own
+    yaw is used instead -- the only body-referenced direction available on
+    that route, and one that makes FPA immune to common-mode heading drift by
+    construction.
+    """
+    displacement = np.array([
+        statistics.mean(pelvis_positions[-4:, 0]) - statistics.mean(pelvis_positions[0:4, 0]),
+        statistics.mean(pelvis_positions[-4:, 2]) - statistics.mean(pelvis_positions[0:4, 2]),
+    ])
+    if np.linalg.norm(displacement) >= MIN_PROGRESSION_METRES:
+        # X forward, Z lateral -- the ground plane.
+        return float(np.degrees(np.arctan2(displacement[1], displacement[0])))
+
+    if model is None or coordinates_table is None or state is None:
+        raise ValueError(
+            "the pelvis does not translate in this trial, so a walking "
+            "direction cannot be recovered from displacement, and no model was "
+            "supplied to fall back on pelvis orientation."
+        )
+    return pelvis_yaw_heading(model, coordinates_table, state)
+
+
+def pelvis_yaw_heading(model, coordinates_table, state):
+    """Mean pelvis yaw in ground, in degrees -- the fallback heading.
+
+    One value for the whole trial, matching the shape of the displacement
+    heading it replaces. Averaged circularly, since yaw is an angle: an
+    arithmetic mean of values either side of +/-180 lands on the opposite side
+    of the circle.
+    """
+    import opensim as osim
+    from scipy.spatial.transform import Rotation as R
+
+    pelvis = model.getBodySet().get('pelvis')
+    sines, cosines = [], []
+    for frame_index in range(coordinates_table.getNumRows()):
+        row = osim.RowVector(coordinates_table.getRowAtIndex(frame_index))
+        for coord_index, coordinate in enumerate(model.updCoordinateSet()):
+            if coord_index < N_COORDINATES_TO_DRIVE:
+                coordinate.setValue(state, np.radians(row[coord_index]), False)
+        model.realizePosition(state)
+        rotation = pelvis.getRotationInGround(state)
+        matrix = np.genfromtxt(
+            StringIO(osim.Mat33(rotation).toString().replace('[', ' ').replace(']', ' ')[1:]),
+            delimiter=',',
+        )
+        yaw = np.radians(R.from_matrix(matrix).as_euler('xyz', degrees=True)[1])
+        sines.append(np.sin(yaw))
+        cosines.append(np.cos(yaw))
+    return float(np.degrees(np.arctan2(np.mean(sines), np.mean(cosines))))
+
+
 def compute_foot_progression_angles(model_filename, coordinates_file_name):
     """Foot progression angle (FPA) for right and left feet across a trial.
 
@@ -281,11 +365,7 @@ def compute_foot_progression_angles(model_filename, coordinates_file_name):
         pelvis_positions.append([float(position[0]), float(position[1]), float(position[2])])
 
     pelvis_positions = np.array(pelvis_positions)
-    x_end = statistics.mean(pelvis_positions[-4:, 0])
-    x_start = statistics.mean(pelvis_positions[0:4, 0])
-    y_end = statistics.mean(pelvis_positions[-4:, 1])
-    y_start = statistics.mean(pelvis_positions[0:4, 1])
-    heading = np.degrees(np.arctan2([y_end - y_start], [x_end - x_start]))[0]
+    heading = walking_heading(pelvis_positions, model, coordinates_table, state)
 
     # Pass 2: per-frame foot rotation relative to that heading.
     points = []
