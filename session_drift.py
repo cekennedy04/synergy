@@ -42,6 +42,13 @@ REPO_ROOT = Path(__file__).resolve().parent
 # seen on legs with no apparent problem.
 TREND_ALERT_R = 0.8
 
+# A correlation alone is not enough. A perfectly monotonic 2-degree walk across
+# a session has r near 1 and matters to nobody, and flagging it trains the
+# reader to ignore the marks. Both thresholds must be crossed -- the same rule
+# raw_drift.py applies, and it is deliberately the same numbers.
+MIN_GDI_CHANGE_POINTS = 5.0
+MIN_VARIABLE_CHANGE_DEG = 3.0
+
 # A correlation over three or four trials is not evidence of anything.
 MIN_TRIALS_FOR_TREND = 6
 
@@ -124,7 +131,8 @@ def session_report(session_dir, reference, feature_set=None, conversion="ik",
         report["sides"][side] = {
             "n_trials": len(files),
             "gdi": {"r": r, "slope": slope, "first3": first, "last3": last,
-                    "alert": abs(r) >= TREND_ALERT_R},
+                    "alert": (abs(r) >= TREND_ALERT_R
+                              and abs(last - first) >= MIN_GDI_CHANGE_POINTS)},
             "variables": {
                 name: dict(zip(("r", "slope", "first3", "last3"),
                                linear_trend(numbers, values)))
@@ -165,7 +173,9 @@ def format_report(report):
                      f"{g['last3']:.1f}{flag}")
         for name, trend in sorted(data["variables"].items(),
                                   key=lambda item: -abs(item[1]["r"])):
-            mark = " *" if abs(trend["r"]) >= TREND_ALERT_R else ""
+            moved = abs(trend["last3"] - trend["first3"])
+            mark = (" *" if abs(trend["r"]) >= TREND_ALERT_R
+                    and moved >= MIN_VARIABLE_CHANGE_DEG else "")
             lines.append(f"       {name:<16} r={trend['r']:+.3f}  "
                          f"{trend['last3'] - trend['first3']:+7.2f}{mark}")
     found = alerts(report)

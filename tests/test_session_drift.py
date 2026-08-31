@@ -158,6 +158,25 @@ def test_a_flat_series_does_not_produce_a_spurious_correlation(mod):
     assert first == last == 5.0
 
 
+def test_a_tiny_but_perfectly_monotonic_drift_is_not_flagged(mod, tmp_path,
+                                                             row_order,
+                                                             reference, gdi,
+                                                             curves):
+    """A real clean participant showed knee_angle at r = 0.959 over 2.8
+    degrees. Correlation alone would mark that, and marks nobody should act on
+    train the reader to ignore all of them."""
+    session = _session(tmp_path, row_order, drift_per_trial=0.05)
+
+    report = mod.session_report(session, reference, gdi.REDUCED6, "ik", gdi,
+                                curves)
+    text = mod.format_report(report)
+
+    variable = report["sides"]["right"]["variables"]["fpa"]
+    assert abs(variable["r"]) > 0.95        # perfectly monotonic
+    assert "*" not in text                  # and still not worth marking
+    assert mod.alerts(report) == []
+
+
 # -- what the alert says ---------------------------------------------------
 
 
