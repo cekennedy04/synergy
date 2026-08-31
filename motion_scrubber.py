@@ -37,7 +37,10 @@ here rather than through `osim.TimeSeriesTable` keeps every row/time/value
 question testable in an environment without OpenSim, and leaves only the 3D
 rendering behind the optional import.
 """
+import os
 import re
+import shutil
+import sys
 from pathlib import Path
 
 HEADER_END = "endheader"
@@ -182,14 +185,57 @@ def parse_mot(path):
                         name=path.stem)
 
 
+VISUALIZER_EXE = "simbody-visualizer.exe" if os.name == "nt" else "simbody-visualizer"
+
+
+def ensure_visualizer_on_path():
+    """Make Simbody's viewer executable findable, or say why it is not.
+
+    OpenSim launches `simbody-visualizer` as a separate process located via
+    PATH. Running the interpreter directly -- `envs/opencap-processing/
+    python.exe script.py`, which is how every batch job here runs -- does NOT
+    put the environment's `Library/bin` on PATH the way `conda activate`
+    does, so the launch fails with Simbody's "Required condition
+    'status == 0' was not met" and a PATH dump that names nothing useful.
+
+    Returns the directory added, or None if it was already findable.
+    """
+    if shutil.which(VISUALIZER_EXE):
+        return None
+    candidate = Path(sys.executable).parent / "Library" / "bin"
+    if (candidate / VISUALIZER_EXE).is_file():
+        os.environ["PATH"] = str(candidate) + os.pathsep + os.environ.get("PATH", "")
+        return candidate
+    raise FileNotFoundError(
+        f"{VISUALIZER_EXE} is not on PATH and is not at {candidate}. OpenSim "
+        "runs the visualizer as a separate process, so without it a model can "
+        "be loaded but never shown."
+    )
+
+
 class ModelView:
     """Renders one pose into a live Simbody visualizer window.
 
     Isolated behind this class so everything above stays importable and
     testable without OpenSim, and so the GUI can be exercised against a fake.
+
+    **Do not drive this from a Tk callback.** Measured 2026-08-30: a Tk
+    mainloop and the Simbody visualizer in one process deadlock. The identical
+    frame sequence driven from a plain Python loop opens the window in 2.0s
+    and renders six frames in 1.4s; wrapped in `root.after()` under
+    `mainloop()` it hangs indefinitely with no output and no error, and the
+    visualizer process alive. Simbody talks to its viewer over a pipe and
+    blocks on it, which Tk's loop does not yield for.
+
+    So the Phase 2.2 picker cannot be a Tk window driving this class in-process.
+    The options are a picker with no 3D view (matplotlib over the joint-angle
+    curves, which the plan already names as the fallback), or the visualizer in
+    a separate process driven over IPC. Nothing here should grow a Tk import.
     """
 
     def __init__(self, model_path, opensim=None):
+        if opensim is None:
+            ensure_visualizer_on_path()
         osim = opensim if opensim is not None else __import__("opensim")
         self._osim = osim
         self.model = osim.Model(str(model_path))

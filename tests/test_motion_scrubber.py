@@ -144,6 +144,55 @@ def test_an_out_of_range_row_is_an_error_not_a_clamp(mod, tmp_path):
         motion.values_at(-1)
 
 
+# -- the visualizer executable ---------------------------------------------
+
+
+def test_the_visualizer_is_found_next_to_the_interpreter(mod, tmp_path,
+                                                         monkeypatch):
+    """OpenSim runs simbody-visualizer as a separate process located via PATH.
+    Invoking the interpreter directly -- which is how every batch job here
+    runs -- does not put the environment's Library/bin on PATH the way
+    `conda activate` does, and the failure names nothing useful."""
+    fake_env = tmp_path / "env"
+    (fake_env / "Library" / "bin").mkdir(parents=True)
+    (fake_env / "Library" / "bin" / mod.VISUALIZER_EXE).write_text("")
+    monkeypatch.setattr(mod.sys, "executable", str(fake_env / "python.exe"))
+    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+    monkeypatch.setenv("PATH", "")
+
+    added = mod.ensure_visualizer_on_path()
+
+    assert added == fake_env / "Library" / "bin"
+    assert str(added) in mod.os.environ["PATH"]
+
+
+def test_an_absent_visualizer_says_what_is_missing(mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(mod.sys, "executable", str(tmp_path / "python.exe"))
+    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+
+    with pytest.raises(FileNotFoundError, match=mod.VISUALIZER_EXE):
+        mod.ensure_visualizer_on_path()
+
+
+def test_an_already_findable_visualizer_is_left_alone(mod, monkeypatch):
+    monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    assert mod.ensure_visualizer_on_path() is None
+
+
+def test_the_module_does_not_import_tk(mod):
+    """Measured 2026-08-30: a Tk mainloop and the Simbody visualizer deadlock
+    in one process. The same frame sequence renders in 1.4s from a plain
+    Python loop and hangs indefinitely under root.after()/mainloop(). Nothing
+    here may grow a Tk dependency."""
+    source = (REPO_ROOT / "motion_scrubber.py").read_text(encoding="utf-8")
+    code = "\n".join(line for line in source.splitlines()
+                     if not line.strip().startswith("#"))
+
+    assert "import tkinter" not in code
+    assert "import ttkbootstrap" not in code
+
+
 # -- rendering -------------------------------------------------------------
 
 
