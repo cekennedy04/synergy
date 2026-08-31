@@ -238,7 +238,8 @@ def walking_heading(pelvis_positions, model=None, coordinates_table=None,
                     state=None):
     """The direction the subject walked, in degrees, for FPA to be measured against.
 
-    Repaired 2026-08-31. The supervisor's `getpelvis` computed this as
+    Repaired 2026-08-31 (edit #15; see VENDORING.md for the measured scope,
+    including what it invalidates). The supervisor's `getpelvis` computed this as
     `arctan2(y_end - y_start, x_end - x_start)`, and both terms were wrong for
     this pipeline:
 

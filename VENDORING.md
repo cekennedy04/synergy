@@ -1994,3 +1994,82 @@ Across 15 trials and 11,785 frames, zero arm-coordinate samples fall below −14
 patching a symptom in the original pipeline; with the axis assignment corrected and `atan2` in
 place, the symptom does not arise. Porting them would have been cargo-culted cleanup on data that
 does not exhibit the problem.
+
+### Edit #15 — the foot progression angle reference heading was never the walking direction (2026-08-31)
+
+The most consequential defect found in this codebase so far, because it is silent, it is in the
+supervisor's own `getpelvis`, and it corrupts a variable that GDI is scored on.
+
+`compute_foot_progression_angles` (our reformatting of `getpelvis`; math previously unchanged)
+established the direction the subject walked, then expressed each foot's angle relative to it:
+
+```python
+x2, x1 = mean(direction[-4:, 0]), mean(direction[0:4, 0])
+y2, y1 = mean(direction[-4:, 1]), mean(direction[0:4, 1])
+heading = degrees(arctan2([y2 - y1], [x2 - x1]))[0]
+```
+
+**Two independent errors, both pushing the heading to approximately zero.**
+
+**1. Wrong plane.** OpenSim's ground frame is X forward, **Y vertical**, Z lateral. Walking
+happens in X-Z. The expression above measures forward travel against *vertical bob*. Measured on
+ten OpenCap trials where the pelvis genuinely travels ~6 m:
+
+| | as written | ground plane | error |
+|---|---|---|---|
+| `Trial1` | -0.77 deg | +5.78 deg | 6.55 |
+| `Trial10` | -0.63 deg | +5.73 deg | 6.35 |
+| `Trial3` | -0.93 deg | +2.34 deg | 3.27 |
+| **mean over 10** | | | **5.26 deg** (max 6.55) |
+
+The vertical term is 8 cm of body sway against 6 m of travel, so the result is always near zero.
+That is *approximately* correct whenever a subject walks straight along +X, which is why it never
+looked wrong — and wrong by the subject's actual walking angle whenever they did not.
+
+**2. Degenerate under a pinned root.** The IMU route leaves `pelvis_tx/ty/tz` **exactly** constant
+(measured range `0.00e+00`), so the expression evaluates `arctan2(0, 0) = 0` for every trial. FPA
+then is not a progression angle at all: it is absolute foot yaw in the lab frame.
+
+**What that did to the results.** Absolute foot yaw tracks the orientation estimate's heading
+drift directly. Across all six participants, `|pelvis heading drift|` predicts the within-session
+GDI change at **r = -0.947, about -0.72 GDI points per degree**:
+
+| participant | pelvis drift | fpa right | fpa left | GDI right |
+|---|---|---|---|---|
+| AN | +27.3 | +20.7 | -27.9 | -18.4 |
+| CK | +4.7 | +3.4 | -3.8 | -7.5 |
+| HH | -1.5 | -1.4 | +2.7 | +0.7 |
+| KM | -20.3 | -15.3 | +15.4 | -12.8 |
+| MS | **-36.1** | -26.6 | +31.8 | **-29.6** |
+| SB | -10.6 | +9.7 | -9.0 | -12.8 |
+
+Four of six sessions carry 10-36 degrees of heading drift, so for those participants most of the
+GDI movement within a session was the sensors, not the subject. The mirror-image sign between the
+two feet is *not* physical: `fpa_l = heading - euler_l` is negated by construction, so with
+`heading = 0` a common-mode drift necessarily appears with opposite signs on the two feet.
+
+**The repair.** `walking_heading()` measures `arctan2(dz, dx)` in the ground plane, and falls back
+to the circular mean of pelvis yaw when displacement is under 10 cm — the only body-referenced
+direction available on a pinned-root route, and one that makes FPA immune to common-mode heading
+drift by construction.
+
+Deliberately **preserved**, because they are the supervisor's conventions rather than errors: the
+`+/-5` degree foot offsets, the mirrored left/right sign, one scalar heading per trial, the Euler
+`xyz` component `[1]`, and FPA's membership of the GDI feature set.
+
+**Verified on the worst case** (MS, -36.1 deg heading drift):
+
+| | before | after | reduction |
+|---|---|---|---|
+| `fpa_l` drift | +31.80 deg | -1.01 deg | 97% |
+| `fpa_r` drift | -26.64 deg | +6.16 deg | 77% |
+
+The residual on the right is on the side that shows genuine right-foot divergence in the raw
+recording, so some of it is expected to be real rather than an incomplete fix.
+
+**Scope of what this invalidates.** Every FPA value and every GDI score this project produced
+before 2026-08-31, on both routes. Pre-fix curve exports are retained per session as
+`GaitCurves_pre-fpa-fix/` rather than deleted. It also affects the supervisor's own OpenCap
+results, independently of anything in this repository — there by ~5 degrees rather than totally,
+which is small enough to have gone unnoticed and large enough to move a score.
+
