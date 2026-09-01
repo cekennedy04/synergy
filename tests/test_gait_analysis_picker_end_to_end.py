@@ -172,3 +172,122 @@ def test_the_trial_actually_produces_cycles(analysed):
     analysis, _seen = analysed
 
     assert analysis.nGaitCycles >= 1
+
+
+# -- the review fixes, exercised rather than grepped ------------------------
+# These replace source-text assertions. Grepping for a line proves the line is
+# present, not that the behaviour it was meant to produce actually happens, and
+# every one of these paths runs through real segment_walking.
+
+
+def _build(pipeline, session_dir, **kwargs):
+    gait_module, _ui = pipeline
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        return gait_module.gait_analysis(
+            str(session_dir), TRIAL, 0.0, 0.0, n_gait_cycles=-1,
+            modelName=MODEL, **kwargs)
+    finally:
+        os.chdir(cwd)
+
+
+def test_a_declined_pick_falls_through_to_auto_trim(pipeline, session_dir):
+    """Cancelling must not cost the operator rung two. Before a UI existed the
+    only route here was answering 'N' to the stdin prompt, which fell through
+    to auto-trim; a provider that pre-empted that would hard-fail a trial the
+    retry loop might have rescued.
+
+    Auto-trim genuinely cannot rescue this trial, so the proof that it RAN is
+    the message: it must be auto-trim's, not manual entry's."""
+    _gait_module, ui = pipeline
+    declined = []
+
+    def operator_cancels(model):
+        declined.append(True)
+        model.cancel()
+
+    with pytest.raises(Exception) as caught:
+        _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
+               manual_event_provider=ui.make_manual_event_provider(
+                   show=operator_cancels))
+
+    assert declined == [True], "the picker never opened"
+    message = str(caught.value)
+    assert "Manual entry" not in message, (
+        "a declined pick was reported as a manual-entry failure: " + message)
+
+
+def test_declining_does_not_blame_the_operator_for_zeros(pipeline, session_dir):
+    """self.manualEventPicker had to be cleared on decline. Left set, the
+    empty-heel-strike guard quotes a tally of zeros back at someone who chose
+    not to pick at all."""
+    _gait_module, ui = pipeline
+
+    with pytest.raises(Exception) as caught:
+        _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
+               manual_event_provider=ui.make_manual_event_provider(
+                   show=lambda model: model.cancel()))
+
+    assert "Picked so far" not in str(caught.value)
+
+
+def test_picking_one_leg_under_auto_says_so(pipeline, session_dir):
+    """leg='auto' is the DEFAULT and its guard fires first, so without a
+    manual-entry branch there an operator who picked one leg was told to check
+    marker data quality and never heard about their own picks."""
+    _gait_module, ui = pipeline
+
+    def picks_left_only(model):
+        for event_type, fraction in (('lHS', 0.2), ('lTO', 0.3),
+                                     ('lHS', 0.6), ('lTO', 0.7)):
+            model.select(event_type)
+            model.pick_at(float(int(model.picker.motion.n_rows * fraction)))
+
+    with pytest.raises(Exception) as caught:
+        _build(pipeline, session_dir, leg='auto', allow_manual_entry=True,
+               manual_event_provider=ui.make_manual_event_provider(
+                   show=picks_left_only))
+
+    message = str(caught.value)
+    assert "only one leg" in message
+    assert "Picked so far" in message
+    assert "marker data quality" not in message
+
+
+def test_a_window_that_never_opens_does_not_pass_as_a_decline(pipeline,
+                                                              session_dir):
+    """The silent failure: plt.show() returns immediately under a
+    non-interactive backend, and an empty picker reads as a decline. This must
+    surface as an error naming the cause, not vanish into auto-trim."""
+    _gait_module, ui = pipeline
+
+    with pytest.raises(RuntimeError, match="never opened"):
+        _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
+               manual_event_provider=ui.make_manual_event_provider(
+                   show=lambda model: None))
+
+
+def test_auto_trim_keeps_the_picker_signals_in_step(pipeline, session_dir):
+    """trimend is cumulative and shortens markerDict every call. It stashes the
+    signals it recomputes, so a picker built after auto-trim pairs trimmed
+    times with trimmed signals. Left stale, MarkerTimeline now refuses the
+    mismatch -- so reaching the picker at all proves they stayed in step."""
+    gait_module, ui = pipeline
+    opened = {}
+
+    def inspect(model):
+        motion = model.picker.motion
+        opened['frames'] = motion.n_rows
+        opened['lengths'] = {name: len(values)
+                             for name, values in motion.signals.items()}
+        model.cancel()
+
+    with pytest.raises(Exception):
+        _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
+               manual_event_provider=ui.make_manual_event_provider(show=inspect))
+
+    assert opened, "the picker never opened, so nothing was checked"
+    assert set(opened['lengths'].values()) == {opened['frames']}, (
+        "signal lengths %s do not match the %d frames handed over"
+        % (opened['lengths'], opened['frames']))

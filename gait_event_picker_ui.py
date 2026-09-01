@@ -374,7 +374,28 @@ def show_picker_window(model):  # pragma: no cover - needs a display
     clear.on_clicked(lambda _event: (model.clear(), redraw()))
 
     redraw()
+    window = PickerWindow(figure=figure, axes=list(axes),
+                          widgets=(radio, done, cancel, clear),
+                          on_click=on_click, on_move=on_move, redraw=redraw)
     plt.show()
-    # Keep the widgets referenced until the window is gone; matplotlib drops
-    # callbacks on garbage-collected widget objects.
-    return radio, done, cancel, clear
+    # The widgets are carried on the returned object rather than dropped:
+    # matplotlib discards callbacks belonging to garbage-collected widgets, and
+    # the handlers are returned so the click wiring -- the toolbar guard and
+    # the panel-to-leg mapping, neither of which the model can see -- is
+    # reachable by a test instead of being untestable closure.
+    return window
+
+
+class PickerWindow:
+    """The live window's parts, kept addressable after it is built."""
+
+    def __init__(self, figure, axes, widgets, on_click, on_move, redraw):
+        self.figure = figure
+        self.axes = axes
+        self.widgets = widgets
+        self.on_click = on_click
+        self.on_move = on_move
+        self.redraw = redraw
+
+    def __len__(self):
+        return len(self.widgets)

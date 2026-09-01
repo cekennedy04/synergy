@@ -20,6 +20,7 @@ What matters here, in order:
 """
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -440,10 +441,128 @@ def headless_pyplot(ui, monkeypatch):
 def test_the_window_builds_and_blocks_on_show(ui, model, headless_pyplot):
     plt, shown = headless_pyplot
 
-    artists = ui.show_picker_window(model)
+    window = ui.show_picker_window(model)
 
-    assert len(artists) == 4, "expected radio + done + cancel + clear"
+    assert len(window) == 4, "expected radio + done + cancel + clear"
     assert shown == [True], "the window must block until the operator closes it"
+
+
+# -- the click wiring, driven for real -------------------------------------
+# The model tests cover what a pick means. These cover the handler that turns
+# a mouse event into one: the toolbar guard and the panel-to-leg mapping live
+# only here, and neither is visible to the model.
+
+
+class _MouseEvent:
+    def __init__(self, inaxes, xdata, button=1):
+        self.inaxes = inaxes
+        self.xdata = xdata
+        self.button = button
+
+
+class _FakeToolbar:
+    """Enough of matplotlib's navigation toolbar to set `mode`.
+
+    `_wait_cursor_for_draw_cm` is not decoration: the Agg canvas calls it on
+    every draw, so a toolbar stub without it turns a redraw into an
+    AttributeError rather than exercising the guard."""
+
+    def __init__(self, mode=""):
+        self.mode = mode
+
+    def _wait_cursor_for_draw_cm(self):
+        import contextlib
+        return contextlib.nullcontext()
+
+
+@pytest.fixture
+def live_window(ui, model, headless_pyplot):
+    window = ui.show_picker_window(model)
+    return window, model
+
+
+def test_a_click_on_the_right_panel_marks_a_right_event(live_window):
+    window, model = live_window
+    model.select("rHS")
+
+    window.on_click(_MouseEvent(window.axes[0], 12.0))
+
+    assert model.picker.rows("rHS") == [12]
+
+
+def test_a_click_on_the_left_panel_marks_a_left_event(live_window):
+    """rHS is selected, but the operator clicked the LEFT trace. Recording a
+    right heel strike there -- and drawing it on the other panel -- is a silent
+    wrong answer of the same shape as edit #13."""
+    window, model = live_window
+    model.select("rHS")
+
+    window.on_click(_MouseEvent(window.axes[1], 12.0))
+
+    assert model.picker.rows("lHS") == [12]
+    assert model.picker.rows("rHS") == []
+
+
+def test_a_left_panel_click_keeps_the_event_kind(live_window):
+    window, model = live_window
+    model.select("rTO")
+
+    window.on_click(_MouseEvent(window.axes[1], 20.0))
+
+    assert model.picker.rows("lTO") == [20]
+
+
+def test_a_zoom_drag_does_not_deposit_an_event(live_window):
+    """matplotlib does not suppress user callbacks while the navigation
+    toolbar is active, and zooming is the natural way to place an event
+    precisely on a several-hundred-frame trial -- so without the guard every
+    zoom rectangle marked a gait event at the drag origin."""
+    window, model = live_window
+    window.figure.canvas.toolbar = _FakeToolbar("zoom rect")
+
+    window.on_click(_MouseEvent(window.axes[0], 12.0))
+
+    assert model.picker.counts() == {"rHS": 0, "rTO": 0, "lHS": 0, "lTO": 0}
+
+
+def test_a_pan_drag_does_not_deposit_an_event(live_window):
+    window, model = live_window
+    window.figure.canvas.toolbar = _FakeToolbar("pan/zoom")
+
+    window.on_click(_MouseEvent(window.axes[0], 5.0))
+
+    assert model.picker.rows("rHS") == []
+
+
+def test_clicking_still_works_once_the_toolbar_is_idle(live_window):
+    """The guard must not disable picking permanently -- an operator zooms in
+    and then places the event."""
+    window, model = live_window
+    window.figure.canvas.toolbar = _FakeToolbar("zoom rect")
+    window.on_click(_MouseEvent(window.axes[0], 12.0))
+
+    window.figure.canvas.toolbar.mode = ""
+    window.on_click(_MouseEvent(window.axes[0], 12.0))
+
+    assert model.picker.rows("rHS") == [12]
+
+
+def test_a_right_click_erases(live_window):
+    window, model = live_window
+    window.on_click(_MouseEvent(window.axes[0], 12.0))
+
+    window.on_click(_MouseEvent(window.axes[0], 12.0, button=3))
+
+    assert model.picker.rows("rHS") == []
+
+
+def test_a_click_outside_any_panel_is_ignored(live_window):
+    window, model = live_window
+
+    window.on_click(_MouseEvent(None, 12.0))
+    window.on_click(_MouseEvent(window.axes[0], None))
+
+    assert model.picker.counts() == {"rHS": 0, "rTO": 0, "lHS": 0, "lTO": 0}
 
 
 def test_the_window_refuses_a_trial_with_nothing_to_plot(gait_module, ui,

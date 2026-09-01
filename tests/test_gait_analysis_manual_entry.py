@@ -22,6 +22,13 @@ are to get wrong:
    irregularly sampled -- measured 2026-09-01, all 77 .trc files in Data/ have
    a single dt of 0.016667.)
 
+Some tests here are marked SOURCE PIN: they assert that a line is present in
+the source rather than that the behaviour happens, because the behaviour needs
+real OpenSim. Each one names the test in
+tests/test_gait_analysis_picker_end_to_end.py that actually proves it. A source
+pin catches an accidental deletion in the cheap tier; it is not evidence the
+fix works, and must never be the only test for one.
+
 The real gait_analysis needs OpenSim, which this environment does not have, so
 utilsKinematics is stubbed for the module load. Nothing under test touches the
 base class: manual_steps has always taken `self` explicitly, so a plain object
@@ -362,7 +369,11 @@ def test_a_provider_that_picks_nothing_yields_no_events(mod):
 
 
 def test_segment_walking_routes_a_declined_pick_back_to_auto_trim(source):
-    """The fallback chain is prominence -> auto-trim -> human. Wiring a
+    """SOURCE PIN. Behaviour proven by test_gait_analysis_picker_end_to_end.py::
+    test_a_declined_pick_falls_through_to_auto_trim, which needs OpenSim; this
+    only checks the wiring is still present in the cheap tier.
+
+    The fallback chain is prominence -> auto-trim -> human. Wiring a
     provider made the human unconditionally pre-empt auto-trim, because the
     provider branch replaced the stdin [Y/N] whose 'N' used to fall through to
     trimflag=1. Cancelling the picker then hard-failed a trial the retry loop
@@ -378,7 +389,10 @@ def test_segment_walking_routes_a_declined_pick_back_to_auto_trim(source):
 
 
 def test_a_declined_pick_does_not_leave_the_picker_on_the_instance(source):
-    """Or a later auto-trim failure gets blamed on manual entry.
+    """SOURCE PIN. Behaviour proven by test_gait_analysis_picker_end_to_end.py::
+    test_declining_does_not_blame_the_operator_for_zeros.
+
+    Or a later auto-trim failure gets blamed on manual entry.
     detect_correct_order treats all-empty vectors as correctly ordered, so
     auto-trim can converge with no heel strikes for the requested leg -- and
     the guard would then quote a tally of zeros back at an operator who
@@ -391,7 +405,10 @@ def test_a_declined_pick_does_not_leave_the_picker_on_the_instance(source):
 
 
 def test_the_auto_leg_guard_also_speaks_to_manual_entry(source):
-    """leg='auto' is the DEFAULT, so its guard fires before the manual-entry
+    """SOURCE PIN. Behaviour proven by test_gait_analysis_picker_end_to_end.py::
+    test_picking_one_leg_under_auto_says_so.
+
+    leg='auto' is the DEFAULT, so its guard fires before the manual-entry
     one. Without a branch there, an operator who picked events for one leg was
     told to check marker data quality and never heard about their own picks."""
     guard = source.index("if len(rHS) == 0 or len(lHS) == 0:")
@@ -567,7 +584,10 @@ def test_a_stale_signal_is_refused_at_construction(mod):
 
 
 def test_trimend_refreshes_the_signals_it_recomputes(source):
-    """It already recomputes all four for its own peak detection; stashing
+    """SOURCE PIN. Behaviour proven by test_gait_analysis_picker_end_to_end.py::
+    test_auto_trim_keeps_the_picker_signals_in_step.
+
+    It already recomputes all four for its own peak detection; stashing
     them there is what keeps them in step with the trimmed frames."""
     trimend = source.index("def trimend(self, trim):")
     body = source[trimend:source.index("def manual_steps", trimend)
