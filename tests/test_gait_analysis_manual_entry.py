@@ -284,6 +284,49 @@ def test_a_picker_built_over_a_different_trial_is_refused(mod, monkeypatch):
         mod.manual_steps(FakeAnalysis(n_frames=40, provider=provider))
 
 
+def test_a_same_length_trial_from_the_same_participant_is_refused_by_name(mod):
+    """Frame count is not identity. Fixed-duration walk captures from one
+    participant routinely share a frame count, so a saved set restored for the
+    wrong trial clears the count check and lands events on frames nobody
+    chose."""
+    def provider(picker):
+        other = mod.MarkerTimeline(_trial_times(40), name="Trial4_1")
+        replacement = type(picker)(other)
+        replacement.mark("rHS", 3)
+        return replacement
+
+    analysis = FakeAnalysis(n_frames=40, provider=provider)   # trial_name Trial3_1
+
+    with pytest.raises(ValueError, match="Trial4_1"):
+        mod.manual_steps(analysis)
+
+
+def test_an_unnamed_motion_is_still_accepted(mod):
+    """A provider may legitimately build a picker over a motion with no name;
+    the name is only enforced when both sides have one."""
+    def provider(picker):
+        replacement = type(picker)(mod.MarkerTimeline(_trial_times(40), name=""))
+        replacement.mark("rHS", 3)
+        return replacement
+
+    rHS, _lHS, _rTO, _lTO = mod.manual_steps(FakeAnalysis(n_frames=40,
+                                                          provider=provider))
+
+    assert rHS == [3]
+
+
+def test_a_picker_like_object_without_a_motion_is_refused_clearly(mod):
+    """Not a bare AttributeError from dereferencing .motion."""
+    class Impostor:
+        def as_segment_walking_events(self):
+            return ([], [], [], [])
+
+    analysis = FakeAnalysis(provider=lambda picker: Impostor())
+
+    with pytest.raises(TypeError, match="motion"):
+        mod.manual_steps(analysis)
+
+
 def test_the_picked_events_are_cached_for_the_second_leg(mod):
     """segment_walking may run again on the same instance; dflag exists so the
     operator is not asked twice for the same trial."""
@@ -303,6 +346,41 @@ def test_the_picker_is_kept_on_the_analysis_for_inspection(mod):
     mod.manual_steps(analysis)
 
     assert analysis.manualEventPicker.rows("rHS") == [1]
+
+
+# -- declining must not cost the operator rung two -------------------------
+
+
+def test_a_provider_that_picks_nothing_yields_no_events(mod):
+    analysis = FakeAnalysis(provider=lambda picker: None)
+
+    assert mod.manual_steps(analysis) == ([], [], [], [])
+
+
+def test_segment_walking_routes_a_declined_pick_back_to_auto_trim(source):
+    """The fallback chain is prominence -> auto-trim -> human. Wiring a
+    provider made the human unconditionally pre-empt auto-trim, because the
+    provider branch replaced the stdin [Y/N] whose 'N' used to fall through to
+    trimflag=1. Cancelling the picker then hard-failed a trial the retry loop
+    might have rescued."""
+    manual_block = source.index("if manual_flag==1:")
+    trim_block = source.index("if trimflag==1:")
+
+    assert manual_block < trim_block, "auto-trim must still be reachable after"
+    between = source[manual_block:trim_block]
+    assert "trimflag = 1" in between, "a declined pick never re-arms auto-trim"
+    assert "self.dflag = 0" in between, (
+        "the decline is cached, so the other leg is never asked")
+
+
+def test_an_empty_pick_for_this_leg_is_not_reported_as_a_detection_failure(source):
+    """Telling an operator who just hand-picked events to 'supply the events
+    manually' sends them back to the thing they already did."""
+    guard = source.index("if len(hsIps) == 0:")
+    tail = source[guard:guard + 1200]
+
+    assert "manualEventPicker" in tail
+    assert "Manual entry supplied no heel-strike events" in tail
 
 
 # -- ordering is reported, never enforced ----------------------------------
@@ -346,13 +424,33 @@ def test_the_stdin_fallback_takes_frame_indices_verbatim(mod):
     assert picker.as_segment_walking_events() == ([0, 20], [8], [12], [3])
 
 
-def test_the_stdin_fallback_refuses_something_that_looks_like_a_time(mod):
+def test_the_stdin_fallback_re_prompts_after_something_that_looks_like_a_time(mod):
+    """Re-prompt, not abort. segment_walking runs from gait_analysis.__init__,
+    so raising would tear down the whole trial over one mistyped digit and
+    discard every event already entered."""
     picker = mod.build_manual_picker(FakeAnalysis(n_frames=40))
-    answers = iter(["0.2833"])
+    answers = iter(["0.2833", "1", "3", "2", "4"])
+    said = []
 
-    with pytest.raises(ValueError, match="does not accept times"):
-        mod.prompt_for_event_rows(picker, input_fn=lambda prompt: next(answers),
-                                  output_fn=lambda *args: None)
+    mod.prompt_for_event_rows(picker, input_fn=lambda prompt: next(answers),
+                              output_fn=said.append)
+
+    assert picker.as_segment_walking_events() == ([1], [2], [3], [4])
+    assert any("does not accept times" in line and "try again" in line
+               for line in said)
+
+
+def test_a_bad_token_does_not_half_record_the_line(mod):
+    """The whole line is parsed before anything is marked, so a bad token at
+    the end cannot leave the earlier events on the picker and then re-prompt
+    for them again."""
+    picker = mod.build_manual_picker(FakeAnalysis(n_frames=40))
+    answers = iter(["1, 2, oops", "1, 2", "", "", ""])
+
+    mod.prompt_for_event_rows(picker, input_fn=lambda prompt: next(answers),
+                              output_fn=lambda *args: None)
+
+    assert picker.rows("rHS") == [1, 2]
 
 
 def test_the_stdin_fallback_accepts_a_blank_line_as_no_events(mod):
@@ -375,13 +473,43 @@ def test_manual_steps_falls_back_to_stdin_when_no_ui_is_wired_up(mod, monkeypatc
     assert (rHS, lHS, rTO, lTO) == ([1], [2], [3], [4])
 
 
-def test_a_frame_outside_the_trial_is_refused_by_the_fallback(mod):
+def test_a_frame_outside_the_trial_is_re_prompted_not_fatal(mod):
     picker = mod.build_manual_picker(FakeAnalysis(n_frames=40))
-    answers = iter(["40"])
+    answers = iter(["40", "39", "", "", ""])
+    said = []
 
-    with pytest.raises(IndexError):
-        mod.prompt_for_event_rows(picker, input_fn=lambda prompt: next(answers),
-                                  output_fn=lambda *args: None)
+    mod.prompt_for_event_rows(picker, input_fn=lambda prompt: next(answers),
+                              output_fn=said.append)
+
+    assert picker.rows("rHS") == [39]
+    assert any("outside this trial" in line for line in said)
+
+
+def test_the_fallback_shows_a_frame_to_time_reference(mod):
+    """Nothing in the pipeline ever displays a frame index -- the diagnostic
+    plots are drawn only under `visualize`, which __init__ does not pass -- so
+    without this the prompt asks for numbers the operator cannot obtain."""
+    picker = mod.build_manual_picker(FakeAnalysis(n_frames=40))
+    answers = iter(["", "", "", ""])
+    said = []
+
+    mod.prompt_for_event_rows(picker, input_fn=lambda prompt: next(answers),
+                              output_fn=said.append)
+
+    listing = [line for line in said if "frame" in line and "t =" in line]
+    assert listing, "no frame-to-time reference was shown"
+    assert "frame      0" in listing[0]
+
+
+def test_the_frame_reference_stays_short_on_a_long_trial(mod):
+    """A real trial runs to thousands of frames; the listing is sampled, and
+    it always ends on the last frame so the range is unambiguous."""
+    motion = mod.MarkerTimeline(_trial_times(2600), name="long")
+
+    lines = mod.frame_time_reference(motion)
+
+    assert len(lines) <= 21
+    assert "2599" in lines[-1]
 
 
 # -- the timeline the picker sits on ---------------------------------------

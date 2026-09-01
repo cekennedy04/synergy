@@ -224,25 +224,70 @@ def prompt_for_event_rows(picker, input_fn=None, output_fn=None):
         'Automatic gait-event detection failed. Enter events as FRAME INDICES '
         '(whole numbers, 0-' + str(last) + '), comma separated. Leave a line '
         'blank to enter none. These are frame numbers, not times.')
+    # Nothing in the pipeline ever shows an operator a frame index -- the
+    # diagnostic plots are drawn only under `visualize`, which __init__ does
+    # not pass -- so without this listing the prompt asks for numbers there is
+    # no way to obtain. Sampled rather than dumped: a real trial runs to
+    # thousands of frames.
+    for line in frame_time_reference(picker.motion):
+        output_fn(line)
     for event_type, label in (('rHS', 'Right heel strikes'),
                               ('rTO', 'Right toe offs'),
                               ('lHS', 'Left heel strikes'),
                               ('lTO', 'Left toe offs')):
-        raw = input_fn(label + ' [' + event_type + '] as frame indices: ')
-        for token in raw.split(','):
-            token = token.strip()
-            if not token:
-                continue
+        while True:
+            raw = input_fn(label + ' [' + event_type + '] as frame indices: ')
             try:
-                row = int(token)
-            except ValueError:
-                raise ValueError(
-                    'Could not read ' + repr(token) + ' as a frame index for ' +
-                    event_type + '. Frame indices are whole numbers between 0 '
-                    'and ' + str(last) + '; this prompt does not accept times.'
-                ) from None
+                rows = parse_event_rows(raw, event_type, last)
+            except ValueError as exc:
+                # Re-prompt rather than abort. segment_walking runs from
+                # gait_analysis.__init__, so raising here would tear down the
+                # whole trial and discard every event already entered because
+                # of one mistyped digit on the fourth prompt.
+                output_fn(str(exc) + ' Please try again.')
+                continue
+            break
+        # Parsed completely before marking, so a bad token late in a line
+        # cannot leave the event half-recorded.
+        for row in rows:
             picker.mark(event_type, row)
     return picker
+
+
+def frame_time_reference(motion, max_lines=20):
+    """A sampled frame -> time listing, so the operator can map what they see
+    on an external plot of the trial to the frame numbers this prompt wants."""
+    n_rows = motion.n_rows
+    step = max(1, -(-n_rows // max_lines))
+    rows = list(range(0, n_rows, step))
+    if rows[-1] != n_rows - 1:
+        rows.append(n_rows - 1)
+    return ['  frame {0:>6}   t = {1:.3f}s'.format(row, motion.time_at(row))
+            for row in rows]
+
+
+def parse_event_rows(raw, event_type, last):
+    """Frame indices from one typed line. Validates without marking, so the
+    caller can reject the whole line rather than record part of it."""
+    rows = []
+    for token in raw.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            row = int(token)
+        except ValueError:
+            raise ValueError(
+                'Could not read ' + repr(token) + ' as a frame index for ' +
+                event_type + '. Frame indices are whole numbers between 0 '
+                'and ' + str(last) + '; this prompt does not accept times.'
+            ) from None
+        if not 0 <= row <= last:
+            raise ValueError(
+                'Frame ' + str(row) + ' is outside this trial, which has '
+                'frames 0-' + str(last) + '.')
+        rows.append(row)
+    return rows
 
 
 def collect_manual_events(analysis):
@@ -262,20 +307,36 @@ def collect_manual_events(analysis):
     returned = provider(picker)
     if returned is None:
         return picker
-    if not hasattr(returned, 'as_segment_walking_events'):
+    motion = getattr(returned, 'motion', None)
+    if not hasattr(returned, 'as_segment_walking_events') or motion is None:
         raise TypeError(
             'manual_event_provider returned ' + type(returned).__name__ +
             '; it must return None (having marked events on the picker it was '
-            'given) or a picker exposing as_segment_walking_events().')
+            'given) or a picker exposing as_segment_walking_events() over a '
+            '.motion.')
     expected = len(analysis.markerDict['time'])
-    if returned.motion.n_rows != expected:
+    if motion.n_rows != expected:
         # Events are frame indices, so a picker built over a different frame
         # count is pointing at frames of some other trial.
         raise ValueError(
             'manual_event_provider returned events picked over ' +
-            str(returned.motion.n_rows) + ' frames, but this trial has ' +
+            str(motion.n_rows) + ' frames, but this trial has ' +
             str(expected) + '. Gait events are frame indices and do not '
             'transfer between trials.')
+    # Frame count is not identity. Fixed-duration walk captures from one
+    # participant routinely share a frame count, so a saved set restored for
+    # the wrong trial would clear the check above and land events on frames
+    # nobody chose. The name is what actually distinguishes them; it is only
+    # enforced when both sides have one, since a provider may legitimately
+    # build a picker over an unnamed motion.
+    picked_name = getattr(motion, 'name', '') or ''
+    this_name = getattr(analysis, 'trial_name', '') or ''
+    if picked_name and this_name and picked_name != this_name:
+        raise ValueError(
+            'manual_event_provider returned events picked on trial ' +
+            repr(picked_name) + ', but this is ' + repr(this_name) + '. They '
+            'have the same frame count, which is why the name is what has to '
+            'be checked.')
     return returned
 
 
@@ -1414,7 +1475,24 @@ class gait_analysis(kinematics):
         
         if manual_flag==1:
             rHS,lHS,rTO,lTO = manual_steps(self)
-            
+
+            # A picker handed back with nothing on it is the operator
+            # declining, and declining must not cost them rung two. Before a
+            # UI existed, the only route here was answering 'Y' to the stdin
+            # prompt, and answering 'N' fell through to auto-trim; wiring a
+            # provider made the human unconditionally pre-empt auto-trim, so
+            # cancelling the picker hard-failed a trial the retry loop might
+            # have rescued. The fallback chain is prominence -> auto-trim ->
+            # human, and a declined pick puts us back on rung two.
+            if not any(len(events) for events in (rHS, lHS, rTO, lTO)):
+                print('No gait events were picked; falling back to auto-trim.')
+                # Not cached as an answer: dflag=1 would make the decline
+                # stick for the other leg, which never got asked.
+                self.dflag = 0
+                self.rhs, self.lhs, self.rto, self.lto = [], [], [], []
+                manual_flag = 0
+                trimflag = 1
+
         if trimflag==1:
             self.usedAutoTrim = True
             j=1
@@ -1554,6 +1632,17 @@ class gait_analysis(kinematics):
         # surveyed. Those trials need the manual event picker, and the survey
         # can only route them there if the failure says what it is.
         if len(hsIps) == 0:
+            # Two very different causes reach here, and telling an operator who
+            # just hand-picked events to "supply the events manually" sends
+            # them back to the thing they already did. Manual entry lands here
+            # when events were picked for the other leg only.
+            if getattr(self, 'manualEventPicker', None) is not None:
+                raise Exception(
+                    "Manual entry supplied no heel-strike events for the '" + leg +
+                    "' leg, so no gait cycle can be segmented for it. Picked so far: " +
+                    str(self.manualEventPicker.counts()) + ". This leg needs at least "
+                    'two heel strikes.'
+                )
             raise Exception(
                 "No heel-strike events were detected for the '" + leg + "' leg, so "
                 'no gait cycle can be segmented. This is a detection failure rather '
