@@ -565,6 +565,55 @@ def test_a_click_outside_any_panel_is_ignored(live_window):
     assert model.picker.counts() == {"rHS": 0, "rTO": 0, "lHS": 0, "lTO": 0}
 
 
+def test_the_window_shows_the_picked_events_list(ui, model, headless_pyplot):
+    """Phase 2.2 asks for a table of picked events in time order. The model
+    could produce one from the start; the window did not display it, so it was
+    dead code everywhere but the tests."""
+    model.select("rHS")
+    model.pick_at(3.0)
+    model.select("lTO")
+    model.pick_at(9.0)
+
+    ui.show_picker_window(model)
+
+    text = ui._picked_panel_text(model)
+    assert "picked events (2)" in text
+    assert "rHS" in text and "lTO" in text
+    assert "frame      3" in text
+
+
+def test_the_picked_list_says_so_when_nothing_is_picked(ui, model):
+    assert "none yet" in ui._picked_panel_text(model)
+
+
+def test_the_picked_list_truncates_rather_than_overflowing(ui, model):
+    """A long trial can carry more events than the column has room for."""
+    for frame in range(0, 30):
+        model.pick_at(float(frame))
+
+    text = ui._picked_panel_text(model, max_rows=5)
+
+    assert "picked events (30)" in text
+    assert "... 25 earlier" in text
+    assert len(text.splitlines()) == 7      # heading + notice + 5 rows
+
+
+def test_the_status_line_is_wrapped_not_clipped(ui, model, headless_pyplot):
+    """An out-of-order verdict is a full sentence naming two events and what
+    was expected between them. On one line it ran off the right edge of the
+    figure and the operator lost the half saying what to do about it."""
+    model.pick_at(0.0)
+    model.select("rTO")
+    model.pick_at(3.0)
+
+    window = ui.show_picker_window(model)
+
+    status = [artist for artist in window.figure.texts
+              if "check" in artist.get_text()]
+    assert status, "no status text found on the figure"
+    assert "\n" in status[0].get_text(), "the verdict was not wrapped"
+
+
 def test_the_window_refuses_a_trial_with_nothing_to_plot(gait_module, ui,
                                                          picker_module,
                                                          headless_pyplot):

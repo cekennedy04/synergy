@@ -43,7 +43,33 @@ decision -- which frame a click means, what the summary says, what the verdict
 is -- and touches no matplotlib. That is the only reason any of this is
 testable on a machine with no display, which is also every machine that runs
 the test suite here.
+
+**How to wire this in, and what is NOT wired today.** Nothing in this repo
+passes `manual_event_provider` yet, so as things stand the picker never opens
+in production. What each caller does today:
+
+  clinician_gui.py:449,454   allow_manual_entry=False   -- batch, correct as is
+  rerun_survey.py:112        allow_manual_entry=False   -- a survey, correct
+  Examples/gaitAnalysis-UCM.py:409,601
+                             allow_manual_entry=True, no provider
+                             -- reaches the STDIN fallback, not this window
+
+So manual entry is reachable in production, but only as the frame-index
+prompt. To get the window instead, one keyword at the construction site:
+
+    from gait_event_picker_ui import make_manual_event_provider
+    gait_analysis(..., allow_manual_entry=True,
+                  manual_event_provider=make_manual_event_provider())
+
+Deliberately not done here: clinician_gui.py and Examples/gaitAnalysis-UCM.py
+are outside this work's scope, and whether a clinician-facing GUI should stop
+and ask for hand-picked events -- rather than reporting the trial as
+unsegmentable -- is a product decision, not a wiring one. Note also that
+clinician_gui runs trials in a batch loop, where blocking on a window per
+failed trial is exactly what allow_manual_entry=False exists to prevent.
 """
+import textwrap
+
 from gait_event_picker import EVENT_TYPES, GaitEventPicker
 
 # Drawn per leg: which signals belong to which axis, and which event types are
@@ -234,6 +260,24 @@ def make_manual_event_provider(show=None, model_factory=EventPickerModel):
     return provider
 
 
+def _picked_panel_text(model, max_rows=18):
+    """The picked set for the side panel, newest kept when it overflows.
+
+    Carries the frame AND the time for every pick, which is also how an
+    operator reconciles the ordering verdict with the plot: the verdict names
+    events in seconds (it comes from the shared picker, which reports that
+    way) while the axis is in frames, and this list is where the two meet.
+    """
+    lines = model.timeline_lines()
+    if not lines:
+        return 'picked events\n(none yet)'
+    heading = 'picked events (%d)' % len(lines)
+    if len(lines) > max_rows:
+        return '\n'.join([heading, '... %d earlier' % (len(lines) - max_rows)]
+                         + lines[-max_rows:])
+    return '\n'.join([heading] + lines)
+
+
 def _backend_name():
     try:
         import matplotlib
@@ -285,7 +329,9 @@ def show_picker_window(model):  # pragma: no cover - needs a display
         len(LEG_PANELS), 1, sharex=True, figsize=(13, 7.5))
     figure.canvas.manager.set_window_title(
         f"Pick gait events - {motion.name or 'trial'}")
-    figure.subplots_adjust(left=0.22, right=0.98, top=0.92, bottom=0.10)
+    # top leaves room for a three-line wrapped verdict above the first panel's
+    # title. At 0.92 a two-line verdict sat on top of "Right leg".
+    figure.subplots_adjust(left=0.22, right=0.98, top=0.88, bottom=0.10)
 
     marker_artists = {}
     for axis, panel in zip(axes, LEG_PANELS):
@@ -300,18 +346,33 @@ def show_picker_window(model):  # pragma: no cover - needs a display
                 [], [], style['marker'], color=style['color'], markersize=9,
                 linestyle='none', label=style['label'])[0]
         axis.set_title(panel['title'], loc='left', fontsize=10)
-        axis.legend(loc='upper right', fontsize=8)
+        # 'best', not 'upper right': the walking is at whichever end of the
+        # trial the subject started moving, and a fixed corner put the legend
+        # squarely on top of the peaks an operator is trying to click.
+        axis.legend(loc='best', fontsize=8, framealpha=0.85)
         axis.grid(alpha=0.25)
     axes[-1].set_xlabel('frame index (not time)')
 
-    status = figure.text(0.22, 0.965, '', fontsize=9, family='monospace')
+    status = figure.text(0.22, 0.975, '', fontsize=9, family='monospace',
+                         va='top')
     readout = figure.text(0.78, 0.02, '', fontsize=9, family='monospace')
+    # The picked set, in time order, in the empty column under the buttons.
+    # Phase 2.2 asks for this explicitly, and without it the only record of
+    # what has been picked is the markers themselves -- which is no help when
+    # two land within a few frames of each other.
+    picked_list = figure.text(0.02, 0.30, '', fontsize=8, family='monospace',
+                              va='top')
 
     def redraw():
         for event_type, artist in marker_artists.items():
             picked, values = model.events_for(event_type)
             artist.set_data(picked, values)
-        status.set_text(model.status_line())
+        # Wrapped, because the ordering verdict is a full sentence naming two
+        # events and what was expected between them -- on one line it ran off
+        # the right edge of the figure and the operator lost the half that
+        # says what to do about it.
+        status.set_text('\n'.join(textwrap.wrap(model.status_line(), 118)))
+        picked_list.set_text(_picked_panel_text(model))
         figure.canvas.draw_idle()
 
     radio = RadioButtons(figure.add_axes([0.02, 0.62, 0.16, 0.25]),
