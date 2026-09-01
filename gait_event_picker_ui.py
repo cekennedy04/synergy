@@ -20,10 +20,16 @@ matplotlib's own Tk backend is fine here because Simbody is not in the process.
 human and the automatic rung are answering different questions.
 
 **The x axis is the frame index.** Not time. A click maps to a frame by
-rounding, with no time conversion anywhere on the path, because `.mot`/`.trc`
-sample times here are not uniform (0.016667, 0.017, 0.016, 0.017) and a
-time->frame conversion does not land on the frame the operator clicked. Time is
-shown in the readout for orientation and is never an input.
+rounding, with no time conversion anywhere on the path: the picker stores
+frames, `segment_walking` consumes frames, so introducing seconds in between
+would add a conversion that can only lose. Time is shown in the readout for
+orientation and is never an input.
+
+Note this is NOT justified by irregular sampling, which earlier drafts of this
+docstring and of `gait_event_picker.py`'s claimed. Measured 2026-09-01: all 77
+.trc files in Data/ have a single distinct dt of 0.016667, as do the .mot
+files. The frames-only path is right because it removes a conversion, not
+because the conversion would be wrong here.
 
 **Ordering is reported, never enforced.** The verdict line runs the picker's
 own `ordering_report`, which mirrors `detect_correct_order`, so the operator

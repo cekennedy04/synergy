@@ -16,8 +16,11 @@ are to get wrong:
 2. **Batch runs cannot block.** clinician_gui.run_batch and
    process_participants.py pass allow_manual_entry=False and run unattended.
    A prompt reached from there is a hung job nobody is watching.
-3. **Frames, not times.** The stdin fallback accepts row indices, because a
-   time typed back in does not land on the frame the operator saw.
+3. **Frames, not times.** The stdin fallback accepts row indices. A typed time
+   is never an exact sample, so the old argmin always snapped silently; frames
+   remove the conversion rather than improve it. (Not because these files are
+   irregularly sampled -- measured 2026-09-01, all 77 .trc files in Data/ have
+   a single dt of 0.016667.)
 
 The real gait_analysis needs OpenSim, which this environment does not have, so
 utilsKinematics is stubbed for the module load. Nothing under test touches the
@@ -84,9 +87,10 @@ def source():
     return SOURCE_PATH.read_text(encoding="utf-8", errors="ignore")
 
 
-# The real dt from a .mot this pipeline produced: 0.016667, 0.017, 0.016,
-# 0.017. Non-uniform on purpose -- it is the whole reason events are stored as
-# frame indices rather than times.
+# A deliberately irregular sample grid. NOT a description of this repo's data:
+# measured 2026-09-01, all 77 .trc files in Data/ have a single dt of 0.016667.
+# It is irregular here so that nothing under test can quietly start assuming
+# start + row*dt and still pass.
 _INTERVALS = [0.016667, 0.017, 0.016, 0.017]
 
 
@@ -413,8 +417,9 @@ def test_a_correct_cycle_is_reported_without_a_warning(mod, capsys):
 
 def test_the_stdin_fallback_takes_frame_indices_verbatim(mod):
     """No snapping, no nearest-sample search: what is typed is the frame that
-    is stored. The old prompt took times and ran argmin over markerDict, which
-    on this trial's non-uniform dt could land a frame off."""
+    is stored. The old prompt took times and ran argmin over markerDict, so it
+    always landed on whichever sample was nearest whatever was typed, without
+    reporting which one that was."""
     picker = mod.build_manual_picker(FakeAnalysis(n_frames=40))
     answers = iter(["0, 20", "12", "8", "3"])
 
@@ -516,8 +521,9 @@ def test_the_frame_reference_stays_short_on_a_long_trial(mod):
 
 
 def test_the_timeline_reads_the_trials_own_sample_times(mod):
-    """Never reconstructed as start + row*dt: this trial's dt alternates
-    0.016667, 0.017, 0.016, 0.017, so the arithmetic drifts against the file."""
+    """Read from the trial, never reconstructed as start + row*dt. The fixture
+    grid is irregular so that reconstructing would visibly disagree -- real
+    trials here are uniform, which would hide the difference."""
     times = _trial_times(40)
     timeline = mod.MarkerTimeline(times)
 

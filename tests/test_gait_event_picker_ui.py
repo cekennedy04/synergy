@@ -7,8 +7,10 @@ split is the only reason this is testable on the machines that run this suite.
 What matters here, in order:
 
 1. **Clicks map to frames, never through time.** The x axis IS the frame
-   index. A time round-trip would not land on the frame the operator clicked,
-   because sample times here are not uniform.
+   index. The picker stores frames and segment_walking consumes frames, so
+   putting seconds in between would add a conversion that can only lose.
+   (Not because these files are irregularly sampled: measured 2026-09-01, all
+   77 .trc files in Data/ have a single dt of 0.016667.)
 2. **Cancel actually empties the picker.** segment_walking reads an empty set
    as a decline and falls back to the auto-trim rung; a cancel that merely
    closed the window would hand back whatever was picked so far and skip

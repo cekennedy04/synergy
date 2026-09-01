@@ -143,12 +143,22 @@ MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION = 2.0
 # event TIMES, which were then snapped to the nearest sample with
 # `(np.abs(marktimf - t)).argmin()`. Two things were wrong with that:
 #
-#   1. Times do not round-trip. A real .mot/.trc from this pipeline samples at
-#      0.016667, 0.017, 0.016, 0.017 -- so a time read off a plot and typed
-#      back does not land on the frame the operator was looking at, and the
-#      argmin silently picks a neighbour. segment_walking works in indices
-#      into markerDict['time'] anyway, so the index is both the natural
-#      storage and the natural output.
+#   1. A typed time is never an exact sample, so the argmin ALWAYS snapped,
+#      silently, with nothing reporting which frame it landed on. An operator
+#      reading a heel strike off a plot types 0.28, not 0.283339.
+#      segment_walking works in indices into markerDict['time'] anyway, so the
+#      index is both the natural storage and the natural output, and storing
+#      it means no conversion happens at all rather than one that is merely
+#      usually right.
+#
+#      NOT the reason, though earlier drafts of this comment said so: that
+#      these files are irregularly sampled. Measured 2026-09-01 across every
+#      trial in Data/ -- 77 of 77 .trc files have a single distinct dt of
+#      0.016667, and the .mot files sampled the same way. The "0.016667,
+#      0.017, 0.016, 0.017" figure repeated in gait_event_picker.py's and
+#      motion_scrubber.py's docstrings does not describe any data in this
+#      repo, and a time round-trip would in fact land on the right frame here.
+#      Indices are still correct; the justification was not.
 #   2. It hard-wired stdin as the only possible UI.
 #
 # gait_event_picker.GaitEventPicker is now the data layer: it stores row
@@ -194,8 +204,10 @@ class MarkerTimeline:
         return len(self.times)
 
     def time_at(self, row):
-        """The trial's own recorded time for a row. Never reconstructed as
-        start + row*dt -- see the sample-rate note above."""
+        """The trial's own recorded time for a row, read from the file rather
+        than reconstructed as start + row*dt. Every trial measured here is in
+        fact uniformly sampled, so the two agree today; reading it costs
+        nothing and does not have to be revisited if one ever is not."""
         if not 0 <= row < self.n_rows:
             raise IndexError(
                 'row ' + str(row) + ' out of range for a trial with ' +
