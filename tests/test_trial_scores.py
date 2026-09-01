@@ -191,3 +191,106 @@ def test_the_feature_set_is_named_in_the_row(mod):
          "left": None, "feature_set": "reduced4"}, None)
 
     assert any("reduced4" in name for name in rows)
+
+
+# -- the headline block and its figures ------------------------------------
+
+
+@pytest.fixture(scope="module")
+def export():
+    import matplotlib
+    matplotlib.use("Agg")
+    return _load("report_export_for_scores_tests", "report_export.py")
+
+
+def _scores():
+    return ({"right": {"mean": 82.9, "sd": 0.9, "n_strides": 4,
+                       "per_stride": [82.0, 83.1, 83.4, 83.1]},
+             "left": {"mean": 88.8, "sd": 1.3, "n_strides": 5,
+                      "per_stride": [87.5, 88.9, 89.4, 89.0, 89.2]},
+             "feature_set": "reduced6"},
+            {"mean_delta_v": 0.296, "task_variable": "pelvis-relative centre of mass",
+             "phases_with_synergy": 83, "n_phases": 101, "n_dof": 18,
+             "dim_ucm": 15, "dim_ort": 3,
+             "per_phase": {"delta_v": [0.1, -0.2, 0.4], "v_ucm": [1.0, 0.9, 1.2],
+                           "v_ort": [0.9, 1.1, 0.8]}})
+
+
+def test_the_summary_names_the_normative_meaning_of_the_number(mod):
+    """GDI is only interpretable if the reader knows 100 is the control mean
+    and 10 points is one SD. A bare 82.9 says nothing on its own."""
+    gdi, synergy = _scores()
+
+    summary = mod.summary_for_report(gdi, synergy)
+
+    assert "100" in summary["gdi"]["basis"]
+    assert "standard deviation" in summary["gdi"]["basis"]
+
+
+def test_the_summary_shows_the_stride_spread_not_just_the_mean(mod):
+    gdi, _ = _scores()
+
+    summary = mod.summary_for_report(gdi, None)
+
+    assert "SD" in summary["gdi"]["right_display"]
+    assert "4 strides" in summary["gdi"]["right_display"]
+
+
+def test_the_summary_carries_the_raw_detail_the_figures_need(mod):
+    """The display strings cannot be plotted; the figures need per-stride and
+    per-phase values."""
+    gdi, synergy = _scores()
+
+    summary = mod.summary_for_report(gdi, synergy)
+
+    assert summary["gdi_detail"]["right"]["per_stride"]
+    assert summary["synergy_detail"]["per_phase"]["delta_v"]
+
+
+def test_the_summary_page_is_skipped_when_there_is_nothing_to_show(export):
+    """An empty headline page is worse than none -- it reads as a measurement
+    that failed."""
+    assert export._build_summary_page({}) is None
+    assert export._build_summary_page(None) is None
+
+
+def test_the_gdi_figure_draws_the_normative_band_and_every_stride(export):
+    gdi, _ = _scores()
+
+    figure = export._build_gdi_figure(gdi)
+
+    axis = figure.axes[0]
+    # 100 +/- 1 SD and the 1-2 SD band, plus the control-mean line.
+    assert len(axis.patches) >= 2
+    labels = [t.get_text() for t in axis.get_xticklabels()]
+    assert labels == ["Right", "Left"]
+
+
+def test_the_gdi_figure_is_skipped_without_scores(export):
+    assert export._build_gdi_figure(None) is None
+    assert export._build_gdi_figure({"right": None, "left": None}) is None
+
+
+def test_the_synergy_figure_plots_the_cycle_not_just_the_mean(export):
+    """The cycle mean says whether a synergy is present on average; the curve
+    says where. A trial can average positive while being negative through
+    single support."""
+    _, synergy = _scores()
+
+    figure = export._build_synergy_figure(synergy)
+
+    assert len(figure.axes) == 2                     # dV, and the decomposition
+    assert figure.axes[1].get_xlabel() == "Gait cycle (%)"
+
+
+def test_the_synergy_figure_names_its_task_variable_in_the_title(export):
+    _, synergy = _scores()
+
+    title = export._build_synergy_figure(synergy).axes[0].get_title()
+
+    assert "pelvis-relative centre of mass" in title
+
+
+def test_the_synergy_figure_is_skipped_without_per_phase_data(export):
+    assert export._build_synergy_figure({"mean_delta_v": 0.3}) is None
+    assert export._build_synergy_figure(None) is None

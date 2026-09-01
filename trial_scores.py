@@ -76,6 +76,10 @@ def gdi_for_curves(curve_matrix_paths, reference_dir, feature_set=None,
             "mean": float(np.mean(per_stride)),
             "sd": float(np.std(per_stride)) if per_stride.size > 1 else None,
             "n_strides": int(per_stride.size),
+            # Kept so the report can show the spread: a mean over four
+            # scattered strides is weaker evidence than one over four tight
+            # ones, and the mean alone hides which you have.
+            "per_stride": [float(v) for v in per_stride],
         }
     scores["feature_set"] = feature_set.name
     return scores
@@ -136,6 +140,14 @@ def synergy_for_trial(curve_matrix_path, model_path, coordinates=UCM_COORDINATES
     summary = ucm.summarise_cycle(phases)
     summary["task_variable"] = label
     summary["n_dof"] = len(coordinates)
+    # Kept so the cycle can be plotted. summarise_cycle collapses these to
+    # means, and the phase-by-phase shape is the point of a UCM analysis --
+    # which parts of the cycle the joints co-vary to stabilise the task.
+    summary["per_phase"] = {
+        "delta_v": [float(p["delta_v"]) for p in phases],
+        "v_ucm": [float(p["v_ucm"]) for p in phases],
+        "v_ort": [float(p["v_ort"]) for p in phases],
+    }
     return summary
 
 
@@ -214,3 +226,56 @@ def format_for_report(gdi_scores=None, synergy=None):
             "symmetry": _blank(),
         }
     return rows
+
+
+# GDI is defined so the control mean is 100 and each 10 points is one SD.
+GDI_NORMATIVE_MEAN = 100.0
+GDI_NORMATIVE_SD = 10.0
+
+
+def summary_for_report(gdi_scores=None, synergy=None):
+    """The headline block for the report's second page.
+
+    Display strings are built here rather than in report_export, so the
+    rendering stays a layout concern and the "what counts as available"
+    decision stays with the code that computed the numbers.
+    """
+    summary = {}
+    if gdi_scores:
+        def display(side):
+            entry = gdi_scores.get(side)
+            if not entry:
+                return "not available"
+            text = f"{entry['mean']:.1f}"
+            if entry.get("sd") is not None:
+                text += f"  (SD {entry['sd']:.1f} over {entry['n_strides']} strides)"
+            else:
+                text += f"  ({entry['n_strides']} stride)"
+            return text
+
+        summary["gdi"] = {
+            "right_display": display("right"),
+            "left_display": display("left"),
+            "basis": (f"{gdi_scores.get('feature_set', 'reduced6')} feature set. "
+                      f"{GDI_NORMATIVE_MEAN:.0f} is the control mean; each "
+                      f"{GDI_NORMATIVE_SD:.0f} points is one standard deviation below it."),
+        }
+        # The figures need the raw per-stride / per-phase values, not the
+        # display strings above.
+        summary["gdi_detail"] = gdi_scores
+    if synergy and synergy.get("mean_delta_v") is not None:
+        summary["synergy_detail"] = synergy
+        summary["synergy"] = {
+            "value_display": (f"{synergy['mean_delta_v']:.3f}   "
+                              f"(synergy in {synergy['phases_with_synergy']} of "
+                              f"{synergy['n_phases']} phases)"),
+            "notes": [
+                f"Task variable: {synergy['task_variable']}.",
+                f"{synergy['n_dof']} degrees of freedom; "
+                f"{synergy['dim_ucm']} uncontrolled, {synergy['dim_ort']} orthogonal.",
+                "dV > 0 means the joints co-vary to stabilise the task variable.",
+                "The ranking between methodologies reverses with the task variable,",
+                "so this figure is only interpretable alongside the line above.",
+            ],
+        }
+    return summary

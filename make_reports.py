@@ -106,6 +106,7 @@ def add_scores(shaped, result, session_dir, reference_dir, scores=None):
         synergy = None
 
     metrics.update(scores.format_for_report(gdi_scores, synergy))
+    shaped["summary_scores"] = scores.summary_for_report(gdi_scores, synergy)
     return shaped
 
 

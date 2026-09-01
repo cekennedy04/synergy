@@ -108,6 +108,156 @@ def _build_metadata_page(metadata):
     return figure
 
 
+def _build_summary_page(summary):
+    """Headline scores page (added 2026-09-01), rendered second, straight
+    after the title page.
+
+    These were previously only rows near the bottom of the metrics table on
+    page 8, which is not where a reader looks for the two numbers the analysis
+    exists to produce. Identity stays on page 1 -- a score before you know
+    whose trial it belongs to is worse than a score one page later.
+
+    Returns None when there is nothing to show, so the page is skipped rather
+    than printed empty.
+    """
+    summary = summary or {}
+    gdi = summary.get("gdi") or {}
+    synergy = summary.get("synergy") or {}
+    if not gdi and not synergy:
+        return None
+
+    figure, axis = _new_text_page()
+    axis.text(0.05, 0.95, "Summary scores", fontsize=18, fontweight="bold",
+              va="top", ha="left", transform=axis.transAxes)
+
+    y = 0.82
+    if gdi:
+        axis.text(0.05, y, "Gait Deviation Index", fontsize=13,
+                  fontweight="bold", va="top", transform=axis.transAxes)
+        y -= 0.06
+        # Large, because this is the number the page exists for.
+        axis.text(0.08, y, f"Right   {gdi.get('right_display', 'not available')}",
+                  fontsize=22, va="top", family="monospace",
+                  transform=axis.transAxes)
+        y -= 0.075
+        axis.text(0.08, y, f"Left    {gdi.get('left_display', 'not available')}",
+                  fontsize=22, va="top", family="monospace",
+                  transform=axis.transAxes)
+        y -= 0.055
+        axis.text(0.08, y, gdi.get("basis", ""), fontsize=9, style="italic",
+                  va="top", transform=axis.transAxes)
+        y -= 0.09
+
+    if synergy:
+        axis.text(0.05, y, "Synergy index", fontsize=13, fontweight="bold",
+                  va="top", transform=axis.transAxes)
+        y -= 0.06
+        axis.text(0.08, y, f"dV      {synergy.get('value_display', 'not available')}",
+                  fontsize=22, va="top", family="monospace",
+                  transform=axis.transAxes)
+        y -= 0.055
+        # The task variable is not a footnote: the ranking between
+        # methodologies reverses with it, so a dV without it is not
+        # interpretable.
+        for line in synergy.get("notes", []):
+            axis.text(0.08, y, line, fontsize=9, style="italic", va="top",
+                      wrap=True, transform=axis.transAxes)
+            y -= 0.035
+    return figure
+
+
+def _build_gdi_figure(gdi_scores):
+    """GDI per side against the normative band, with each stride shown.
+
+    The band is the point: GDI is defined so 100 is the control mean and every
+    10 points is one standard deviation below it, so a bare number means
+    nothing to a reader who does not already know that. Individual strides are
+    plotted because a mean over four scattered strides is much weaker evidence
+    than one over four tight ones, and the mean alone hides which you have.
+    """
+    if not gdi_scores:
+        return None
+    sides = [(name, gdi_scores.get(name)) for name in ("right", "left")]
+    if not any(entry for _name, entry in sides):
+        return None
+
+    figure = Figure(figsize=PAGE_SIZE, dpi=100)
+    axis = figure.add_subplot(111)
+
+    axis.axhspan(90, 110, color="#cfe6cf", alpha=0.7, zorder=0,
+                 label="within 1 SD of control mean")
+    axis.axhspan(80, 90, color="#f2e3c2", alpha=0.7, zorder=0,
+                 label="1-2 SD below")
+    axis.axhline(100, color="#4a7c4a", linewidth=1.2, zorder=1)
+
+    for position, (name, entry) in enumerate(sides):
+        if not entry:
+            continue
+        strides = entry.get("per_stride") or []
+        if strides:
+            axis.plot([position] * len(strides), strides, "o", color="#666666",
+                      markersize=5, alpha=0.65, zorder=2,
+                      label="individual strides" if position == 0 else None)
+        axis.plot([position], [entry["mean"]], "D", color="#1f6fb4",
+                  markersize=11, zorder=3,
+                  label="trial mean" if position == 0 else None)
+        axis.annotate(f"{entry['mean']:.1f}", (position, entry["mean"]),
+                      textcoords="offset points", xytext=(16, -4), fontsize=12,
+                      fontweight="bold", color="#1f6fb4")
+
+    axis.set_xticks([0, 1])
+    axis.set_xticklabels(["Right", "Left"], fontsize=12)
+    axis.set_xlim(-0.5, 1.5)
+    axis.set_ylabel("Gait Deviation Index", fontsize=11)
+    axis.set_title("GDI against the normative range", fontsize=14, pad=14)
+    axis.grid(axis="y", alpha=0.25)
+    axis.legend(loc="lower right", fontsize=8, framealpha=0.9)
+    figure.tight_layout()
+    return figure
+
+
+def _build_synergy_figure(synergy):
+    """Variance decomposition across the gait cycle.
+
+    The cycle-mean dV on the summary page says whether a synergy is present on
+    average; this says *where*. A trial can average positive while being
+    negative through single support, and only the per-phase curve shows that.
+    """
+    per_phase = (synergy or {}).get("per_phase") or {}
+    delta_v = per_phase.get("delta_v") or []
+    if not delta_v:
+        return None
+
+    x = [i * 100.0 / (len(delta_v) - 1) for i in range(len(delta_v))]         if len(delta_v) > 1 else [0.0]
+
+    figure = Figure(figsize=PAGE_SIZE, dpi=100)
+    top = figure.add_subplot(211)
+    top.axhline(0, color="#888888", linewidth=1)
+    top.plot(x, delta_v, color="#1f6fb4", linewidth=1.8)
+    top.fill_between(x, 0, delta_v, where=[v > 0 for v in delta_v],
+                     color="#1f6fb4", alpha=0.20, interpolate=True)
+    top.fill_between(x, 0, delta_v, where=[v <= 0 for v in delta_v],
+                     color="#d95f02", alpha=0.20, interpolate=True)
+    top.set_ylabel("dV", fontsize=10)
+    top.set_title(f"Synergy across the gait cycle -- {synergy.get('task_variable', '')}",
+                  fontsize=13, pad=12)
+    top.grid(alpha=0.25)
+    top.text(0.01, 0.95, "above zero: joints co-vary to stabilise the task",
+             transform=top.transAxes, fontsize=8, va="top", style="italic")
+
+    bottom = figure.add_subplot(212)
+    bottom.plot(x, per_phase.get("v_ucm") or [], color="#2e8b57",
+                linewidth=1.5, label="V_UCM (task-irrelevant)")
+    bottom.plot(x, per_phase.get("v_ort") or [], color="#d95f02",
+                linewidth=1.5, label="V_ORT (task-relevant)")
+    bottom.set_xlabel("Gait cycle (%)", fontsize=10)
+    bottom.set_ylabel("Variance per DOF", fontsize=10)
+    bottom.legend(fontsize=8)
+    bottom.grid(alpha=0.25)
+    figure.tight_layout()
+    return figure
+
+
 def _build_not_available_page(title, reason=None):
     """A simple 'not available' text page for a curve with no reusable
     Figure (either shaped_results reported it unavailable, or no matching
@@ -227,6 +377,18 @@ def export_report_to_pdf(pdf_path, shaped_results, figures=None):
 
     with PdfPages(pdf_path) as pdf:
         pdf.savefig(_build_metadata_page(shaped_results.get("metadata")))
+
+        # Second, so the headline numbers are found without paging through
+        # every joint-angle curve to reach the metrics table.
+        summary = shaped_results.get("summary_scores")
+        summary_page = _build_summary_page(summary)
+        if summary_page is not None:
+            pdf.savefig(summary_page)
+        for builder, payload in ((_build_gdi_figure, (summary or {}).get("gdi_detail")),
+                                 (_build_synergy_figure, (summary or {}).get("synergy_detail"))):
+            page = builder(payload)
+            if page is not None:
+                pdf.savefig(page)
         page_count += 1
 
         curves = shaped_results.get("curves") or {}
