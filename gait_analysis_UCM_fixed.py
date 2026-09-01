@@ -179,9 +179,15 @@ class MarkerTimeline:
     a row of this timeline.
     """
 
-    def __init__(self, times, name=""):
+    def __init__(self, times, name="", signals=None):
         self.times = [float(t) for t in times]
         self.name = name
+        # What detect_gait_peaks ran its peak detection on, when the caller has
+        # it: name -> per-frame values. A picker UI plots these so the operator
+        # sees the same evidence the automatic rung saw. Empty is fine; a UI
+        # with nothing to draw is the caller's problem to report, not a reason
+        # to refuse to build the timeline.
+        self.signals = dict(signals) if signals else {}
 
     @property
     def n_rows(self):
@@ -201,7 +207,8 @@ def build_manual_picker(analysis):
     """An empty GaitEventPicker over `analysis`'s own frame index space."""
     return GaitEventPicker(
         MarkerTimeline(analysis.markerDict['time'],
-                       name=getattr(analysis, 'trial_name', '') or ''))
+                       name=getattr(analysis, 'trial_name', '') or '',
+                       signals=getattr(analysis, 'eventDetectionSignals', None)))
 
 
 def prompt_for_event_rows(picker, input_fn=None, output_fn=None):
@@ -1379,6 +1386,18 @@ class gait_analysis(kinematics):
         l_calc_rel_x = np.einsum('ij,ij->i', mid_dir_floor,l_calc_rel)
         r_toe_rel_x = np.einsum('ij,ij->i', mid_dir_floor,r_toe_rel)
         l_toe_rel_x = np.einsum('ij,ij->i', mid_dir_floor,l_toe_rel)
+
+        # Kept for the manual picker (2026-09-01). These four are exactly what
+        # detect_gait_peaks runs its peak detection on, so an operator picking
+        # by hand is looking at the same evidence the automatic rung looked at
+        # rather than a different rendering of the trial. They are locals here
+        # and the provider is only handed a picker, so they are stashed on the
+        # instance for build_manual_picker to attach. Observational only --
+        # nothing in this class reads them back.
+        self.eventDetectionSignals = {
+            'r_calc': r_calc_rel_x, 'r_toe': r_toe_rel_x,
+            'l_calc': l_calc_rel_x, 'l_toe': l_toe_rel_x,
+        }
         
         # Old Approach that does not take the heading direction into account.
         # r_psis_x = self.markerDict['markers']['r.PSIS_study'][:,0]
