@@ -107,6 +107,7 @@ from scipy.signal import find_peaks
 from matplotlib import pyplot as plt
 
 from utilsKinematics import kinematics
+from gait_event_picker import GaitEventPicker
 
 
 # Floor on how much trial data the auto-trim retry loop is allowed to leave
@@ -133,12 +134,210 @@ from utilsKinematics import kinematics
 MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION = 2.0
 
 
+# ---------------------------------------------------------------------------
+# Manual gait-event entry (Phase 2.3, 2026-08-31)
+# ---------------------------------------------------------------------------
+# The third rung of segment_walking's fallback chain: prominence escalation
+# (0.3 -> 0.25 -> 0.2), then the auto-trim retry loop, then a human. Rung
+# three used to be four raw input() prompts asking the operator to type gait
+# event TIMES, which were then snapped to the nearest sample with
+# `(np.abs(marktimf - t)).argmin()`. Two things were wrong with that:
+#
+#   1. Times do not round-trip. A real .mot/.trc from this pipeline samples at
+#      0.016667, 0.017, 0.016, 0.017 -- so a time read off a plot and typed
+#      back does not land on the frame the operator was looking at, and the
+#      argmin silently picks a neighbour. segment_walking works in indices
+#      into markerDict['time'] anyway, so the index is both the natural
+#      storage and the natural output.
+#   2. It hard-wired stdin as the only possible UI.
+#
+# gait_event_picker.GaitEventPicker is now the data layer: it stores row
+# indices, reports (never enforces) gait ordering, and its
+# as_segment_walking_events() returns exactly the (rHS, lHS, rTO, lTO)
+# four-tuple in exactly the order segment_walking unpacks. The UI is supplied
+# by the caller through `manual_event_provider`; the stdin prompt below is
+# only the fallback, and it asks for ROW INDICES, never times.
+#
+# THE RETURN CONTRACT IS FIXED: `return rHS, lHS, rTO, lTO`, four values, that
+# order, matching detect_gait_peaks and trimend. Edit #13 exists because
+# trimend returned those four in a different order for months, putting left
+# heel-strikes in the right toe-off slot and silently corrupting every
+# downstream metric. Do not add a fifth return value and do not reorder.
+
+
+class MarkerTimeline:
+    """The trial's own frame index space, in the shape GaitEventPicker needs.
+
+    The picker asks a "motion" for `n_rows`, `time_at(row)` and `name`.
+    motion_scrubber.MotionSource satisfies that for a .mot file, but a .mot's
+    rows are NOT segment_walking's index space -- segmentation indexes
+    markerDict['time'], which comes from the .trc and is trimmed separately.
+    Handing the picker a .mot row would put events on frames nobody chose,
+    which is precisely the class of silent wrongness this file keeps finding.
+    So manual entry picks against this adapter over markerDict['time'], and a
+    3D scrubber driving it is responsible for mapping its own display frame to
+    a row of this timeline.
+    """
+
+    def __init__(self, times, name=""):
+        self.times = [float(t) for t in times]
+        self.name = name
+
+    @property
+    def n_rows(self):
+        return len(self.times)
+
+    def time_at(self, row):
+        """The trial's own recorded time for a row. Never reconstructed as
+        start + row*dt -- see the sample-rate note above."""
+        if not 0 <= row < self.n_rows:
+            raise IndexError(
+                'row ' + str(row) + ' out of range for a trial with ' +
+                str(self.n_rows) + ' frames.')
+        return self.times[row]
+
+
+def build_manual_picker(analysis):
+    """An empty GaitEventPicker over `analysis`'s own frame index space."""
+    return GaitEventPicker(
+        MarkerTimeline(analysis.markerDict['time'],
+                       name=getattr(analysis, 'trial_name', '') or ''))
+
+
+def prompt_for_event_rows(picker, input_fn=None, output_fn=None):
+    """The no-UI fallback: four prompts, ROW INDICES, not times.
+
+    Kept deliberately joyless. It exists so an operator at a bare terminal is
+    not blocked when no picker UI is wired up, not as the intended path. It
+    accepts indices because that is what the picker stores; accepting times
+    here would reintroduce the snapping bug the picker was built to remove.
+
+    input_fn/output_fn default to the builtins, resolved per call rather than
+    bound as default arguments -- bound defaults would capture whatever
+    `input` meant at import time, which is neither patchable nor what a
+    caller redirecting the terminal would expect.
+    """
+    input_fn = input if input_fn is None else input_fn
+    output_fn = print if output_fn is None else output_fn
+    last = picker.motion.n_rows - 1
+    output_fn(
+        'Automatic gait-event detection failed. Enter events as FRAME INDICES '
+        '(whole numbers, 0-' + str(last) + '), comma separated. Leave a line '
+        'blank to enter none. These are frame numbers, not times.')
+    for event_type, label in (('rHS', 'Right heel strikes'),
+                              ('rTO', 'Right toe offs'),
+                              ('lHS', 'Left heel strikes'),
+                              ('lTO', 'Left toe offs')):
+        raw = input_fn(label + ' [' + event_type + '] as frame indices: ')
+        for token in raw.split(','):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                row = int(token)
+            except ValueError:
+                raise ValueError(
+                    'Could not read ' + repr(token) + ' as a frame index for ' +
+                    event_type + '. Frame indices are whole numbers between 0 '
+                    'and ' + str(last) + '; this prompt does not accept times.'
+                ) from None
+            picker.mark(event_type, row)
+    return picker
+
+
+def collect_manual_events(analysis):
+    """Get a picked event set for `analysis`, from its UI or from stdin.
+
+    The provider is handed a ready-made picker built over this trial's own
+    frames. It may mark events on that picker and return None, or return a
+    picker of its own (a set restored from disk, say). Anything else is a
+    wiring mistake and is refused here rather than allowed to reach
+    segmentation as an unpackable object.
+    """
+    picker = build_manual_picker(analysis)
+    provider = getattr(analysis, 'manual_event_provider', None)
+    if provider is None:
+        return prompt_for_event_rows(picker)
+
+    returned = provider(picker)
+    if returned is None:
+        return picker
+    if not hasattr(returned, 'as_segment_walking_events'):
+        raise TypeError(
+            'manual_event_provider returned ' + type(returned).__name__ +
+            '; it must return None (having marked events on the picker it was '
+            'given) or a picker exposing as_segment_walking_events().')
+    expected = len(analysis.markerDict['time'])
+    if returned.motion.n_rows != expected:
+        # Events are frame indices, so a picker built over a different frame
+        # count is pointing at frames of some other trial.
+        raise ValueError(
+            'manual_event_provider returned events picked over ' +
+            str(returned.motion.n_rows) + ' frames, but this trial has ' +
+            str(expected) + '. Gait events are frame indices and do not '
+            'transfer between trials.')
+    return returned
+
+
+def manual_steps(self):
+    """Hand-picked gait events, as (rHS, lHS, rTO, lTO).
+
+    Called from segment_walking, which unpacks exactly those four in exactly
+    that order. Lifted out of segment_walking (2026-08-31) so it is reachable
+    by a test at all -- nested inside that method it was unverifiable, and the
+    ordering contract it carries is the one edit #13 was about.
+    """
+    if not self.allow_manual_entry:
+        # Guards the prompts below from blocking an unattended batch run
+        # (edit #2). The caller (segment_walking) already checks
+        # self.allow_manual_entry before reaching here, so this only fires if
+        # manual_steps is ever called directly. clinician_gui.run_batch and
+        # process_participants.py both depend on this raising rather than
+        # waiting on a human who is not there.
+        raise Exception(
+            'Automatic gait-event detection failed and manual entry is disabled '
+            '(allow_manual_entry=False). Re-run with allow_manual_entry=True for '
+            'an interactive session, or adjust trimming_start/trimming_end.'
+        )
+
+    if self.dflag == 0:
+        picker = collect_manual_events(self)
+        rHS, lHS, rTO, lTO = picker.as_segment_walking_events()
+
+        # Reported, never enforced. detect_correct_order's cycle is what a
+        # typical gait produces, but a pathological one may genuinely violate
+        # it, and this project stopped hard-refusing trials on 2026-08-27. The
+        # operator gets the pipeline's own verdict and the trial proceeds
+        # either way.
+        ok, message = picker.ordering_report()
+        print(('Manually entered gait events: ' if ok
+               else 'Manually entered gait events (ordering warning): ') + message)
+
+        self.rhs = rHS
+        self.lhs = lHS
+        self.rto = rTO
+        self.lto = lTO
+        self.manualEventPicker = picker
+        self.dflag = 1
+    else:
+        rHS = self.rhs
+        lHS = self.lhs
+        rTO = self.rto
+        lTO = self.lto
+
+    # Edit #13 (2026-08-24): same left/right swap as trimend -- the call site
+    # unpacks `rHS,lHS,rTO,lTO = manual_steps(self)`, so hand-entered gait
+    # events were being scrambled on the way out. Four values, this order.
+    return rHS, lHS, rTO, lTO
+
+
 class gait_analysis(kinematics):
     
     def __init__(self, session_dir, trial_name, fpa_r, fpa_l, leg='auto',
                  lowpass_cutoff_frequency_for_coordinate_values=-1,
                  n_gait_cycles=-1, gait_style='auto', trimming_start=0,
-                 trimming_end=0, allow_manual_entry=True, modelName=None):
+                 trimming_end=0, allow_manual_entry=True, modelName=None,
+                 manual_event_provider=None):
 
         # Inherit init from kinematics class. modelName wasn't forwarded
         # before (edit #9, found 2026-08-19 -- not from the Codex review,
@@ -182,7 +381,18 @@ class gait_analysis(kinematics):
         # allow_manual_entry=False raises instead of blocking on input() --
         # needed for unattended batch runs (see class docstring, edit #2).
         self.allow_manual_entry = allow_manual_entry
-                        
+        # The UI for manual gait-event entry, supplied by the caller (Phase
+        # 2.3, 2026-08-31). A callable taking a GaitEventPicker built over
+        # this trial's frames; it marks events on that picker and returns
+        # None, or returns a picker of its own. None means "no UI wired up",
+        # which falls back to a stdin prompt for FRAME INDICES. It is read
+        # only after allow_manual_entry has already been checked, so a batch
+        # run cannot reach either path.
+        self.manual_event_provider = manual_event_provider
+        # Kept for the picker's own record, which names the trial its frame
+        # indices belong to.
+        self.trial_name = trial_name
+
         # Marker data load and filter.
         self.markerDict = self.get_marker_dict(session_dir, trial_name, 
             lowpass_cutoff_frequency = lowpass_cutoff_frequency_for_coordinate_values)
@@ -1028,53 +1238,12 @@ class gait_analysis(kinematics):
 
             
         
-        def manual_steps(self):
+        # manual_steps used to be defined here. It is now a module-level
+        # function (2026-08-31) that drives gait_event_picker.GaitEventPicker
+        # instead of four stdin prompts for event times. It is still called
+        # below as `manual_steps(self)` -- it always took self explicitly --
+        # and still returns rHS, lHS, rTO, lTO in that order.
 
-            if not self.allow_manual_entry:
-                # Guards the input() calls below from blocking an unattended
-                # batch run (edit #2). The caller (segment_walking) already
-                # checks self.allow_manual_entry before reaching here, so
-                # this only fires if manual_steps is ever called directly.
-                raise Exception(
-                    'Automatic gait-event detection failed and manual entry is disabled '
-                    '(allow_manual_entry=False). Re-run with allow_manual_entry=True for '
-                    'an interactive session, or adjust trimming_start/trimming_end.'
-                )
-
-            if self.dflag==0:
-                rsteps= [float(j) for j in input("Please enter the Right leg Steps i.e. heel strike1, heel strike2...: ").split(',')]
-                rtoes= [float(j) for j in input("Please enter the Right leg Toe offs i.e. toe off1, toe off2...: ").split(',')]
-                lsteps= [float(j) for j in input("Please enter the Left leg Steps i.e. heel strike1, heel strike2...: ").split(',')]
-                ltoes= [float(j) for j in input("Please enter the Left leg Toe offs i.e. toe off1, toe off2...: ").split(',')]
-                rHS=[]
-                lHS=[]
-                rTO=[]
-                lTO=[]
-                marktimf=np.array(self.markerDict['time'])
-                for j in range(len(rsteps)):
-                    rHS.append((np.abs(marktimf-rsteps[j])).argmin())
-                self.rhs=rHS
-                for j in range(len(lsteps)):
-                    lHS.append((np.abs(marktimf-lsteps[j])).argmin())
-                self.lhs=lHS
-                for j in range(len(rtoes)):
-                    rTO.append((np.abs(marktimf-rtoes[j])).argmin())
-                self.rto=rTO
-                for j in range(len(ltoes)):
-                    lTO.append((np.abs(marktimf-ltoes[j])).argmin())
-                self.lto=lTO
-                self.dflag=1
-            else:
-                rHS=self.rhs
-                lHS=self.lhs
-                rTO=self.rto
-                lTO=self.lto
-
-            # Edit #13 (2026-08-24): same left/right swap as trimend above --
-            # the call site unpacks `rHS,lHS,rTO,lTO = manual_steps(self)`,
-            # so hand-entered gait events were being scrambled on the way out.
-            return rHS, lHS, rTO, lTO
-        
         def detect_correct_order(rHS, rTO, lHS, lTO):
             # checks if the peaks are in the right order
                     
@@ -1209,6 +1378,15 @@ class gait_analysis(kinematics):
                     # point of unattended batch runs.
                     if not self.allow_manual_entry:
                         trimflag=1
+                        break
+
+                    if getattr(self, 'manual_event_provider', None) is not None:
+                        # A UI is wired up, so asking on stdin whether the
+                        # operator wants a UI would block the very session the
+                        # UI was supplied for. Hand it the trial; if it wants
+                        # to decline it can return a picker with no events,
+                        # and the empty-heel-strike guard below reports that.
+                        manual_flag=1
                         break
 
                     response = input("Do you want to enter gait events manually? [Y/N]: ").lower()
