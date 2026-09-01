@@ -192,14 +192,23 @@ def _build(pipeline, session_dir, **kwargs):
         os.chdir(cwd)
 
 
-def test_a_declined_pick_falls_through_to_auto_trim(pipeline, session_dir):
-    """Cancelling must not cost the operator rung two. Before a UI existed the
-    only route here was answering 'N' to the stdin prompt, which fell through
-    to auto-trim; a provider that pre-empted that would hard-fail a trial the
-    retry loop might have rescued.
+def test_auto_trim_runs_before_the_picker_opens(analysed):
+    """The chain is prominence escalation -> auto-trim -> a human. A human is
+    only worth interrupting once the machine has run out of ideas; this used to
+    open the window as soon as peak detection failed, so trials auto-trim would
+    have segmented on its own still stopped and waited for someone."""
+    analysis, _seen = analysed
 
-    Auto-trim genuinely cannot rescue this trial, so the proof that it RAN is
-    the message: it must be auto-trim's, not manual entry's."""
+    assert analysis.usedAutoTrim is True, "the picker pre-empted auto-trim"
+    assert analysis.nAutoTrims > 0
+
+
+def test_declining_fails_with_the_machines_reason_not_the_operators(
+        pipeline, session_dir):
+    """There is no rung four. Auto-trim has already given up by the time
+    anyone is asked, so declining fails the trial with the reason the machine
+    gave -- not a message blaming the person for not picking, and not a tally
+    of zeros quoted back at them."""
     _gait_module, ui = pipeline
     declined = []
 
@@ -214,22 +223,12 @@ def test_a_declined_pick_falls_through_to_auto_trim(pipeline, session_dir):
 
     assert declined == [True], "the picker never opened"
     message = str(caught.value)
-    assert "Manual entry" not in message, (
-        "a declined pick was reported as a manual-entry failure: " + message)
-
-
-def test_declining_does_not_blame_the_operator_for_zeros(pipeline, session_dir):
-    """self.manualEventPicker had to be cleared on decline. Left set, the
-    empty-heel-strike guard quotes a tally of zeros back at someone who chose
-    not to pick at all."""
-    _gait_module, ui = pipeline
-
-    with pytest.raises(Exception) as caught:
-        _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
-               manual_event_provider=ui.make_manual_event_provider(
-                   show=lambda model: model.cancel()))
-
-    assert "Picked so far" not in str(caught.value)
+    assert "Auto-trim" in message or "Automatic detection" in message, (
+        "the failure did not carry the machine's reason: " + message)
+    assert "heel strikes" in message, (
+        "the reason does not say what the machine actually found: " + message)
+    assert "Picked so far" not in message, (
+        "a tally of zeros was quoted back at an operator who declined")
 
 
 def test_picking_one_leg_under_auto_says_so(pipeline, session_dir):

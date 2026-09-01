@@ -234,14 +234,14 @@ def test_the_only_stdin_prompt_left_in_the_module_is_guarded(source):
         "expected exactly one bare input() call; manual entry's own prompt "
         "takes an injectable input_fn")
 
-    prompt_line = calls[0].lineno
-    batch_guard = source.index("if not self.allow_manual_entry:\n"
-                               "                        trimflag=1")
+    prompt_offset = source.index("input('Do you want to enter gait events")
+    batch_guard = source.index("if self.allow_manual_entry:")
     provider_guard = source.index(
         "if getattr(self, 'manual_event_provider', None) is not None:")
-    prompt_offset = source.index('input("Do you want to enter gait events')
+    auto_trim_gate = source.index("if autoTrimFailure is not None:")
 
-    assert source[:batch_guard].count("\n") < prompt_line
+    assert auto_trim_gate < prompt_offset, (
+        "the operator is asked before auto-trim has finished")
     assert batch_guard < prompt_offset
     assert provider_guard < prompt_offset
 
@@ -368,22 +368,35 @@ def test_a_provider_that_picks_nothing_yields_no_events(mod):
     assert mod.manual_steps(analysis) == ([], [], [], [])
 
 
-def test_segment_walking_routes_a_declined_pick_back_to_auto_trim(source):
+def test_the_human_is_the_third_rung_not_the_second(source):
     """SOURCE PIN. Behaviour proven by test_gait_analysis_picker_end_to_end.py::
-    test_a_declined_pick_falls_through_to_auto_trim, which needs OpenSim; this
-    only checks the wiring is still present in the cheap tier.
+    test_auto_trim_runs_before_the_picker_opens.
 
-    The fallback chain is prominence -> auto-trim -> human. Wiring a
-    provider made the human unconditionally pre-empt auto-trim, because the
-    provider branch replaced the stdin [Y/N] whose 'N' used to fall through to
-    trimflag=1. Cancelling the picker then hard-failed a trial the retry loop
-    might have rescued."""
-    manual_block = source.index("if manual_flag==1:")
+    The chain is prominence escalation -> auto-trim -> a human, and a human is
+    only worth interrupting once the machine has run out of ideas. This used to
+    ask before auto-trim ran at all, and a wired-up provider counted as a
+    standing 'yes' -- so the window opened on every trial that failed peak
+    detection, including the many auto-trim would have segmented unaided."""
     trim_block = source.index("if trimflag==1:")
+    manual_block = source.index("if manual_flag==1:", trim_block)
 
-    assert manual_block < trim_block, "auto-trim must still be reachable after"
-    between = source[manual_block:trim_block]
-    assert "trimflag = 1" in between, "a declined pick never re-arms auto-trim"
+    assert trim_block < manual_block, (
+        "manual entry is still reachable before the auto-trim loop")
+    assert source.index("if autoTrimFailure is not None:") < manual_block
+
+
+def test_a_declined_pick_fails_with_auto_trims_reason(source):
+    """SOURCE PIN. Behaviour proven by test_gait_analysis_picker_end_to_end.py::
+    test_declining_fails_with_the_machines_reason_not_the_operators.
+
+    There is no rung four: auto-trim has already run by the time anyone is
+    asked, so declining fails the trial with the reason the machine gave
+    rather than blaming the person for not picking."""
+    manual_block = source.index("if manual_flag==1:",
+                                source.index("if trimflag==1:"))
+    between = source[manual_block:manual_block + 1600]
+
+    assert "autoTrimFailure" in between
     assert "self.dflag = 0" in between, (
         "the decline is cached, so the other leg is never asked")
 
@@ -397,9 +410,9 @@ def test_a_declined_pick_does_not_leave_the_picker_on_the_instance(source):
     auto-trim can converge with no heel strikes for the requested leg -- and
     the guard would then quote a tally of zeros back at an operator who
     declined to pick at all."""
-    manual_block = source.index("if manual_flag==1:")
-    trim_block = source.index("if trimflag==1:")
-    between = source[manual_block:trim_block]
+    manual_block = source.index("if manual_flag==1:",
+                                source.index("if trimflag==1:"))
+    between = source[manual_block:manual_block + 1600]
 
     assert "self.manualEventPicker = None" in between
 

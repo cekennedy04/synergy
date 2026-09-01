@@ -374,6 +374,24 @@ def collect_manual_events(analysis):
     return returned
 
 
+def _gait_cycle_possible(leg, rHS, lHS):
+    """Can segmentation build even one gait cycle from these heel strikes?
+
+    A cycle is heel strike to the next heel strike on the same leg, so the
+    ipsilateral leg needs two. With leg='auto' the leg is chosen by comparing
+    the last heel strike of each, which needs both non-empty, and the chosen
+    one still needs two.
+
+    This is the condition for handing over to a human: not whether the retry
+    loop ran out of attempts, but whether anything usable came out of it.
+    """
+    if leg == 'r':
+        return len(rHS) >= 2
+    if leg == 'l':
+        return len(lHS) >= 2
+    return len(rHS) > 0 and len(lHS) > 0 and max(len(rHS), len(lHS)) >= 2
+
+
 def manual_steps(self):
     """Hand-picked gait events, as (rHS, lHS, rTO, lTO).
 
@@ -1489,34 +1507,23 @@ class gait_analysis(kinematics):
             # print(self.markerDict['time'])
             if not detect_correct_order(rHS=rHS, rTO=rTO, lHS=lHS, lTO=lTO):
                 if prom == prominences[-1]:
-                    # if j==len(trimarray):
+                    # Rung two, always, for every caller. The chain is
+                    # prominence escalation -> auto-trim -> a human, and a
+                    # human is only worth interrupting once the machine has
+                    # actually run out of ideas.
+                    #
+                    # This used to ask, here, whether the operator wanted to
+                    # enter events by hand, and answering 'Y' skipped auto-trim
+                    # entirely. Wiring a picker made that worse: a provider was
+                    # treated as a standing 'Y', so the window opened on every
+                    # trial that failed peak detection -- including the many
+                    # that auto-trim would have segmented without anyone being
+                    # asked. Manual entry now waits until the retry loop below
+                    # has exhausted itself, which is also what the plan and the
+                    # module docstring have always described.
+                    trimflag=1
+                    break
 
-                    # allow_manual_entry=False skips straight to auto-trim
-                    # instead of blocking on stdin (edit #2) -- the whole
-                    # point of unattended batch runs.
-                    if not self.allow_manual_entry:
-                        trimflag=1
-                        break
-
-                    if getattr(self, 'manual_event_provider', None) is not None:
-                        # A UI is wired up, so asking on stdin whether the
-                        # operator wants a UI would block the very session the
-                        # UI was supplied for. Hand it the trial; if it wants
-                        # to decline it can return a picker with no events,
-                        # and the empty-heel-strike guard below reports that.
-                        manual_flag=1
-                        break
-
-                    response = input("Do you want to enter gait events manually? [Y/N]: ").lower()
-
-                    if response.lower() != 'y':
-                        # raise ValueError('The ordering of gait events is not correct. Consider trimming your trial using the trimming_start and trimming_end options.')
-                        trimflag=1
-                        break
-                    else:
-                        manual_flag=1
-                        break
-                    
                         
                 else:
                     print('The gait events were not in the correct order. Trying peak detection again ' +
@@ -1530,31 +1537,10 @@ class gait_analysis(kinematics):
             #     trimflag=1
             #     break
         
-        if manual_flag==1:
-            rHS,lHS,rTO,lTO = manual_steps(self)
-
-            # A picker handed back with nothing on it is the operator
-            # declining, and declining must not cost them rung two. Before a
-            # UI existed, the only route here was answering 'Y' to the stdin
-            # prompt, and answering 'N' fell through to auto-trim; wiring a
-            # provider made the human unconditionally pre-empt auto-trim, so
-            # cancelling the picker hard-failed a trial the retry loop might
-            # have rescued. The fallback chain is prominence -> auto-trim ->
-            # human, and a declined pick puts us back on rung two.
-            if not any(len(events) for events in (rHS, lHS, rTO, lTO)):
-                print('No gait events were picked; falling back to auto-trim.')
-                # Not cached as an answer: dflag=1 would make the decline
-                # stick for the other leg, which never got asked.
-                self.dflag = 0
-                self.rhs, self.lhs, self.rto, self.lto = [], [], [], []
-                # Cleared too, or a later auto-trim failure gets reported as a
-                # manual-entry failure. detect_correct_order treats all-empty
-                # vectors as correctly ordered, so auto-trim can converge with
-                # no heel strikes for the requested leg -- and the guard below
-                # would then blame the operator for a pick they declined to
-                # make, quoting a tally of zeros back at them.
-                self.manualEventPicker = None
-                trimflag = 1
+        # `autoTrimFailure` carries the reason the retry loop gave up, so the
+        # human rung below can explain what was already tried and so a caller
+        # who cannot ask a human still gets that reason raised unchanged.
+        autoTrimFailure = None
 
         if trimflag==1:
             self.usedAutoTrim = True
@@ -1568,12 +1554,13 @@ class gait_analysis(kinematics):
             # IndexError instead of failing clearly (edit #4).
             while checkflag==0:
                 if j >= len(trimarray):
-                    raise Exception(
+                    autoTrimFailure = (
                         'Auto-trim retry exhausted all ' + str(len(trimarray) - 1) + ' attempts '
                         'without finding correctly-ordered gait events. Consider manual '
                         'trimming_start/trimming_end, or allow_manual_entry=True for an '
                         'interactive session.'
                     )
+                    break
                 # Edit #12 (2026-08-24): trimend() is CUMULATIVE -- each call
                 # shaves another 0.2s off the already-trimmed data -- but the
                 # loop's only bound was `len(trimarray)`, itself derived from
@@ -1611,7 +1598,7 @@ class gait_analysis(kinematics):
                     np.round(self.markerDict['time'][-1] - self.markerDict['time'][0], 6)
                 )
                 if remaining - trimarray[j] < MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION:
-                    raise Exception(
+                    autoTrimFailure = (
                         'Auto-trim stopped after ' + str(j - 1) + ' attempt(s): trimming '
                         'further would leave only ' + str(round(remaining - trimarray[j], 2)) +
                         's of data, below the ' + str(MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION) +
@@ -1621,12 +1608,73 @@ class gait_analysis(kinematics):
                         'or too noisy to segment) -- check that this is a gait trial '
                         'before retrying.'
                     )
+                    break
                 print("Trying auto-Trim")
                 rHS,lHS,rTO,lTO=trimend(self, trimarray[j])
                 self.nAutoTrims += 1
                 # print(j)
                 j+=1
                 checkflag=self.promflag
+
+        # Converging is not the same as finding a gait cycle. detect_correct_order
+        # returns True for an all-empty set -- "no events" trivially satisfies
+        # every ordering rule -- so the retry loop can exit reporting success
+        # having found nothing at all. Measured on Trial9 of session dc490fa4:
+        # 14 trims, promflag set, zero right heel strikes, and the failure then
+        # surfaced hundreds of lines later from the empty-heel-strike guard.
+        # That trial is precisely one a human should be asked about, so the
+        # handoff condition is "no cycle is obtainable", not merely "the loop
+        # ran out of attempts".
+        if autoTrimFailure is None and not _gait_cycle_possible(leg, rHS, lHS):
+            autoTrimFailure = (
+                'Automatic detection finished without finding a usable gait '
+                'cycle (right heel strikes: ' + str(len(rHS)) + ', left: ' +
+                str(len(lHS)) + '). Ordering checks pass trivially on an empty '
+                'set, so the retry loop can report success having found '
+                'nothing.'
+            )
+
+        # Rung three. Only now -- the automatic path has run and come up empty,
+        # which is the whole condition for interrupting a person. Before this,
+        # the human was asked before rung two ever ran, so a trial the retry
+        # loop would have segmented on its own still stopped and waited.
+        if autoTrimFailure is not None:
+            if self.allow_manual_entry:
+                print('Auto-trim could not find a gait cycle. ' + autoTrimFailure)
+                if getattr(self, 'manual_event_provider', None) is not None:
+                    # A UI is wired up; asking on stdin whether the operator
+                    # wants a UI would block the very session it was supplied
+                    # for. They decline in the window instead.
+                    manual_flag = 1
+                elif input('Do you want to enter gait events manually? [Y/N]: '
+                           ).lower() == 'y':
+                    manual_flag = 1
+                else:
+                    raise Exception(autoTrimFailure)
+            else:
+                # Unattended: raise exactly what auto-trim would have raised
+                # before manual entry existed. clinician_gui.run_batch and
+                # process_participants.py depend on this.
+                raise Exception(autoTrimFailure)
+
+        if manual_flag==1:
+            rHS,lHS,rTO,lTO = manual_steps(self)
+
+            # Nothing picked is the operator declining. There is no rung four,
+            # so the trial fails with the reason auto-trim gave -- not with a
+            # manual-entry message, which would blame the person for the
+            # machine having already run out of options.
+            if not any(len(events) for events in (rHS, lHS, rTO, lTO)):
+                # Not cached as an answer: dflag=1 would make the decline stick
+                # for the other leg, which never got asked. The picker is
+                # cleared for the same reason the message below is auto-trim's.
+                self.dflag = 0
+                self.rhs, self.lhs, self.rto, self.lto = [], [], [], []
+                self.manualEventPicker = None
+                raise Exception(
+                    'No gait events were entered manually, and ' +
+                    (autoTrimFailure or 'automatic detection had already failed.')
+                )
 
         # print([rHS,lHS,rTO,lTO])
         
