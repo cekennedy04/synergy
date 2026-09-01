@@ -18,7 +18,18 @@ offline with a placeholder token. A real token is only needed to *fetch* a
 session.
 
 Skips unless OpenSim and the (gitignored) session data are both present, so the
-default suite on base python stays green.
+default suite on base python stays green. That makes the suite two-tier, and
+the difference is worth knowing before trusting a green run:
+
+    ~/miniconda3/python.exe -m pytest tests -q
+        538 passed, 6 skipped  -- everything except this file
+
+    ~/miniconda3/envs/opencap-processing/python.exe -m pytest tests -q
+        544 passed, 0 skipped  -- including this file, against real OpenSim
+
+Only the second actually exercises gait_analysis. pytest was installed into
+the opencap-processing environment on 2026-09-01 for exactly this; nothing
+else was missing.
 """
 import importlib
 import os
