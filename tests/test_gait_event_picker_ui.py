@@ -208,7 +208,12 @@ def test_the_provider_returns_none_having_marked_the_picker(ui, picker):
 def test_the_provider_drives_the_picker_it_is_handed(ui, picker):
     """Not one of its own -- the frames must belong to this trial."""
     seen = []
-    provider = ui.make_manual_event_provider(show=lambda m: seen.append(m.picker))
+
+    def fake_window(model):
+        seen.append(model.picker)
+        model.pick_at(1.0)      # a window that picks nothing now raises
+
+    provider = ui.make_manual_event_provider(show=fake_window)
 
     provider(picker)
 
@@ -336,6 +341,72 @@ def test_a_timeline_without_signals_still_yields_drawable_data(gait_module,
     assert values == [0.0]
 
 
+# -- a window that never opened is not a decline ---------------------------
+
+
+def test_a_window_that_never_opened_is_an_error_not_a_decline(ui, picker):
+    """The dangerous ambiguity. segment_walking reads an empty picker as the
+    operator declining and falls back to auto-trim -- but plt.show() returns
+    immediately under a non-interactive backend, which also yields an empty
+    picker. make_reports.py and make_comparison_figures.py force Agg
+    process-wide at import, so any process touching either would silently lose
+    the picker and the operator would never see a window."""
+    provider = ui.make_manual_event_provider(show=lambda model: None)
+
+    with pytest.raises(RuntimeError, match="never opened"):
+        provider(picker)
+
+
+def test_a_deliberate_cancel_is_not_an_error(ui, picker):
+    """Cancel is how an operator declines on purpose; it must still reach
+    segment_walking as an empty set rather than raising."""
+    provider = ui.make_manual_event_provider(
+        show=lambda model: model.cancel())
+
+    assert provider(picker) is None
+    assert picker.as_segment_walking_events() == ([], [], [], [])
+
+
+def test_a_non_interactive_backend_is_refused_before_drawing(ui, model,
+                                                             monkeypatch):
+    matplotlib = pytest.importorskip("matplotlib")
+    monkeypatch.setattr(matplotlib, "get_backend", lambda: "Agg")
+
+    with pytest.raises(RuntimeError, match="never opens a window"):
+        ui.show_picker_window(model)
+
+
+# -- the panel clicked decides the leg -------------------------------------
+
+
+def test_clicking_the_left_panel_records_a_left_event(ui, model):
+    """An operator reading the left trace and clicking it while rHS is
+    selected means a LEFT heel strike. Recording a right one there -- and
+    drawing it on the other panel -- is a silent wrong answer of exactly the
+    kind edit #13 was about."""
+    model.select("rHS")
+
+    assert model.event_type_for_panel("l") == "lHS"
+    assert model.event_type_for_panel("r") == "rHS"
+
+
+def test_the_event_kind_survives_the_leg_switch(ui, model):
+    model.select("rTO")
+
+    assert model.event_type_for_panel("l") == "lTO"
+
+
+def test_picking_with_an_explicit_type_moves_the_selection(ui, model):
+    """So the radio and the picker cannot disagree about what the next click
+    will do."""
+    model.select("rHS")
+    model.pick_at(4.0, event_type="lHS")
+
+    assert model.event_type == "lHS"
+    assert model.picker.rows("lHS") == [4]
+    assert model.picker.rows("rHS") == []
+
+
 # -- the window itself -----------------------------------------------------
 # The model tests above cannot see a typo in the plotting code, because none of
 # it runs. These build the real figure under Agg with plt.show stubbed, which
@@ -343,11 +414,19 @@ def test_a_timeline_without_signals_still_yields_drawable_data(gait_module,
 
 
 @pytest.fixture
-def headless_pyplot():
+def headless_pyplot(ui, monkeypatch):
+    """Render the real window offscreen.
+
+    The interactive-backend guard has to be neutralised to do this, which is
+    the point of the guard: under Agg a real operator would get no window. It
+    is stubbed here rather than given a production bypass, so nothing shipping
+    can skip it by passing a flag.
+    """
     matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
+    monkeypatch.setattr(ui, "assert_interactive_backend", lambda: None)
     shown = []
     real_show = plt.show
     plt.show = lambda *args, **kwargs: shown.append(True)

@@ -111,8 +111,23 @@ class EventPickerModel:
     def pick_at(self, x, event_type=None):
         """Mark the selected event at the frame under a click."""
         frame = self.frame_for(x)
-        self.picker.mark(event_type or self.event_type, frame)
+        chosen = event_type or self.event_type
+        self.picker.mark(chosen, frame)
+        # The selection follows the pick, so the radio and the picker never
+        # disagree about what the next click will do.
+        self.event_type = chosen
         return frame
+
+    def event_type_for_panel(self, leg):
+        """The selected event kind, moved to the leg whose panel was clicked.
+
+        Clicking the left trace while 'rHS' is selected means a LEFT heel
+        strike -- the operator is pointing at a left-leg event. The KIND of
+        event (heel strike vs toe off) is what the radio chooses; the panel
+        chooses the leg.
+        """
+        kind = self.event_type[1:]                 # 'HS' or 'TO'
+        return ('r' if leg == 'r' else 'l') + kind
 
     def erase_at(self, x, tolerance=5):
         """Remove the nearest picked event of any type within `tolerance`
@@ -190,12 +205,61 @@ def make_manual_event_provider(show=None, model_factory=EventPickerModel):
     contract `collect_manual_events` expects. `show` is injected so the tests
     can drive the whole provider path without a display; it defaults to the
     real matplotlib window.
+
+    **An empty picker is ambiguous, and the ambiguity is dangerous.**
+    `segment_walking` reads an empty set as the operator declining, and falls
+    back to auto-trim. But a window that never opened also returns an empty
+    set -- `plt.show()` returns immediately under a non-interactive backend --
+    and this repo forces `matplotlib.use("Agg")` process-wide at import in
+    make_reports.py and make_comparison_figures.py. Any process that has
+    touched either would lose the picker entirely and silently drop to
+    auto-trim, with the operator never seeing a window and never being told.
+    `EventPickerModel.cancelled` is what tells the two apart, so it is checked
+    here rather than left for nobody to read.
     """
     def provider(picker):
         model = model_factory(picker)
         (show or show_picker_window)(model)
+        if not any(picker.counts().values()) and not model.cancelled:
+            raise RuntimeError(
+                "the gait-event picker closed without any events being picked "
+                "and without Cancel being pressed, which usually means the "
+                "window never opened. matplotlib's backend is "
+                + _backend_name() + "; an interactive backend is required. "
+                "make_reports.py and make_comparison_figures.py force Agg "
+                "process-wide at import, so importing either before picking "
+                "disables the picker. Press Cancel to decline a trial "
+                "deliberately -- that falls back to auto-trim.")
         return None
     return provider
+
+
+def _backend_name():
+    try:
+        import matplotlib
+        return repr(matplotlib.get_backend())
+    except Exception:                                  # pragma: no cover
+        return 'unavailable'
+
+
+# Backends that draw nothing and return from plt.show() immediately. Picking
+# against one is not possible, and failing loudly beats an empty set that
+# segment_walking would read as a considered decline.
+NON_INTERACTIVE_BACKENDS = ('agg', 'pdf', 'ps', 'svg', 'cairo', 'template')
+
+
+def assert_interactive_backend():
+    """Refuse to 'show' a window that cannot be shown."""
+    import matplotlib
+    backend = matplotlib.get_backend()
+    if backend.lower().replace('module://', '') in NON_INTERACTIVE_BACKENDS:
+        raise RuntimeError(
+            "matplotlib's backend is " + repr(backend) + ", which renders to a "
+            "file and never opens a window, so there is nothing for an "
+            "operator to pick on. Run the picker in a process that has not "
+            "forced a non-interactive backend -- make_reports.py and "
+            "make_comparison_figures.py both call matplotlib.use('Agg') at "
+            "import time.")
 
 
 def show_picker_window(model):  # pragma: no cover - needs a display
@@ -207,6 +271,7 @@ def show_picker_window(model):  # pragma: no cover - needs a display
     import matplotlib.pyplot as plt
     from matplotlib.widgets import Button, RadioButtons
 
+    assert_interactive_backend()
     motion = model.picker.motion
     if not motion.signals:
         raise ValueError(
@@ -257,16 +322,34 @@ def show_picker_window(model):  # pragma: no cover - needs a display
         redraw()
     radio.on_clicked(on_select)
 
+    panel_for_axis = {id(axis): panel for axis, panel in zip(axes, LEG_PANELS)}
+
     def on_click(event):
         if event.inaxes not in list(axes) or event.xdata is None:
+            return
+        # Zoom-rect and pan do NOT suppress user callbacks in matplotlib, and
+        # zooming is the natural way to place an event precisely on a
+        # several-hundred-frame trial -- so without this every zoom rectangle
+        # and every pan drag would deposit a spurious gait event at the drag
+        # origin.
+        toolbar = getattr(figure.canvas, 'toolbar', None)
+        if getattr(toolbar, 'mode', ''):
             return
         # Right-click erases, matching the "delete" the plan asks for without
         # a separate mode the operator has to remember to leave.
         if event.button == 3:
             model.erase_at(event.xdata)
         else:
-            model.pick_at(event.xdata)
+            # The panel clicked decides the leg. An operator reading the left
+            # trace and clicking on it while rHS is still selected means a LEFT
+            # heel strike; recording a right one there, and drawing it on the
+            # other panel, is a silent wrong answer of exactly the kind edit
+            # #13 was about.
+            panel = panel_for_axis[id(event.inaxes)]
+            model.pick_at(event.xdata,
+                          event_type=model.event_type_for_panel(panel['leg']))
         redraw()
+        radio.set_active(list(EVENT_TYPES).index(model.event_type))
     figure.canvas.mpl_connect('button_press_event', on_click)
 
     def on_move(event):

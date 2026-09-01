@@ -198,6 +198,17 @@ class MarkerTimeline:
         # with nothing to draw is the caller's problem to report, not a reason
         # to refuse to build the timeline.
         self.signals = dict(signals) if signals else {}
+        # A signal of the wrong length is a frame-space mismatch, and frames
+        # are what gait events ARE here. Caught at construction with a message
+        # that names the cause, rather than surfacing later as matplotlib's
+        # "x and y must have same first dimension".
+        for signal_name, values in self.signals.items():
+            if len(values) != len(self.times):
+                raise ValueError(
+                    "signal '" + signal_name + "' has " + str(len(values)) +
+                    " values but this timeline has " + str(len(self.times)) +
+                    " frames. They must index the same frames -- a stale "
+                    "signal from before trimming is the usual cause.")
 
     @property
     def n_rows(self):
@@ -277,6 +288,10 @@ def frame_time_reference(motion, max_lines=20):
     """A sampled frame -> time listing, so the operator can map what they see
     on an external plot of the trial to the frame numbers this prompt wants."""
     n_rows = motion.n_rows
+    if n_rows == 0:
+        # A trial with no frames has no events to pick. Say that, rather than
+        # letting rows[-1] raise a bare IndexError out of the fallback prompt.
+        return ['  (this trial has no frames, so there is nothing to pick)']
     step = max(1, -(-n_rows // max_lines))
     rows = list(range(0, n_rows, step))
     if rows[-1] != n_rows - 1:
@@ -1264,8 +1279,19 @@ class gait_analysis(kinematics):
             l_calc_rel_x = np.einsum('ij,ij->i', mid_dir_floor,l_calc_rel)
             r_toe_rel_x = np.einsum('ij,ij->i', mid_dir_floor,r_toe_rel)
             l_toe_rel_x = np.einsum('ij,ij->i', mid_dir_floor,l_toe_rel)
-            
-            prominences = [0.3, 0.25, 0.2]                   
+
+            # Refreshed here as well as in segment_walking, because trimend is
+            # CUMULATIVE: it shortens markerDict every call. A picker opened on
+            # an instance that went through auto-trim would otherwise get the
+            # trimmed time vector with the ORIGINAL, longer signals, which is a
+            # length mismatch the plotting layer reports as an unreadable
+            # "x and y must have same first dimension".
+            self.eventDetectionSignals = {
+                'r_calc': r_calc_rel_x, 'r_toe': r_toe_rel_x,
+                'l_calc': l_calc_rel_x, 'l_toe': l_toe_rel_x,
+            }
+
+            prominences = [0.3, 0.25, 0.2]
                      
             for i,prom in enumerate(prominences):
             
@@ -1521,7 +1547,13 @@ class gait_analysis(kinematics):
                 # stick for the other leg, which never got asked.
                 self.dflag = 0
                 self.rhs, self.lhs, self.rto, self.lto = [], [], [], []
-                manual_flag = 0
+                # Cleared too, or a later auto-trim failure gets reported as a
+                # manual-entry failure. detect_correct_order treats all-empty
+                # vectors as correctly ordered, so auto-trim can converge with
+                # no heel strikes for the requested leg -- and the guard below
+                # would then blame the operator for a pick they declined to
+                # make, quoting a tally of zeros back at them.
+                self.manualEventPicker = None
                 trimflag = 1
 
         if trimflag==1:
@@ -1625,6 +1657,20 @@ class gait_analysis(kinematics):
             # heel-strikes for a leg even without an ordering problem
             # (edit #5).
             if len(rHS) == 0 or len(lHS) == 0:
+                # leg='auto' is the DEFAULT, so this guard fires before the
+                # manual-entry one further down. Without the branch below, an
+                # operator who picked events for only one leg was told to
+                # "check the trial's marker data quality" and never heard about
+                # their own picks -- the exact confusion the manual-entry
+                # message was added to remove.
+                if getattr(self, 'manualEventPicker', None) is not None:
+                    raise Exception(
+                        'Manual entry supplied heel strikes for only one leg (rHS: ' +
+                        str(len(rHS)) + ', lHS: ' + str(len(lHS)) + '), so the '
+                        'leg cannot be chosen automatically. Picked so far: ' +
+                        str(self.manualEventPicker.counts()) + ". Pick heel strikes "
+                        "for both legs, or pass leg='r'/'l' explicitly."
+                    )
                 raise Exception(
                     'No heel-strike events detected for one or both legs (rHS: ' +
                     str(len(rHS)) + ', lHS: ' + str(len(lHS)) + '). Cannot auto-select a '

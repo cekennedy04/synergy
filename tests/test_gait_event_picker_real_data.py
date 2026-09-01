@@ -207,12 +207,17 @@ def test_events_are_drawn_against_the_real_detection_signals(real_model):
     assert values == [motion.signals['r_calc'][frame]]
 
 
-def test_the_window_renders_the_real_trial_offscreen(ui, real_model):
-    """Catches plotting errors that only a real trial's shape would trigger."""
+def test_the_window_renders_the_real_trial_offscreen(ui, real_model,
+                                                     monkeypatch):
+    """Catches plotting errors that only a real trial's shape would trigger.
+
+    The interactive-backend guard is stubbed to render under Agg at all --
+    which is precisely what that guard exists to stop a real operator doing."""
     matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
+    monkeypatch.setattr(ui, "assert_interactive_backend", lambda: None)
     real_show, plt.show = plt.show, lambda *args, **kwargs: None
     try:
         artists = ui.show_picker_window(real_model)

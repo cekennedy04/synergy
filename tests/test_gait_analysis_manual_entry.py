@@ -377,6 +377,30 @@ def test_segment_walking_routes_a_declined_pick_back_to_auto_trim(source):
         "the decline is cached, so the other leg is never asked")
 
 
+def test_a_declined_pick_does_not_leave_the_picker_on_the_instance(source):
+    """Or a later auto-trim failure gets blamed on manual entry.
+    detect_correct_order treats all-empty vectors as correctly ordered, so
+    auto-trim can converge with no heel strikes for the requested leg -- and
+    the guard would then quote a tally of zeros back at an operator who
+    declined to pick at all."""
+    manual_block = source.index("if manual_flag==1:")
+    trim_block = source.index("if trimflag==1:")
+    between = source[manual_block:trim_block]
+
+    assert "self.manualEventPicker = None" in between
+
+
+def test_the_auto_leg_guard_also_speaks_to_manual_entry(source):
+    """leg='auto' is the DEFAULT, so its guard fires before the manual-entry
+    one. Without a branch there, an operator who picked events for one leg was
+    told to check marker data quality and never heard about their own picks."""
+    guard = source.index("if len(rHS) == 0 or len(lHS) == 0:")
+    tail = source[guard:guard + 1400]
+
+    assert "manualEventPicker" in tail
+    assert "only one leg" in tail
+
+
 def test_an_empty_pick_for_this_leg_is_not_reported_as_a_detection_failure(source):
     """Telling an operator who just hand-picked events to 'supply the events
     manually' sends them back to the thing they already did."""
@@ -530,6 +554,34 @@ def test_the_timeline_reads_the_trials_own_sample_times(mod):
     assert timeline.n_rows == 40
     assert timeline.time_at(5) == times[5]
     assert timeline.time_at(39) == times[39]
+
+
+def test_a_stale_signal_is_refused_at_construction(mod):
+    """trimend is cumulative: it shortens markerDict every call. A picker
+    opened on an instance that went through auto-trim would otherwise pair the
+    trimmed times with the original, longer signals, and the mismatch would
+    surface as matplotlib's unreadable 'x and y must have same first
+    dimension'."""
+    with pytest.raises(ValueError, match="before trimming"):
+        mod.MarkerTimeline(_trial_times(30), signals={"r_calc": [0.0] * 40})
+
+
+def test_trimend_refreshes_the_signals_it_recomputes(source):
+    """It already recomputes all four for its own peak detection; stashing
+    them there is what keeps them in step with the trimmed frames."""
+    trimend = source.index("def trimend(self, trim):")
+    body = source[trimend:source.index("def manual_steps", trimend)
+                  if "def manual_steps" in source[trimend:] else len(source)]
+
+    assert "self.eventDetectionSignals" in body
+
+
+def test_the_frame_reference_says_so_when_there_are_no_frames(mod):
+    """Rather than raising a bare IndexError out of the fallback prompt."""
+    lines = mod.frame_time_reference(mod.MarkerTimeline([]))
+
+    assert len(lines) == 1
+    assert "nothing to pick" in lines[0]
 
 
 def test_the_timeline_refuses_a_row_it_does_not_have(mod):
