@@ -133,56 +133,12 @@ from utilsKinematics import kinematics
 MIN_REMAINING_SECONDS_FOR_GAIT_DETECTION = 2.0
 
 
-# --- Non-gait trial rejection (2026-08-24) -----------------------------------
-# A transfer, a stand-to-sit, or any other non-walking recording will still
-# produce *a* segmentation, and every downstream metric will then be computed
-# and reported as though it described gait. Observed for real: a
-# bed-to-shower-chair transfer yielded one "gait cycle" per leg and a complete
-# clinical report -- cadence, gait speed, step-length symmetry, joint-angle
-# curves, a confidence banner and an exported PDF -- with no warning anywhere.
-# The failure mode is not a crash; it is a plausible, clean-looking, wrong
-# report. These thresholds exist to make that fail loudly instead.
-#
-# A velocity-based screen is deliberately NOT used, and cannot be: this
-# pipeline's IMU-driven output has pinned root translation (pelvis_tx/tz are
-# constant), so there is no global forward velocity to threshold. Screening is
-# therefore purely event-count and event-timing based, which is unaffected by
-# the missing translation.
-
-# Minimum heel strikes required on EACH leg. gaitEvents['ipsilateralIdx'] is
-# (n_cycles x 3) spanning HS->TO->HS, so the ipsilateral leg sees n_cycles + 1
-# heel strikes, while 'contralateralIdx' is (n_cycles x 2) as TO->HS and sees
-# exactly n_cycles. The binding constraint is therefore the contralateral leg,
-# and requiring 3 per leg means requiring 3 full gait cycles.
-#
-# Empirical basis, not a guess: across 15 real walking trials from a verified
-# Xsens/OpenCap matched pair, detected cycles ranged 4-6 per leg (minimum 4).
-# The real non-gait transfer produced 1. A threshold of 3 sits below every
-# genuine trial observed and above the non-gait case.
-MIN_HEEL_STRIKES_PER_LEG = 3
-
-# Mean cadence outside this window is not walking. Deliberately wide: slow
-# hemiparetic or walker-assisted gait can fall well under 60 steps/min, and
-# the point of this bound is to reject transfers and stationary fidgeting, not
-# to adjudicate whether gait is clinically normal. For reference, the 15 real
-# trials sat around 128-130 steps/min.
-PHYSIOLOGICAL_CADENCE_STEPS_PER_MIN = (40.0, 160.0)
-
-
-class NonGaitTrialError(Exception):
-    """Raised when a trial does not contain enough rhythmic gait to support
-    the metrics this class computes. Distinct from a detection failure: the
-    events were found, they just do not describe walking."""
-
-
-
 class gait_analysis(kinematics):
     
     def __init__(self, session_dir, trial_name, fpa_r, fpa_l, leg='auto',
                  lowpass_cutoff_frequency_for_coordinate_values=-1,
                  n_gait_cycles=-1, gait_style='auto', trimming_start=0,
-                 trimming_end=0, allow_manual_entry=True, modelName=None,
-                 validate_gait_pattern=True):
+                 trimming_end=0, allow_manual_entry=True, modelName=None):
 
         # Inherit init from kinematics class. modelName wasn't forwarded
         # before (edit #9, found 2026-08-19 -- not from the Codex review,
@@ -207,6 +163,16 @@ class gait_analysis(kinematics):
         self.trimming_start = trimming_start
         self.trimming_end = trimming_end
         self.dflag=0
+        # Auto-trim instrumentation (2026-08-27). Purely observational: set
+        # here, written in segment_walking, read by nothing in this class.
+        # It exists because the 2026-08-24 left/right swap (edit #13) lived
+        # inside trimend(), so ONLY trials that entered the auto-trim retry
+        # path were corrupted by it. A trial whose events came back correctly
+        # ordered at prominence 0.3/0.25/0.2 never called trimend and is
+        # clean. Recording that distinction is what lets a re-run target the
+        # affected trials instead of the whole archive.
+        self.usedAutoTrim = False
+        self.nAutoTrims = 0
         self.rhs=[]
         self.lhs=[]
         self.rto=[]
@@ -246,12 +212,6 @@ class gait_analysis(kinematics):
         # Segment gait cycles.
         self.gaitEvents = self.segment_walking(n_gait_cycles=n_gait_cycles,leg=leg)
         self.nGaitCycles = np.shape(self.gaitEvents['ipsilateralIdx'])[0]
-
-        # Reject non-gait trials before any metric is computed or exported
-        # (2026-08-24). See MIN_HEEL_STRIKES_PER_LEG above for why this is
-        # event-based rather than velocity-based.
-        if validate_gait_pattern:
-            self._validate_gait_pattern()
         
         # Determine treadmill speed (0 if overground).
         self.treadmillSpeed,_ = self.compute_treadmill_speed(gait_style=gait_style)
@@ -410,54 +370,6 @@ class gait_analysis(kinematics):
         else:
             return gait_speed, units
     
-    def _validate_gait_pattern(self):
-        """Reject a trial that segmented but does not describe walking.
-
-        Runs after segmentation and before any metric is computed, so a
-        non-gait recording fails here rather than silently producing a
-        complete, plausible-looking clinical report (which is exactly what a
-        real bed-to-shower-chair transfer did before this existed).
-
-        Screening is event-count and event-timing only. A forward-velocity
-        screen would be the obvious complement but is not available: this
-        pipeline's IMU-driven output has pinned root translation, so global
-        velocity is identically zero regardless of what the subject did.
-        Cadence, by contrast, comes from event timestamps and is unaffected.
-        """
-        # ipsilateralIdx is (n x 3) HS->TO->HS, so n+1 ipsilateral heel
-        # strikes; contralateralIdx is (n x 2) TO->HS, so n contralateral
-        # ones. The contralateral leg is the binding constraint.
-        ipsilateral_hs = self.nGaitCycles + 1
-        contralateral_hs = self.nGaitCycles
-        fewest = min(ipsilateral_hs, contralateral_hs)
-
-        if fewest < MIN_HEEL_STRIKES_PER_LEG:
-            raise NonGaitTrialError(
-                'Trial rejected: only ' + str(fewest) + ' heel strike(s) detected on the '
-                'less-covered leg (' + str(ipsilateral_hs) + ' ipsilateral, ' +
-                str(contralateral_hs) + ' contralateral), below the minimum of ' +
-                str(MIN_HEEL_STRIKES_PER_LEG) + ' per leg needed for gait metrics. '
-                'This usually means the recording is not continuous walking -- a '
-                'transfer, a turn, or a stand-to-sit will segment but will not '
-                'produce meaningful cadence, stride or symmetry values. Pass '
-                'validate_gait_pattern=False to override if this really is a gait '
-                'trial that is simply very short.'
-            )
-
-        # Same expression compute_cadence uses, evaluated here so a
-        # non-physiological result blocks the report rather than appearing in it.
-        cadence_all = 60 * 2 / np.diff(self.gaitEvents['ipsilateralTime'][:, (0, 2)])
-        cadence = float(np.mean(cadence_all))
-        low, high = PHYSIOLOGICAL_CADENCE_STEPS_PER_MIN
-        if not low <= cadence <= high:
-            raise NonGaitTrialError(
-                'Trial rejected: mean cadence of ' + str(round(cadence, 1)) +
-                ' steps/min falls outside the physiological walking window of ' +
-                str(low) + '-' + str(high) + ' steps/min. The detected events are '
-                'unlikely to be real gait cycles. Pass validate_gait_pattern=False '
-                'to override.'
-            )
-
     def compute_cadence(self,return_all=False):
         
         # In steps per minute.
@@ -1326,6 +1238,7 @@ class gait_analysis(kinematics):
             rHS,lHS,rTO,lTO = manual_steps(self)
             
         if trimflag==1:
+            self.usedAutoTrim = True
             j=1
             checkflag=self.promflag
 
@@ -1391,6 +1304,7 @@ class gait_analysis(kinematics):
                     )
                 print("Trying auto-Trim")
                 rHS,lHS,rTO,lTO=trimend(self, trimarray[j])
+                self.nAutoTrims += 1
                 # print(j)
                 j+=1
                 checkflag=self.promflag
@@ -1447,6 +1361,27 @@ class gait_analysis(kinematics):
             toIps = lTO
             hsCont = rHS
             toCont = rTO
+
+        # Edit #14 (2026-08-27, found by the Phase 1.1 re-run survey). Edit #5
+        # added an empty-heel-strike guard, but only inside the `leg=='auto'`
+        # branch above -- and clinician_gui never takes that branch, because it
+        # asks for leg='r' and leg='l' explicitly. With a leg supplied, an
+        # empty hsIps made n_gait_cycles = len(hsIps)-1 = -1, which survives
+        # both adjustments below and reaches np.zeros((-1, 3)) as
+        # "ValueError: negative dimensions are not allowed" -- a numpy message
+        # naming nothing the operator can act on.
+        #
+        # Observed on real data, not hypothesised: Trial3_1 in session
+        # ca505b02 failed exactly this way on both legs, 2 of 92 trial-legs
+        # surveyed. Those trials need the manual event picker, and the survey
+        # can only route them there if the failure says what it is.
+        if len(hsIps) == 0:
+            raise Exception(
+                "No heel-strike events were detected for the '" + leg + "' leg, so "
+                'no gait cycle can be segmented. This is a detection failure rather '
+                "than a short trial -- check the trial's marker data quality, or "
+                'supply the events manually.'
+            )
 
         if len(hsIps)-1 < n_gait_cycles:
             print('You requested {} gait cycles, but only {} were found. '

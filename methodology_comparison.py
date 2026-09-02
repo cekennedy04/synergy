@@ -166,12 +166,23 @@ def classify(name, summary_by_method):
     return "usable", ""
 
 
-def gdi_comparison(results_by_method, reference_dir=None, repo_root=REPO_ROOT):
+def gdi_comparison(results_by_method, reference_dir=None, repo_root=REPO_ROOT,
+                   feature_set=None, check_digest=True):
     """GDI for each methodology, or a clear statement of what blocks it.
 
     `results_by_method` maps a methodology label to a run_gait_analysis result
     dict (carrying curves_r/curves_l). Returns a dict whose "available" key
     says whether a score was actually produced -- never a placeholder number.
+
+    `feature_set` selects which GDI variable set and reference pair to use
+    (see gdi.FEATURE_SETS); None takes gdi's own default. A set whose
+    normative constants were never attributed reports blocked rather than
+    scoring, for the same reason a missing reference does: the alternative is
+    a plausible wrong number.
+
+    `check_digest` guards the same failure one level deeper: a reference that
+    loads cleanly and is a valid orthonormal basis, but belongs to a different
+    control cohort than the feature set's constants. Leave it on outside tests.
     """
     spec = importlib.util.spec_from_file_location(
         "_gdi_for_comparison", Path(repo_root) / "gdi.py"
@@ -180,28 +191,53 @@ def gdi_comparison(results_by_method, reference_dir=None, repo_root=REPO_ROOT):
     sys.modules[spec.name] = gdi
     spec.loader.exec_module(gdi)
 
+    feature_set = (gdi.DEFAULT_FEATURE_SET if feature_set is None
+                   else gdi.get_feature_set(feature_set))
+
     if reference_dir is None:
         return {
             "available": False,
             "reason": (
                 "No GDI reference directory given. GDI is defined as distance from "
-                f"a normative control group and needs {gdi.MATRIX_FILENAME} and "
-                f"{gdi.CONTROL_FILENAME}; neither is in this repository. Until they "
-                "are supplied, neither methodology can produce a GDI, so there is "
-                "nothing to compare."
+                "a normative control group and needs "
+                f"{feature_set.matrix_filename} and {feature_set.control_filename} "
+                f"for the {feature_set.name!r} feature set; neither is in this "
+                "repository. Until they are supplied, neither methodology can "
+                "produce a GDI, so there is nothing to compare."
             ),
             "scores": {},
         }
     try:
-        reference = gdi.load_gdi_reference(reference_dir)
-    except gdi.GdiReferenceMissingError as exc:
+        reference = gdi.load_gdi_reference(reference_dir, feature_set,
+                                           check_digest=check_digest)
+    except (gdi.GdiReferenceMissingError, gdi.GdiReferenceMismatchError) as exc:
+        # A mismatched reference is reported, not raised: this function's whole
+        # contract is that an unusable reference produces a stated reason
+        # rather than either an exception or a fabricated score, and "the basis
+        # belongs to another cohort" is exactly as unusable as "the file is not
+        # there".
         return {"available": False, "reason": str(exc), "scores": {}}
+
+    if not feature_set.can_score:
+        # Reference present, calibration absent. Same contract as a missing
+        # reference -- report it, never fabricate a score.
+        return {
+            "available": False,
+            "reason": (
+                f"Feature set {feature_set.name!r} has no attributed normative "
+                "constants, so a projection distance cannot be converted into a "
+                "GDI. The reference matrix loaded fine; what is missing is the "
+                "control group's ln-distance mean and SD. Regenerate them from "
+                "the control cohort, or use a feature set that has them."
+            ),
+            "scores": {},
+        }
 
     return {
         "available": True,
         "reason": "",
         "scores": {
-            method: gdi.gdi_for_trial(results, reference)
+            method: gdi.gdi_for_trial(results, reference, feature_set)
             for method, results in results_by_method.items()
         },
     }

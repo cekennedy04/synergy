@@ -20,9 +20,12 @@ os.environ.setdefault("API_TOKEN", "clinician-gui-placeholder-token")
 
 # Every other import must come after the os.environ.setdefault call above.
 import importlib.util
+import json
 import queue
 import re
+import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 import xml.etree.ElementTree as ET
@@ -204,15 +207,6 @@ class ImuKinematicsError(Exception):
     review) (R5)."""
 
 
-class NonGaitTrialRejectedError(Exception):
-    """The trial segmented, but the gait guardrail rejected it as not
-    walking. Distinct from GaitAnalysisFailedError: detection did not fail,
-    it succeeded and found too little rhythmic gait to support the metrics.
-    The advice a clinician needs differs completely -- "this is not a gait
-    trial" rather than "try a longer or cleaner recording."
-    """
-
-
 class ReportExportError(Exception):
     """Wraps an OSError raised while writing the PDF report file itself
     (e.g. a Windows PermissionError when the destination file is still open
@@ -279,16 +273,6 @@ def map_error_to_message(exc):
             "a sensor was misplaced or misoriented during recording, or the "
             "model's base IMU label/heading axis doesn't match this trial's "
             "sensor setup."
-        )
-    elif isinstance(exc, NonGaitTrialRejectedError):
-        message = (
-            "This recording does not contain enough continuous walking to "
-            "compute gait metrics, so no report was produced. Gait analysis "
-            "needs at least three full gait cycles on each leg at a "
-            "walking-like cadence. A transfer, a turn, a stand-to-sit, or a "
-            "few isolated steps will not qualify. Check that this is the "
-            "trial you meant to run -- re-recording the same activity will "
-            "not change this result."
         )
     elif isinstance(exc, ReportExportError):
         message = (
@@ -470,13 +454,6 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
             allow_manual_entry=False, modelName=model_name,
         )
     except Exception as exc:
-        # gait_analysis_UCM_fixed is loaded by path at runtime, so its
-        # exception classes cannot be imported at module level -- pull the
-        # class off the loaded module instead of matching on __name__, which
-        # would silently stop working if the class were ever renamed.
-        non_gait_error = getattr(gait_fixed, "NonGaitTrialError", None)
-        if non_gait_error is not None and isinstance(exc, non_gait_error):
-            raise NonGaitTrialRejectedError(str(exc)) from exc
         raise GaitAnalysisFailedError(str(exc)) from exc
 
     # Stage 5: the stride-normalised curve matrix -- (n_coordinates x 101)
@@ -578,8 +555,169 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
     }
 
 
+# -- Trial isolation (2026-08-27) -----------------------------------------
+# A fifteen-trial batch cannot survive in one process. Observed twice from a
+# clean start (2026-08-26, 2026-08-27): the interpreter is killed around
+# trial 11-12 with exit 127 and no Python traceback. Because the process dies
+# rather than raising, run_batch's per-trial except -- which exists precisely
+# so one bad trial does not cost the other fourteen -- never runs, so the
+# batch ends early and pooling is silently skipped.
+#
+# The trials are not at fault: CK-011 and CK-012 both complete normally when
+# run alone in a fresh interpreter, and the two runs died at different trials.
+# The mechanism was never identified. This does not claim to fix it. It
+# contains it, by giving each trial its own interpreter that exits before
+# anything can accumulate -- and, because a dead child is now an ordinary
+# per-trial failure rather than the death of the run, the existing skip-and-
+# continue path finally applies to it.
+
+# These kwargs are live module objects. They cannot cross a process boundary,
+# so a caller that passes one is asking for in-process execution by
+# construction -- that is the test seam run_pipeline documents at :319.
+_ISOLATION_IMPOSSIBLE_KWARGS = ("xsens_module", "gait_fixed_module",
+                                "foot_progression_module", "xtoo_module")
+
+# How long one trial may take before its process is treated as hung. Measured
+# per-trial time on this pipeline is 21-63s end to end (IK dominates), so ten
+# minutes is roughly an order of magnitude of headroom -- generous enough that
+# a merely slow trial is never killed, tight enough that one bad trial costs
+# ten minutes rather than the whole unattended run.
+TRIAL_TIMEOUT_SECONDS = 600.0
+
+# Parts of run_pipeline's result cannot cross a process boundary: the live
+# gait_analysis objects under gait_r/gait_l, and the numpy arrays under
+# fpa_r/fpa_l. Nothing in the batch path reads any of them -- _on_batch_result
+# uses only trial/ok/error and the pooled paths -- so dropping them is safe.
+# Naming them is what keeps it honest: a caller must be able to tell "absent
+# by design" from "the pipeline failed to produce it".
+
+_TRIAL_CHILD_SOURCE = """\
+import json, sys
+config = json.loads(sys.argv[1])
+sys.path.insert(0, config["repo_root"])
+import clinician_gui as gui
+try:
+    result = gui.run_pipeline(
+        config["session_dir"], config["mvnx_path"],
+        conversion=config["conversion"], combine_module=gui._NO_COMBINE,
+    )
+    payload = {"ok": True, "result": gui._serialisable_result(result)}
+except BaseException as exc:
+    payload = {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+with open(config["out_path"], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+"""
+
+
+def _serialisable_result(result):
+    """run_pipeline's result minus whatever cannot cross a process boundary.
+
+    Each value is tested by actually serialising it rather than matched
+    against a hardcoded key list: the first attempt here listed gait_r/gait_l
+    and still died on the numpy arrays in fpa_r/fpa_l, and any such list
+    would go stale again the next time the result grows a key.
+    """
+    trimmed, dropped = {}, []
+    for key, value in result.items():
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            dropped.append(key)
+        else:
+            trimmed[key] = value
+    if dropped:
+        trimmed["dropped_by_isolation"] = dropped
+    return trimmed
+
+
+def _decode_trial_outcome(returncode, payload, stderr_tail=""):
+    """Turn a finished child process into (ok, result, error).
+
+    Split out from the spawning so the case that motivated all of this --
+    the child dying with no Python exception to report -- is testable
+    without needing a process that actually dies.
+    """
+    if payload is not None:
+        if payload.get("ok"):
+            return True, payload.get("result"), None
+        return False, None, payload.get("error") or "trial failed without an error message"
+
+    # No payload: the child never reached its own except clause. This is the
+    # exit-127 case. Say that plainly instead of inventing an exception type.
+    detail = f" Last output: {stderr_tail.strip()}" if stderr_tail.strip() else ""
+    return False, None, (
+        f"TrialProcessDied: the trial's process exited with code {returncode} "
+        f"without reporting a Python error, so nothing was written for it."
+        f"{detail}"
+    )
+
+
+def _run_trial_isolated(session_dir, mvnx_path, conversion, python_executable=None,
+                        child_source=None, timeout_s=TRIAL_TIMEOUT_SECONDS):
+    """Run one trial in its own interpreter. Never raises for a failed trial.
+
+    python_executable/child_source are injection points for the tests: the
+    real pipeline needs OpenSim, which the test environment does not have.
+    """
+    with tempfile.TemporaryDirectory(prefix="synergy-trial-") as workdir:
+        out_path = os.path.join(workdir, "result.json")
+        config = json.dumps({
+            "repo_root": REPO_ROOT,
+            "session_dir": str(session_dir),
+            "mvnx_path": str(mvnx_path),
+            "conversion": conversion,
+            "out_path": out_path,
+        })
+        try:
+            completed = subprocess.run(
+                [python_executable or sys.executable, "-c",
+                 child_source or _TRIAL_CHILD_SOURCE, config],
+                capture_output=True, text=True, timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as expired:
+            # Isolation contains a child that DIES; without this it does not
+            # contain one that HANGS, because subprocess.run waits forever by
+            # default and the batch stops making progress with no error. A
+            # trial that has not finished in timeout_s is not going to.
+            return False, None, (
+                f"TrialTimeout: the trial's process was still running after "
+                f"{timeout_s:.0f}s and was terminated. Observed per-trial time on "
+                "this pipeline is under two minutes, so this is a hang rather "
+                "than slow progress."
+                + (f" Last output: {(expired.stdout or '')[-200:].strip()}"
+                   if expired.stdout else "")
+            )
+        payload = None
+        if os.path.exists(out_path):
+            try:
+                with open(out_path, encoding="utf-8") as handle:
+                    payload = json.load(handle)
+            except (ValueError, OSError):
+                payload = None  # truncated write: treat as a dead child
+    tail = "\n".join((completed.stderr or completed.stdout or "").splitlines()[-3:])
+    return _decode_trial_outcome(completed.returncode, payload, tail)
+
+
+def _trial_already_done(session_dir, trial_name, conversion):
+    """True when this trial's curve export for this route is already on disk.
+
+    The curve matrix is the last per-trial artefact written, so its presence
+    means every stage before it succeeded -- a .mot alone does not, since a
+    run can die between IK and gait analysis. Keyed on the route as well as
+    the trial because ik and xtoo write separate files and one does not
+    substitute for the other.
+
+    Added 2026-08-30 after a batch was interrupted twelve trials into a
+    fifteen-trial participant and a rerun would have redone all fifteen.
+    """
+    curves_dir = Path(session_dir) / "GaitCurves"
+    prefix = f"{_short_session_id(session_dir)}-{conversion or 'ik'}-{trial_name}"
+    return bool(list(curves_dir.glob(f"{prefix}_*.csv")))
+
+
 def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
-              combine_module=None, **pipeline_kwargs):
+              combine_module=None, isolate_trials=None, skip_existing=False,
+              **pipeline_kwargs):
     """Process every .mvnx in a folder, then pool the session once.
 
     The GUI is otherwise one trial at a time, which for a fifteen-trial
@@ -589,14 +727,20 @@ def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
     Two deliberate choices:
 
     A failing trial is logged and skipped rather than ending the run. One
-    mis-recorded or non-walking file should not cost the other fourteen --
-    and the guardrail rejecting a non-gait trial is a normal outcome here,
-    not an error. Every failure is reported in the result.
+    mis-recorded or non-walking file should not cost the other fourteen.
+    Every failure is reported in the result.
 
     Pooling happens once, at the end. Per-trial runs rebuild the combined
     matrix each time, which is right when a clinician might stop after any
     trial; in a batch it would be N times the work for the same answer, since
     only the final one survives.
+
+    Each trial runs in its own interpreter (see the isolation note above the
+    function). isolate_trials=None means "isolate unless the caller injected
+    live modules, which makes it impossible"; pass False to force in-process
+    execution, or True to require isolation and fail loudly if injection
+    would prevent it. An isolated trial's `result` omits the values that
+    cannot be serialised and lists them under `dropped_by_isolation`.
     """
     mvnx_dir = Path(mvnx_dir)
     # Natural order: CK-010 follows CK-002. Column order in the pooled matrix
@@ -617,10 +761,38 @@ def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
             progress_callback(message)
 
     conversion = conversion or "ik"
+    # Isolate by default, but never pretend to: a caller that injected live
+    # modules cannot be isolated, so honour the injection rather than
+    # silently discarding it and running the real pipeline instead.
+    injected = [name for name in _ISOLATION_IMPOSSIBLE_KWARGS
+                if pipeline_kwargs.get(name) is not None]
+    if isolate_trials is None:
+        isolate = not injected
+    else:
+        isolate = isolate_trials
+        if isolate and injected:
+            raise ValueError(
+                "isolate_trials=True cannot be combined with in-process module "
+                f"injection ({', '.join(injected)}): those objects cannot cross "
+                "a process boundary. Pass isolate_trials=False to use them."
+            )
     trials = []
     for position, path in enumerate(files, start=1):
         trial_name = path.stem
         _progress(f"Trial {position} of {len(files)}: {trial_name}...")
+        if skip_existing and _trial_already_done(session_dir, trial_name, conversion):
+            _progress(f"  {trial_name} already processed; skipping.")
+            trials.append({"trial": trial_name, "ok": True, "error": None,
+                           "result": None, "skipped": True})
+            continue
+        if isolate:
+            ok, result, error = _run_trial_isolated(
+                session_dir, str(path), conversion)
+            if not ok:
+                _progress(f"  {trial_name} skipped: {error}")
+            trials.append({"trial": trial_name, "ok": ok, "error": error,
+                           "result": result})
+            continue
         try:
             # Per-trial pooling is suppressed: combine once after the loop.
             result = run_pipeline(

@@ -1240,11 +1240,23 @@ So the check becomes possible by re-exporting the CK trials to `.xlsx` from MVN 
 enabling sensor-data output in the `.mvnx` export options. The raw `.mvn` files are present but are
 a proprietary binary format this pipeline cannot read.
 
-### Non-gait trial guardrail (2026-08-24)
+### Non-gait trial guardrail (2026-08-24) — REMOVED 2026-08-27
 
-Closes the failure mode recorded above: a bed-to-shower-chair transfer produced a complete,
-clean-looking clinical report with no warning. `gait_analysis.__init__` now calls
-`_validate_gait_pattern()` immediately after segmentation and before any metric is computed,
+> **Removed 2026-08-27.** The guardrail no longer exists. `_validate_gait_pattern()`,
+> `NonGaitTrialError`, `MIN_HEEL_STRIKES_PER_LEG`, `PHYSIOLOGICAL_CADENCE_STEPS_PER_MIN`, the
+> `validate_gait_pattern` kwarg, `clinician_gui.NonGaitTrialRejectedError` and its message branch,
+> and `tests/test_gait_pattern_validation.py` were all deleted. There are now **no hard cutoffs on
+> physiological gait** — no minimum step/cycle count and no cadence window. Any trial that segments
+> is analysed and reported. The failure mode below is therefore live again: a non-walking recording
+> can still produce a complete, plausible-looking clinical report. The planned mitigation is a
+> reporting one, not a blocking one — the re-run survey in
+> `docs/plans/2026-08-27-001-feat-rerun-visualizer-joint-reduction-plan.md` emits cycle count and
+> cadence as manifest **columns**, so the signal survives without any trial being refused. The rest
+> of this section is kept as provenance for the thresholds and the data behind them, in past tense.
+
+Closed the failure mode recorded above: a bed-to-shower-chair transfer produced a complete,
+clean-looking clinical report with no warning. `gait_analysis.__init__` called
+`_validate_gait_pattern()` immediately after segmentation and before any metric was computed,
 raising `NonGaitTrialError`.
 
 **Screening is event-count and event-timing only, by necessity.** A minimum-forward-velocity
@@ -1275,16 +1287,17 @@ Two thresholds, both empirically grounded rather than guessed:
 | observed cadence range | 124.2 – 133.3 steps/min |
 | margin to window bounds | 84.2 low, 26.7 high |
 
-`validate_gait_pattern=False` overrides, for a genuinely short but real trial. A screening
-heuristic should not be able to hard-block a clinician, and the override is asserted by a test so
-it cannot quietly disappear.
+`validate_gait_pattern=False` overrode the check, for a genuinely short but real trial. A
+screening heuristic should not be able to hard-block a clinician — which is the reasoning that was
+followed to its conclusion on 2026-08-27, when the check was removed outright rather than left as a
+default-on block.
 
-Note what this does and does not do: it runs *after* segmentation, so a non-gait trial still pays
-the auto-trim retry cost before being rejected. It prevents the bad report, not the wasted CPU.
+Note what it did and did not do: it ran *after* segmentation, so a non-gait trial still paid the
+auto-trim retry cost before being rejected. It prevented the bad report, not the wasted CPU.
 
-Nine tests in `tests/test_gait_pattern_validation.py`, including the real-world cycle counts
-(4, 5, 6) pinned as a regression against a future threshold change quietly starting to reject real
-data. **115 tests pass.**
+Nine tests covered it in `tests/test_gait_pattern_validation.py`, including the real-world cycle
+counts (4, 5, 6) pinned as a regression against a future threshold change quietly starting to
+reject real data. That file was deleted with the guardrail.
 
 ### Spatial provenance stamped onto every report
 
@@ -1395,9 +1408,9 @@ earlier sections carry ⚠ SUPERSEDED banners).
 | **Conversion fidelity** — our `.mot` vs Xsens `<jointAngle>` | r 0.976–0.994, RMS 2.68–4.97°, **mean 3.75°** (n=14, 84 comparisons) | Both sides derive from the **same IMU orientations**. This measures coordinate and model-mapping fidelity **only** — not accuracy. Excludes `Trial8`. |
 | **Cross-modality agreement** — our `.mot` vs OpenCap video | knee r 0.980/0.986 (3.76°/3.28°); hip flexion r 0.924/0.889 (4.75°/6.13°); hip adduction r 0.902/0.857 (3.72°/3.92°); **knee + hip flexion mean 4.48° RMS** (n=14) | OpenCap is itself a video-based estimate, not gold-standard mocap. Excludes `Trial8`. **Not interchangeable with conversion fidelity above** — different quantity, different reference. |
 | Ankle disagreement is not ours | ours vs OpenCap r 0.296/0.345; ours vs Xsens ankle r 0.985/0.976 | Xsens's own ankle disagrees with OpenCap just as badly (r 0.388/0.249). OpenCap ankle is 3.0× noisier frame-to-frame and reports 80.8° ROM where normal gait is ~30°. Ball-of-foot explanation **refuted** (R 0.388→0.295, L 0.249→−0.069). |
-| Non-gait guardrail | 30/30 real trial-legs accepted, 0 false rejections, 2/2 non-gait rejected | Thresholds ≥3 heel strikes per leg (contralateral leg binds) and cadence 40–160 steps/min. Observed real cadence 124.2–133.3. Runs *after* segmentation, so a non-gait trial still pays the auto-trim cost. |
+| Non-gait guardrail | **removed 2026-08-27** | Historical result while it existed: 30/30 real trial-legs accepted, 0 false rejections, 2/2 non-gait rejected, at ≥3 heel strikes per leg and cadence 40–160 steps/min. No screen runs now — a non-gait trial is analysed and reported like any other. |
 | MVNX v4 parsing | 3- or 9-value `centerOfMass` | Layout confirmed empirically, not from schema. Truncation guarded by a vertical-component tripwire on 9-value rows only. |
-| Test suite | **115 tests pass** | This is a **pass rate, not a coverage measurement**. No coverage analysis has been run on this repo. |
+| Test suite | **287 tests pass** | This is a **pass rate, not a coverage measurement**. No coverage analysis has been run on this repo. |
 
 ### Excluded, and by which argument
 
@@ -1438,7 +1451,10 @@ correction, not a reduction in error on like data.
 Two gaps found by auditing the GUI against changes made elsewhere in the pipeline. Both were
 silent — the code ran fine, it just told the clinician the wrong thing.
 
-**1. The non-gait guardrail gave actively wrong advice.** `NonGaitTrialError` was not referenced in
+**1. The non-gait guardrail gave actively wrong advice.** *(Moot as of 2026-08-27: the guardrail
+and `NonGaitTrialRejectedError` were both removed. A gait-analysis failure now maps to
+`GaitAnalysisFailedError` again, which is correct, because a detection failure is the only kind
+left.)* `NonGaitTrialError` was not referenced in
 `clinician_gui.py` at all, so a guardrail rejection fell through `run_pipeline`'s generic
 `except Exception` into `GaitAnalysisFailedError`, whose headline reads *"Try a longer or cleaner
 recording of the same activity."* For a rejected transfer that is wrong advice: a longer, cleaner
@@ -1978,3 +1994,132 @@ Across 15 trials and 11,785 frames, zero arm-coordinate samples fall below −14
 patching a symptom in the original pipeline; with the axis assignment corrected and `atan2` in
 place, the symptom does not arise. Porting them would have been cargo-culted cleanup on data that
 does not exhibit the problem.
+
+### Edit #15 — the foot progression angle reference heading was never the walking direction (2026-08-31)
+
+The most consequential defect found in this codebase so far, because it is silent, it is in the
+supervisor's own `getpelvis`, and it corrupts a variable that GDI is scored on.
+
+`compute_foot_progression_angles` (our reformatting of `getpelvis`; math previously unchanged)
+established the direction the subject walked, then expressed each foot's angle relative to it:
+
+```python
+x2, x1 = mean(direction[-4:, 0]), mean(direction[0:4, 0])
+y2, y1 = mean(direction[-4:, 1]), mean(direction[0:4, 1])
+heading = degrees(arctan2([y2 - y1], [x2 - x1]))[0]
+```
+
+**Two independent errors, both pushing the heading to approximately zero.**
+
+**1. Wrong plane.** OpenSim's ground frame is X forward, **Y vertical**, Z lateral. Walking
+happens in X-Z. The expression above measures forward travel against *vertical bob*. Measured on
+ten OpenCap trials where the pelvis genuinely travels ~6 m:
+
+| | as written | ground plane | error |
+|---|---|---|---|
+| `Trial1` | -0.77 deg | +5.78 deg | 6.55 |
+| `Trial10` | -0.63 deg | +5.73 deg | 6.35 |
+| `Trial3` | -0.93 deg | +2.34 deg | 3.27 |
+| **mean over 10** | | | **5.26 deg** (max 6.55) |
+
+The vertical term is 8 cm of body sway against 6 m of travel, so the result is always near zero.
+That is *approximately* correct whenever a subject walks straight along +X, which is why it never
+looked wrong — and wrong by the subject's actual walking angle whenever they did not.
+
+**2. Degenerate under a pinned root.** The IMU route leaves `pelvis_tx/ty/tz` **exactly** constant
+(measured range `0.00e+00`), so the expression evaluates `arctan2(0, 0) = 0` for every trial. FPA
+then is not a progression angle at all: it is absolute foot yaw in the lab frame.
+
+**What that did to the results.** Absolute foot yaw tracks the orientation estimate's heading
+drift directly. Across all six participants, `|pelvis heading drift|` predicts the within-session
+GDI change at **r = -0.947, about -0.72 GDI points per degree**:
+
+| participant | pelvis drift | fpa right | fpa left | GDI right |
+|---|---|---|---|---|
+| AN | +27.3 | +20.7 | -27.9 | -18.4 |
+| CK | +4.7 | +3.4 | -3.8 | -7.5 |
+| HH | -1.5 | -1.4 | +2.7 | +0.7 |
+| KM | -20.3 | -15.3 | +15.4 | -12.8 |
+| MS | **-36.1** | -26.6 | +31.8 | **-29.6** |
+| SB | -10.6 | +9.7 | -9.0 | -12.8 |
+
+Four of six sessions carry 10-36 degrees of heading drift, so for those participants most of the
+GDI movement within a session was the sensors, not the subject. The mirror-image sign between the
+two feet is *not* physical: `fpa_l = heading - euler_l` is negated by construction, so with
+`heading = 0` a common-mode drift necessarily appears with opposite signs on the two feet.
+
+**The repair.** `walking_heading()` measures `arctan2(dz, dx)` in the ground plane, and falls back
+to the circular mean of pelvis yaw when displacement is under 10 cm — the only body-referenced
+direction available on a pinned-root route, and one that makes FPA immune to common-mode heading
+drift by construction.
+
+Deliberately **preserved**, because they are the supervisor's conventions rather than errors: the
+`+/-5` degree foot offsets, the mirrored left/right sign, one scalar heading per trial, the Euler
+`xyz` component `[1]`, and FPA's membership of the GDI feature set.
+
+**Verified on the worst case** (MS, -36.1 deg heading drift):
+
+| | before | after | reduction |
+|---|---|---|---|
+| `fpa_l` drift | +31.80 deg | -1.01 deg | 97% |
+| `fpa_r` drift | -26.64 deg | +6.16 deg | 77% |
+
+The residual on the right is on the side that shows genuine right-foot divergence in the raw
+recording, so some of it is expected to be real rather than an incomplete fix.
+
+**Scope of what this invalidates.** Every FPA value and every GDI score this project produced
+before 2026-08-31, on both routes. Pre-fix curve exports are retained per session as
+`GaitCurves_pre-fpa-fix/` rather than deleted. It also affects the supervisor's own OpenCap
+results, independently of anything in this repository — there by ~5 degrees rather than totally,
+which is small enough to have gone unnoticed and large enough to move a score.
+
+
+---
+
+### Found in the vendored GDI driver, deliberately NOT ported (2026-08-31)
+
+Recorded because the natural instinct on seeing `context/replay-os-small/gaitAnalysis.py` is to
+port its cycle-selection stage into the live pipeline. Do not. The stage is broken, the live
+pipeline has no equivalent, and it does not need one. Full analysis in
+`docs/2026-08-31-gdi-vs-ucm-audit.md`.
+
+**The per-cycle selection is index-confused** (`gaitAnalysis.py:413`, and again at `:659` for the
+left leg). It computes a functional depth per cycle, argsorts it, then writes:
+
+```python
+c = np.argsort(overalldepth)                     # c[k] = index of the k-th most central cycle
+data3 = reduceddat[:, (abs(rsco) < 3).flatten()] # MAD outlier rejection
+c2    = c[(abs(rsco) < 3).flatten()]
+if len(c2) > 5:
+    data2 = reduceddat[:, (c < 6).flatten()]     # both defects are on this line
+```
+
+`(c < 6)` masks the *ranks*, not the cycles. With eight cycles of depth `[5,1,9,2,8,3,7,4]` the six
+most central are columns `[1,3,5,7,0,6]`; this selects columns `[0,1,2,4,6,7]`, which includes the
+two **deepest**. The intended expression is `reduceddat[:, c[:6]]`.
+
+The same line indexes `reduceddat` rather than `data3`, so whenever more than five cycles survive
+MAD rejection — the normal case — **the outlier rejection is computed and then discarded.**
+
+**The depth measure misses a point per variable** (`gaitAnalysis.py:395`, `:641`).
+`reduceddat[starts[j]+1 : starts[j+1]-2]` plus the two endpoints covers 50 of each variable's 51
+indices — index 49 of each block is never included — and the sum is divided by 50.
+
+**Two aliases that are safe today and must not be "tidied".** `diff = subject` and `rsco = ap`
+create references, not copies. Both happen to be correct because each column is read before it is
+written; a refactor that reorders those reads would silently corrupt the distance.
+
+**Why nothing was ported.** `joint_confidence.py` is the only repo file containing `argsort` and it
+sorts timestamps. The live route scores every stride (`curve_features.score_curves`) and averages
+the scores, which needs no cycle selection at all: `session_drift.py` already consumes it that way.
+If per-cycle selection is ever wanted, write it fresh against the corrected expression above.
+
+**Also present in the supplied `context/gait_analysis/gait_analysis.py`,** which the GDI driver
+imports and which is missing every repair this file records: edits #3, #4, #5, #12 and #14. Its
+`getpelvis` still carries edit #15's vertical-plane heading. This is the argument for retiring the
+vendored GDI path rather than repairing it.
+
+**One correction to an earlier claim.** Edit #13's left/right return-order swap is **not** in the
+supplied copy — all three of its returns are `rHS, lHS, rTO, lTO`
+(`context/gait_analysis/gait_analysis.py:772, 871, 906`). Whatever copy the swap was found in, it
+was not this one, and results processed through the supplied file are unaffected by it.
