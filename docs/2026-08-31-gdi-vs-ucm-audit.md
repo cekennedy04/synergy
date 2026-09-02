@@ -457,3 +457,103 @@ than defined in this module.
 One documentation finding is accepted: the flat assertion "Always high, never low" above
 `SCORING_UNIT_CYCLE` overclaims. The ordering is measured over 90 trial-legs, not proved; the
 comparison is against the mean of *log* distances and no universal ordering follows.
+
+---
+
+## 12. The frame mismatch is general, not a pelvis bug (2026-09-02)
+
+Section 11 disabled `gdi9` for a `pelvis_tilt` convention mismatch and named the authoritative
+convention as the open question. Investigating a proposed fix produced a larger finding: **the
+mismatch is not confined to the pelvis, and a pelvis correction cannot resolve it.**
+
+### The three conventions, reconciled
+
+The diagnosis that prompted this was sound, and the literature supports it:
+
+| Convention | Mean | Assessment |
+|---|---|---|
+| A — stored control cohort | **11.99°** | Clinical baseline. Matches optical-mocap norms (12° ± 4°, Schwartz 2008 / Davis 1991). The constants are moments of *this* distribution. |
+| B — our raw exports | **21.23°** | Uncalibrated markerless baseline, consistent with OpenCap-derived anatomical frames sitting ~20-22°. |
+| C — B plus the legacy `+20` | **41.23°** | Double-counted. The `+20` was written for a pipeline outputting near 0°; applied here it over-corrects. |
+
+**Acted on: the `+20` is removed.** 41.23° is non-physiological against any published norm, so the
+offset was wrong here regardless of which frame proves authoritative — removing it required no
+answer to the open question. What replaces it does.
+
+### Why no fitted offset replaced it
+
+Aligning our mean tilt to the cohort's (a −9.24° shift) was measured and rejected on three grounds.
+
+**The estimator is thin.** The "90 trial-legs" are three subjects, and their means span 6.5° —
+70% of the offset being estimated:
+
+    CK-CK   24.28    OC   21.63    XT-XT   17.78     (spread 6.50, offset 9.24)
+
+**It would calibrate away the signal.** Mean-matching a *subject* group onto a *control* reference
+removes exactly the between-group difference GDI exists to measure. If those subjects are impaired,
+subtracting their mean offset subtracts their impairment. None of the three has a verified health
+status in this repo.
+
+**It targets the wrong variable.** Measured per variable against the cohort:
+
+    hip_flexion    -13.47      <- largest, and reduced6 uses it
+    fpa            +10.90
+    pelvis_tilt     +9.24      <- the one the fix addressed
+    ankle_angle     -4.70
+    pelvis_rotation +2.36
+    knee_angle      -2.41
+    hip_adduction   +0.85
+    hip_rotation    +0.75
+    pelvis_list     -0.54
+
+    sum |offset| over the six NON-pelvis variables: 33.1 deg
+
+### The decisive measurement
+
+`reduced6` contains **no pelvis terms at all**, so it is immune to this entire question. Our
+subjects score:
+
+    CK-CK    n=145 strides    84.62 +/- 4.19
+    OC       n=106            77.04 +/- 8.77
+    XT-XT    n=145            78.08 +/- 8.59
+    ALL      n=396            80.20 +/- 8.09
+
+    control cohort, same reference     100.00 +/- 10.00
+    deficit, zero pelvis involvement    19.80 points
+
+A pelvis-only correction cannot close a 19.8-point gap in a feature set containing no pelvis terms.
+Confirmed directly — `gdi9` under each convention:
+
+    +20 (legacy)              79.04
+    no adjustment (raw)       85.58
+    -9.24 (proposed)          84.38      <- target was 100
+    reduced6 (pelvis-free)    80.20
+
+Note that the legacy `+20` produced the *closest* agreement with `reduced6` (79.04 vs 80.20). That
+is coincidence, and it is worth stating plainly: **agreement between gdi9 and reduced6 is not a
+validity criterion.** They are different feature sets with different constants and need not agree.
+The criterion is whether a known-healthy subject scores ~100, and no combination tested achieves it.
+
+### What this means
+
+Either our three subjects are genuinely impaired, or this pipeline's kinematics are systematically
+offset from the optical-mocap cohort the reference is built on — the same anatomical-frame problem
+identified for the pelvis, but across all nine variables. **The repo cannot distinguish these**, and
+the distinction decides whether every GDI number this project reports is ~20 points low.
+
+Scores remain internally consistent and therefore valid for **within-pipeline comparison** — trial
+to trial, leg to leg, session to session, which is what `session_drift.py` and the clinician report
+actually do. They are **not** on the published normative scale, and should not be reported as though
+100 means what it means in the literature.
+
+### The question that resolves it
+
+Not the pelvis convention. It is: **is there a known-healthy subject measured through this
+pipeline?** One such subject scoring ~100 on `reduced6` shows the frame is sound and our cohort is
+impaired. One scoring ~80 shows the frame is offset and every reported score needs rescaling. That
+is a single measurement, and it is worth more than any further analysis of the existing files.
+
+Failing that, the clean alternative is to build the normative reference from healthy subjects
+measured through **this** pipeline, which sidesteps cross-pipeline comparability entirely. A frame
+correction derived from a concurrent-capture validation study (same subjects, both systems) would
+also work; one fitted to our own participants would not.

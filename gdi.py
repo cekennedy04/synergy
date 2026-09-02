@@ -152,35 +152,27 @@ _CANONICAL_9 = (
 # them from an `if name ==` chain that would have gone looking for pelvis
 # columns that a 6-variable set does not have.
 #
-# LIVE DEFECT, `gdi9` ONLY (found 2026-09-01, not yet resolved). The `+20` on
-# pelvis_tilt does not agree with the cohort the references are built from.
-# `control_kinematics.csv` stores pelvis_tilt RAW -- its column-mean is 11.99,
-# and a stored +20 would put it near 32. So a gdi9 subject vector built here is
-# offset from the reference in 51 of its 459 rows. Measured: scoring the control
-# cycles through gdi9 gives the required 100.0 +/- 10.0 as stored, and
-# 89.5 +/- 9.1 with this adjustment applied -- a 10.5-point loss on subjects who
-# are by definition normal.
+# The `+20` on pelvis_tilt was REMOVED 2026-09-02. It was a legacy correction
+# for an input pipeline whose raw tilt sat near 0 to -8 degrees, and it is not
+# one for this pipeline: our raw exports mean 21.23 degrees (n=3 subjects, 90
+# trial-legs), so +20 took them to 41.23. Published norms put healthy anterior
+# pelvic tilt near 12 +/- 4 (Schwartz 2008, Davis 1991) and the control cohort
+# this project scores against stores 11.99, so 41 is not a convention -- it is
+# non-physiological, and wrong regardless of which frame turns out to be
+# authoritative. Removing it needed no answer to that question; what replaces
+# it does.
 #
-# Do not "fix" it by deleting the +20 without deciding which side is wrong. It
-# is a convention offset, and this pipeline makes that worse rather than better:
-# its own raw pelvis_tilt runs ~21.5 degrees against the cohort's ~12, so +20
-# takes it to ~41. Whether the cohort, the supervisor's OpenCap convention, or
-# this pipeline's is the odd one out is the same kind of provenance question as
-# the one settled in gdi_reference.build_reference, and it needs the same
-# treatment: ask, then record.
+# Do NOT replace it with a fitted offset. Aligning our subjects' mean tilt to
+# the cohort's (a -9.24 shift) was considered and rejected: it is estimated
+# from three subjects of unverified health status, its between-subject spread
+# (6.5 degrees) is 70% of the offset itself, and mean-matching a *subject*
+# group onto a *control* reference removes precisely the between-group
+# difference GDI exists to measure. See section 12 of
+# docs/2026-08-31-gdi-vs-ucm-audit.md for the measurements.
 #
-# Reachability, corrected 2026-09-02 after an outside review. An earlier
-# version of this note said the defect was "not currently reachable in
-# practice" because DEFAULT_FEATURE_SET is reduced6 and reduced6/5/4 carry no
-# pelvis terms. That was wrong: `--feature-set gdi9` is a documented flag on
-# both curve_features.py and session_drift.py, and it ran clean --
-# `CK-CK-003_right` scored 82.6 against reduced6's 88.4, exit 0, no warning.
-# Being off the default path is not the same as being unreachable.
-#
-# gdi9 is now disabled outright (see its `disabled_reason`), so both routes to
-# a score raise. That is the guard, not this comment.
+# The remaining `pelvis_rotation` wrap is a range fix, not a frame correction:
+# it maps a value reported near +360 back into +/-180. It stands on its own.
 _CURVE_ADJUSTMENTS = {
-    "pelvis_tilt": lambda value: value + 20.0,
     "pelvis_rotation": lambda value: value - 180.0 if value > 180.0 else value,
 }
 
@@ -267,19 +259,20 @@ GDI9 = GdiFeatureSet(
     ),
     reference_digest="ee05c4a85881b8a1079d001e5b1ef87f1d7ad17afe3734db5211fcfb5741d587",
     disabled_reason=(
-        "gdi9 is the only shipped set carrying pelvis terms, and this "
-        "pipeline's pelvis convention does not match the control cohort the "
-        "references are built from. _CURVE_ADJUSTMENTS adds +20 to "
-        "pelvis_tilt; control_kinematics.csv stores it raw (column-mean "
-        "11.99). Scoring the control cycles through gdi9 gives 100.0 +/- 10.0 "
-        "as stored and 89.5 +/- 9.1 with the adjustment applied -- healthy "
-        "controls read ~10.5 points low, and a real trial reads 82.6 where "
-        "reduced6 reads 88.4. Trimming does not fix this: it recovers clean "
-        "gait cycles, it does not recalibrate a coordinate offset, so cleanly "
-        "trimmed data still scores wrong. Use reduced6, which carries no "
-        "pelvis terms and bypasses the mismatch entirely. Disabled until the "
-        "authoritative pelvis convention is defined by the collaborator -- see "
-        "the LIVE DEFECT note above _CURVE_ADJUSTMENTS."
+        "this pipeline's joint-angle frame does not match the control cohort "
+        "the references are calibrated on, and gdi9's three pelvis terms are "
+        "among the worst-affected. Measured against the cohort, our exports "
+        "differ by +9.24 deg on pelvis_tilt and +2.36 on pelvis_rotation. "
+        "The mismatch is NOT confined to pelvis -- hip_flexion is off by "
+        "-13.47 deg and fpa by +10.90 -- so reduced6 is not a fix for it, "
+        "only a smaller exposure to it (6 variables' worth of offset rather "
+        "than 9). gdi9 is disabled rather than reduced6 because gdi9 adds the "
+        "pelvis terms on top without any offsetting benefit, and because the "
+        "project's reported numbers all come through reduced6. Disabled until "
+        "the frame question is resolved -- see section 12 of "
+        "docs/2026-08-31-gdi-vs-ucm-audit.md. Note that this is a "
+        "comparability problem, not a trimming one: auto-trimming recovers "
+        "clean gait cycles, it does not recalibrate a coordinate frame."
     ),
 )
 

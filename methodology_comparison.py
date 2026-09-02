@@ -16,7 +16,8 @@ desynchronise this module's row mapping.
 
 What this module does NOT do:
 
-  * It does not compute a synergy/UCM index. No uncontrolled-manifold math
+  * It does not itself compute a synergy/UCM index (ucm.py and trial_scores.py
+    do). No uncontrolled-manifold math
     exists anywhere in this repository or its history, and the task variable
     is an open domain question -- see VENDORING.md. `synergy_status()` reports
     that explicitly rather than returning a placeholder number.
@@ -250,14 +251,27 @@ def synergy_status():
     indistinguishable from a computed result in a downstream table.
     """
     return {
-        "available": False,
+        "available": True,
         "reason": (
-            "No uncontrolled-manifold implementation exists in this repository or "
-            "its history -- no nullspace projection, no V_UCM/V_ORT decomposition, "
-            "no task-variable Jacobian. The task variable is also undecided. Note "
-            "that a global-COM formulation is available to the OpenCap methodology "
-            "but NOT to the IMU one, whose root translation is pinned; the COM "
-            "columns in both exports are expressed relative to pelvis translation."
+            "An uncontrolled-manifold implementation now exists: ucm.py (built "
+            "2026-08-25) provides the nullspace projection and the V_UCM/V_ORT "
+            "decomposition, task_functions.py the task-variable Jacobian, and "
+            "trial_scores.py drives them per trial for the clinician report. "
+            "This function previously stated that none of it existed, which was "
+            "true when written and is not now."
+        ),
+        "caveat": (
+            "The TASK VARIABLE remains undecided, and it is not a detail: "
+            "measured 2026-08-25, the ranking between methodologies reverses "
+            "with it (pelvis-relative COM gives Xsens 0.407 against OpenCap "
+            "0.803; foot placement gives 0.475 against 0.179 -- same strides, "
+            "same joints, same code). Any reported index must therefore name "
+            "its formulation. ucm.py's documented default, pelvis-relative "
+            "centre of mass, is what trial_scores.py uses. A global-COM "
+            "formulation is available to the OpenCap methodology but NOT to "
+            "the IMU one, whose root translation is pinned; the COM columns in "
+            "both exports are expressed relative to pelvis translation, which "
+            "is what keeps the two methodologies comparable at all."
         ),
     }
 

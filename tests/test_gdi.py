@@ -155,16 +155,28 @@ def test_cycle_is_sampled_every_other_point(gdi):
     assert len(set(gdi.GDI_CYCLE_POINTS)) == 51
 
 
-def test_pelvis_tilt_offset_and_rotation_wrap_are_preserved(gdi):
-    """Two per-coordinate adjustments carried over verbatim; changing either
-    silently shifts every score."""
+def test_pelvis_tilt_is_no_longer_offset_and_the_rotation_wrap_remains(gdi):
+    """The `+20` on pelvis_tilt was removed 2026-09-02: it was a legacy
+    correction for an input pipeline whose raw tilt sat near 0, and applied to
+    this pipeline's 21.23 deg it produced 41.23 -- non-physiological against
+    published norms of 12 +/- 4, so wrong whichever frame turns out to be
+    authoritative.
+
+    Pinned in the negative so it cannot return as a "fix", and so that anyone
+    reinstating an offset has to justify the number. The rotation wrap stays:
+    it is a range fix (bring a near-360 value back inside +/-180), not a frame
+    correction, and it stands on its own."""
     curves = _mean_curves("r", value=0.0)
     curves["pelvis_tilt"] = [5.0] * 101
     curves["pelvis_rotation"] = [200.0] * 101
 
     vector = gdi.build_gdi_feature_vector(curves, "r", gdi.GDI9)
 
-    assert vector[0] == pytest.approx(25.0)                    # 5 + 20
+    assert vector[0] == pytest.approx(5.0), (
+        "pelvis_tilt must pass through unmodified. A fitted offset is not the "
+        "replacement -- see the _CURVE_ADJUSTMENTS note in gdi.py."
+    )
+    assert "pelvis_tilt" not in gdi._CURVE_ADJUSTMENTS
     assert vector[2 * 51] == pytest.approx(20.0)               # 200 - 180
 
 

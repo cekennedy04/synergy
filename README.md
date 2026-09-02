@@ -60,7 +60,55 @@ See `.claude/skills/run-gui/SKILL.md` for the failure modes and the
    (one subfolder for OpenCap results, one for Xsens-derived results), then re-zip for upload
    back into the gait analysis backend.
 
+## Open concerns — read this first
+
+**The foot progression angle was never referenced to the walking direction.** Found 2026-09-01.
+Full write-up with every measurement in
+[`docs/2026-09-01-fpa-heading-concerns.md`](docs/2026-09-01-fpa-heading-concerns.md); provenance in
+`VENDORING.md` under edit #15.
+
+`getpelvis` derives the direction the subject walked as
+`arctan2(y_end - y_start, x_end - x_start)`. OpenSim's ground frame is X forward, **Y vertical**,
+Z lateral — walking is in X-Z. As written it measures forward travel against vertical bounce, so
+FPA has never been expressed relative to the direction of travel. It looks plausible because the
+answer is always near zero, which is approximately right whenever a subject walks straight along
++X.
+
+Two consequences, one of which is not confined to this repository:
+
+| where | effect | size |
+|---|---|---|
+| **Upstream OpenCap results** (root translates) | constant bias per trial | **5.26 deg mean, 6.55 max** over 10 trials |
+| **This project's IMU route** (root pinned) | `arctan2(0, 0) = 0`, so FPA becomes absolute foot yaw and tracks heading drift | **up to 30 GDI points** within one session |
+
+Across six participants, `|pelvis heading drift|` predicts the within-session change in GDI at
+**r = -0.947, about -0.72 points per degree**; four of six sessions carry 10-36 degrees of drift.
+
+Repaired by measuring the heading in the ground plane, falling back to pelvis yaw where the root
+does not translate. Everything else was deliberately left alone — the `+/-5` degree foot offsets,
+the mirrored left/right sign, one heading per trial, and FPA's place in the GDI feature set.
+
+**The correction does not improve every number, which is the main reason to trust it.** One
+participant's drift is driven by hip flexion rather than FPA and is untouched to two decimal
+places; another retains a genuine right-foot divergence that is visible in the raw recording. A fix
+that cleaned those up as well would have meant real signal was being flattened.
+
+**Any GDI or FPA value produced before 2026-08-31 is superseded.** Pre-fix curve exports are kept
+per session as `GaitCurves_pre-fpa-fix/` rather than deleted.
+
+Two questions for whoever maintains the upstream code, both in the write-up: what the `+/-5` degree
+foot offsets encode (no derivation found anywhere), and whether anything downstream was tuned
+against the old near-zero heading.
+
 ## Known issues / open problems
+
+- **An intermittent native crash with no Python traceback.** Trials occasionally exit with
+  `3221226505` (`STATUS_STACK_BUFFER_OVERRUN`). It is *not* tied to particular trials — one that
+  crashed in a batch completed on the next run. Each trial now runs in its own process so a crash
+  costs one trial rather than the whole batch; the cause is still unknown.
+- **`AnalyzeTool` is run but its result is never read.** `getpelvis` constructs one, runs it, then
+  recomputes everything itself from the `.mot`. Roughly 17 s per trial — about a quarter of the
+  per-trial cost — with no observable use. Left in place in case of a side effect.
 
 - **Zip handling is fragile.** File-finding by name (motion files, session metadata) breaks if
   filenames get mangled on re-zip, or if files end up nested deeper than the code expects.
