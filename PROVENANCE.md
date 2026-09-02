@@ -125,6 +125,9 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `session_drift.py` | 238 | Detects measurement drift across a session's trials. |
 | `raw_drift.py` | 240 | Checks a session's raw Xsens recordings for heading drift *before* processing, so an hour is not spent on a recording that cannot be used. |
 | `rerun_survey.py` | 244 | Surveys which archived trials the left/right swap actually corrupted, and which were unaffected. |
+| `trial_scores.py` | 281 | Computes GDI and the synergy index for one trial, so the clinician report can carry both. |
+| `session_report.py` | 287 | Per-session report, with the headline scores at the front. |
+| `gait_event_picker_ui.py` | 462 | matplotlib UI for `gait_event_picker.GaitEventPicker`, asked for only after auto-trim fails to find a gait cycle. |
 
 ### Tests and docs
 
