@@ -130,6 +130,8 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `session_report.py` | 287 | Per-session report, with the headline scores at the front. |
 | `gait_event_picker_ui.py` | 462 | matplotlib UI for `gait_event_picker.GaitEventPicker`, asked for only after auto-trim fails to find a gait cycle. |
 | `verify_calibration_fix.py` | 262 | Cohort-wide gate on the 2026-09-02 IMUPlacer calibration-pose fix: arms back in range, pelvis and legs provably untouched, nothing pinned against a model bound. |
+| `cohort_scores.py` | 274 | GDI and the UCM synergy index for every Xsens session in one table, scored per side so a GDI-vs-synergy comparison never pairs opposite limbs. The cohort-level counterpart to `session_report.py`. |
+| `cohort_figures.py` | 633 | Renders the cohort report's figures from `cohort_scores.py`'s JSON. Split from scoring so a figure can be restyled without reloading six OpenSim models. |
 
 ### Tests and docs
 
