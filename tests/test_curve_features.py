@@ -162,17 +162,20 @@ def test_an_unknown_side_is_rejected(cf, gdi, row_order):
 # -- the per-variable adjustments --------------------------------------------
 
 
-def test_the_pelvis_offset_applies_only_where_pelvis_is_in_the_set(cf, gdi,
-                                                                   row_order):
-    """gdi9 carries pelvis_tilt and must be offset by +20; reduced6 has no
-    pelvis at all, so nothing may be adjusted."""
+def test_the_export_path_applies_no_pelvis_tilt_offset_either(cf, gdi,
+                                                              row_order):
+    """This module builds feature vectors through the same
+    `gdi._CURVE_ADJUSTMENTS` table, so removing the `+20` there must remove it
+    here too. Pinned because the two paths were independent before that table
+    existed, and a re-added offset in one and not the other would put the
+    exported-curve route and the mean-curve route on different scales."""
     matrix = _matrix(row_order, value_for=lambda i, n: 5.0)
 
     nine = cf.to_feature_vectors(matrix, "right", gdi.GDI9, gdi, row_order)
     six = cf.to_feature_vectors(matrix, "right", gdi.REDUCED6, gdi, row_order)
 
-    assert nine[0, 0] == pytest.approx(25.0)   # pelvis_tilt + 20
-    assert np.all(six == 5.0)                  # untouched
+    assert nine[0, 0] == pytest.approx(5.0)    # pelvis_tilt, unmodified
+    assert np.all(six == 5.0)                  # untouched, as before
 
 
 def test_a_coordinate_absent_from_the_export_names_itself(cf, gdi, row_order):
