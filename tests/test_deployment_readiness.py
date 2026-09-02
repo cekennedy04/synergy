@@ -40,6 +40,10 @@ IMPORT_TO_DISTRIBUTION = {
 # Directories that are not part of what gets deployed and run.
 EXCLUDED_DIRS = {".git", "__pycache__", "tests", "docs", ".claude"}
 
+# The commit that vendored the upstream opencap-processing baseline.
+# PROVENANCE.md names this commit and defines tier A as its contents.
+VENDORED_BASELINE_COMMIT = "cfcf7ad"
+
 
 def _shipped_python_files():
     """Every .py file that is part of the deliverable."""
@@ -50,25 +54,59 @@ def _shipped_python_files():
 
 
 def _in_repo_module_names():
-    """Module names importable because they are files in this repo.
+    """Module names importable because they are files or packages in this repo.
 
-    Includes subdirectory modules (`ActivityAnalyses/gait_analysis.py` and
-    friends) -- those are vendored upstream code imported by bare name, not
-    third-party packages that need declaring.
+    Covers three shapes, all of which look like third-party imports to a
+    naive scan but are not:
+      - top-level modules (`gdi.py`)
+      - subdirectory modules imported by bare name (`ActivityAnalyses/
+        gait_analysis.py`, imported as `gait_analysis`)
+      - subdirectory *packages* (`import ActivityAnalyses.sts_analysis`)
     """
-    return {p.stem for p in _shipped_python_files()}
+    names = {p.stem for p in _shipped_python_files()}
+    for path in _shipped_python_files():
+        # Every ancestor directory, not just the immediate parent:
+        # `UtilsDynamicSimulations/OpenSimAD/*.py` is imported as
+        # `UtilsDynamicSimulations.OpenSimAD`, whose top-level name is two
+        # levels up from the file.
+        names.update(path.relative_to(REPO_ROOT).parts[:-1])
+    return names
 
 
 def _declared_distributions():
-    text = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    """Everything declared by either manifest.
+
+    Two files, for a reason that is not redundancy. `requirements.txt` is tier
+    A -- vendored from upstream opencap-processing in `cfcf7ad` -- and this
+    repo's ground rule is that upstream files are never edited in place, so it
+    cannot be where a synergy-side dependency gets added. `environment.yml` is
+    ours, and is also the only one of the two that can express `opensim`,
+    which is not on PyPI at all.
+    """
     declared = set()
-    for line in text.splitlines():
+
+    for line in (REPO_ROOT / "requirements.txt").read_text(
+        encoding="utf-8"
+    ).splitlines():
         line = line.split("#")[0].strip()
-        if not line:
-            continue
-        name = re.split(r"[=<>!~\[]", line)[0].strip()
-        if name:
-            declared.add(name.lower())
+        if line:
+            name = re.split(r"[=<>!~\[]", line)[0].strip()
+            if name:
+                declared.add(name.lower())
+
+    environment = REPO_ROOT / "environment.yml"
+    if environment.exists():
+        for line in environment.read_text(encoding="utf-8").splitlines():
+            line = line.split("#")[0].strip()
+            if not line.startswith("- "):
+                continue
+            entry = line[2:].strip()
+            if not entry or entry.endswith(":"):
+                continue
+            name = re.split(r"[=<>!~\[]", entry)[0].strip()
+            if name:
+                declared.add(name.lower())
+
     return declared
 
 
@@ -139,10 +177,23 @@ def test_every_shipped_module_is_classified_in_the_provenance_map():
     provenance = (REPO_ROOT / "PROVENANCE.md").read_text(encoding="utf-8")
     named = {Path(m).name for m in re.findall(r"[\w./-]+\.py", provenance)}
 
+    # Tier A is defined by construction rather than by listing all 57 files,
+    # and PROVENANCE.md gives the command that regenerates it. Use that same
+    # command as the source of truth instead of duplicating the list here --
+    # otherwise this gate would drift from the document it is checking.
+    vendored = subprocess.run(
+        ["git", "ls-tree", "-r", VENDORED_BASELINE_COMMIT, "--name-only"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    vendored_names = {Path(f).name for f in vendored}
+
     unclassified = sorted(
         str(p.relative_to(REPO_ROOT))
         for p in _shipped_python_files()
-        if p.name not in named
+        if p.name not in named and p.name not in vendored_names
     )
 
     assert not unclassified, (

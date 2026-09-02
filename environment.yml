@@ -1,0 +1,48 @@
+# The environment the pipeline actually runs in.
+#
+# `requirements.txt` is inherited from upstream opencap-processing and is not
+# sufficient on its own: it cannot express `opensim`, which is not on PyPI at
+# all -- it ships from the `opensim-org` conda channel, in a build pinned to a
+# specific numpy ABI (4.5 = py311np123). A pip-only install therefore produces
+# an environment in which `import opensim` fails, and with it launch_gui.py,
+# task_functions.py, utils.py and utilsKinematics.py.
+#
+# Versions below are the ones this pipeline's results were produced under,
+# read off the working environment rather than chosen. Pinned because the
+# opensim build constrains numpy: 4.5/py311np123 expects the 1.23 ABI, so a
+# newer numpy silently breaks the OpenSim bindings rather than failing to
+# resolve.
+#
+#   conda env create -f environment.yml
+#   conda activate opencap-processing
+#
+# Note that the *tests* deliberately run under a different interpreter than
+# the app -- pytest lives in base, not here. See README.md.
+
+name: opencap-processing
+
+channels:
+  - opensim-org
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - opensim=4.5
+
+  # Scientific stack. numpy is held at 1.23 by the opensim build above.
+  - numpy=1.23.5
+  - scipy=1.10.0
+  - pandas=2.0.3
+  - matplotlib=3.7.3
+  - seaborn
+
+  # Pipeline support.
+  - pyyaml=6.0
+  - requests
+  - joblib
+
+  - pip
+  - pip:
+      - python-decouple
+      - maskpass==0.3.6
