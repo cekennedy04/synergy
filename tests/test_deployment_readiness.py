@@ -125,6 +125,58 @@ def _top_level_imports(path):
     return names
 
 
+def _docstring_nodes(tree):
+    """Every string node that is documentation rather than a value.
+
+    Covers module, class and function docstrings plus bare string expression
+    statements, which this codebase uses as block commentary. They are the
+    only place a `.py` filename appears as prose rather than as a target.
+    """
+    documentation = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if isinstance(node, (ast.Module, ast.ClassDef,
+                             ast.FunctionDef, ast.AsyncFunctionDef)) and body:
+            first = body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                documentation.add(id(first.value))
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            documentation.add(id(node.value))
+    return documentation
+
+
+def _referenced_module_filenames(path):
+    """`.py` filenames this file names as a load target, not as prose.
+
+    Matching on string literals rather than on call shape is deliberate. The
+    repo reaches other modules by path in at least four spellings -- a local
+    `_load(name, filename)`, `module_loading.load_module_by_path` through an
+    aliased `_load_module_by_path`, a direct
+    `importlib.util.spec_from_file_location`, and module-level `_..._PATH`
+    constants built with `os.path.join` or the `/` operator. Every one of them
+    has to name the file as a literal somewhere. Keying on the literal catches
+    all four and does not break when a fifth spelling is invented.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        return set()
+
+    documentation = _docstring_nodes(tree)
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.endswith(".py")
+        # A bare ".py" is an extension being concatenated onto a name computed
+        # at runtime (`fooName + '.py'`, several times in utilsOpenSimAD.py),
+        # not a file anyone can check for. Require a stem.
+        and len(node.value) > len(".py")
+        and id(node) not in documentation
+    }
+
+
 def test_every_third_party_import_is_declared_as_a_dependency():
     """`pip install -r requirements.txt` must be enough to import the code.
 
@@ -275,6 +327,78 @@ def test_no_command_line_entry_point_hangs_on_help(entry_point):
             "smoke-tested by a deployment check, and gives an operator no way "
             "to discover how to run it."
         )
+
+
+def test_the_path_load_detector_flags_a_file_that_is_not_there(tmp_path):
+    """Proof that the gate below can fail. Without this, a green gate is
+    indistinguishable from a gate that looks at nothing.
+    """
+    source = tmp_path / "loader.py"
+    source.write_text(
+        "import importlib.util\n"
+        "def _load():\n"
+        "    return importlib.util.spec_from_file_location('x', "
+        "REPO_ROOT / 'definitely_absent.py')\n",
+        encoding="utf-8",
+    )
+    assert "definitely_absent.py" in _referenced_module_filenames(source)
+
+
+def test_the_path_load_detector_ignores_prose(tmp_path):
+    """A filename discussed in a docstring is not a dependency.
+
+    This codebase documents itself heavily and names other modules constantly
+    -- `gdi.py` alone mentions half the repo. Flagging those would make the
+    gate unusable, and worse, would train everyone to ignore it.
+    """
+    source = tmp_path / "documented.py"
+    source.write_text(
+        '"""This module explains how session_report.py works.\n\n'
+        'It also mentions cohort_figures.py at length.\n"""\n'
+        "\n"
+        "def f():\n"
+        '    """See also make_reports.py."""\n'
+        "    return 1\n",
+        encoding="utf-8",
+    )
+    assert _referenced_module_filenames(source) == set()
+
+
+def test_every_path_loaded_module_is_present_in_the_repo():
+    """A file loaded by path must exist, or the caller breaks at runtime.
+
+    The dependency gate above walks `import` statements. This repo mostly does
+    not use them for its own modules: `module_loading.load_module_by_path`,
+    the local `_load` helpers, and direct
+    `importlib.util.spec_from_file_location` calls are the convention, chosen
+    deliberately so callers work regardless of how they are launched.
+
+    Nothing checks those. A module can name a file that is not on this branch
+    and every import-based check stays green, because there is no import to
+    look at -- the failure waits until someone runs it. That is exactly what
+    happened on `feat/cohort-reporting`: `cohort_scores.py` loads
+    `session_report.py`, which lives only on the picker branch, and the whole
+    suite passed anyway.
+    """
+    present = {p.name for p in REPO_ROOT.rglob("*.py")}
+
+    missing = {}
+    for path in _shipped_python_files():
+        for filename in _referenced_module_filenames(path):
+            if filename not in present:
+                missing.setdefault(filename, set()).add(
+                    str(path.relative_to(REPO_ROOT))
+                )
+
+    assert not missing, (
+        "these files are loaded by path but are not in the repository, so the "
+        "modules naming them break at runtime while every import-based check "
+        "stays green:\n"
+        + "\n".join(
+            f"  {name}  <- loaded by {', '.join(sorted(sources))}"
+            for name, sources in sorted(missing.items())
+        )
+    )
 
 
 def test_the_disabled_feature_set_is_refused_across_a_module_boundary():
