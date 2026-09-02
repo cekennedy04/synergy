@@ -71,24 +71,44 @@ class TestExplicitOverride:
 
 
 class TestDiscovery:
+    # Both layouts are exercised on every host. These tests build a fake env
+    # tree, so the layout they create and the layout `find_env_python` looks
+    # for have to be the same decision -- previously the fixture hard-coded
+    # the Windows layout while the function auto-detected the real platform,
+    # which agreed only on Windows. On Linux they diverged and five tests
+    # failed, which is how CI found this.
+    @pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
     @pytest.mark.parametrize(
         "install_dir",
         ["miniconda3", "anaconda3", "mambaforge", "miniforge3"],
     )
-    def test_finds_env_under_each_standard_install_dir(self, tmp_path, install_dir):
-        interpreter = _make_env(tmp_path / install_dir)
-        found = launch_gui.find_env_python(environ={}, home=tmp_path)
+    def test_finds_env_under_each_standard_install_dir(
+        self, tmp_path, install_dir, windows
+    ):
+        interpreter = _make_env(tmp_path / install_dir, windows=windows)
+        found = launch_gui.find_env_python(
+            environ={}, home=tmp_path, windows=windows
+        )
         assert found == interpreter
 
-    def test_uses_conda_exe_when_install_is_somewhere_nonstandard(self, tmp_path):
+    @pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
+    def test_uses_conda_exe_when_install_is_somewhere_nonstandard(
+        self, tmp_path, windows
+    ):
         conda_root = tmp_path / "opt" / "custom-conda"
-        interpreter = _make_env(conda_root)
-        conda_exe = conda_root / "Scripts" / "conda.exe"
+        interpreter = _make_env(conda_root, windows=windows)
+        # `_candidate_roots` walks two levels up from CONDA_EXE, so the
+        # executable has to sit where conda actually puts it on each platform:
+        # <root>/Scripts/conda.exe on Windows, <root>/bin/conda on posix.
+        conda_exe = (
+            conda_root / "Scripts" / "conda.exe" if windows
+            else conda_root / "bin" / "conda"
+        )
         conda_exe.parent.mkdir(parents=True, exist_ok=True)
         conda_exe.write_text("")
 
         found = launch_gui.find_env_python(
-            environ={"CONDA_EXE": str(conda_exe)}, home=tmp_path
+            environ={"CONDA_EXE": str(conda_exe)}, home=tmp_path, windows=windows
         )
         assert found == interpreter
 
