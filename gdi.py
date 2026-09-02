@@ -148,6 +148,27 @@ _CANONICAL_9 = (
 # automatically drops the corrections with it -- the previous version applied
 # them from an `if name ==` chain that would have gone looking for pelvis
 # columns that a 6-variable set does not have.
+#
+# LIVE DEFECT, `gdi9` ONLY (found 2026-09-01, not yet resolved). The `+20` on
+# pelvis_tilt does not agree with the cohort the references are built from.
+# `control_kinematics.csv` stores pelvis_tilt RAW -- its column-mean is 11.99,
+# and a stored +20 would put it near 32. So a gdi9 subject vector built here is
+# offset from the reference in 51 of its 459 rows. Measured: scoring the control
+# cycles through gdi9 gives the required 100.0 +/- 10.0 as stored, and
+# 89.5 +/- 9.1 with this adjustment applied -- a 10.5-point loss on subjects who
+# are by definition normal.
+#
+# Do not "fix" it by deleting the +20 without deciding which side is wrong. It
+# is a convention offset, and this pipeline makes that worse rather than better:
+# its own raw pelvis_tilt runs ~21.5 degrees against the cohort's ~12, so +20
+# takes it to ~41. Whether the cohort, the supervisor's OpenCap convention, or
+# this pipeline's is the odd one out is the same kind of provenance question as
+# the one settled in gdi_reference.build_reference, and it needs the same
+# treatment: ask, then record.
+#
+# Not currently reachable in practice: DEFAULT_FEATURE_SET is reduced6, and
+# reduced6/5/4 carry no pelvis terms at all, so none of them applies either
+# adjustment. gdi9 is shipped and would produce a plausible wrong number.
 _CURVE_ADJUSTMENTS = {
     "pelvis_tilt": lambda value: value + 20.0,
     "pelvis_rotation": lambda value: value - 180.0 if value > 180.0 else value,
@@ -292,11 +313,14 @@ REDUCED4 = GdiFeatureSet(
 FEATURE_SETS = {fs.name: fs for fs in (GDI9, REDUCED6, REDUCED5, REDUCED4)}
 
 # Every constant above was derived treating each of control_kinematics.csv's
-# 166 columns as one independent observation. They are not: the cohort is 83
-# correlated pairs. Whether the constants should be rebuilt at 83 units --
-# worth +3.9 points and a 7% scale compression -- turns on a question only the
-# collaborator can answer. Stated in full, with the measurements behind it, at
-# the OPEN QUESTION comment in gdi_reference.build_reference.
+# 166 columns as one independent observation. Settled 2026-09-01: that is
+# correct -- a column is one stride, which is the unit GDI is defined on
+# (Herrera-Valenzuela et al. 2022, "each column vector is a stride"; control
+# groups counted in strides in every published derivation). The cohort does
+# carry an 83-pair structure, so its effective size for a confidence interval
+# is nearer 83 than 166, but the unit is right and the constants stand. An
+# earlier proposal to rebuild them at 83 units is withdrawn -- see the ANSWERED
+# comment in gdi_reference.build_reference for the full evidence.
 
 # reduced6 is the project default as of 2026-08-28, by explicit decision: the
 # supervisor's 2026-08-27 note asks for "6 joints instead of 26 joints", and

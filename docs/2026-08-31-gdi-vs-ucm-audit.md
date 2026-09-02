@@ -314,3 +314,74 @@ already have repo-side fixes (edits #15 and #3/#4/#5/#12/#14); #4 and #7 have no
 equivalent because the cycle-selection stage was never ported, and `VENDORING.md` now records why
 it should not be. #5 needs the collaborator to say what a `control_kinematics.csv` column is before
 the constants could be rebuilt at 83 units.
+
+---
+
+## 10. The open question, answered (2026-09-01)
+
+Section 8's recommendation 3 asked what one column of `control_kinematics.csv` is, because it
+decided whether the normative constants should be rebuilt at 83 units. **It is one stride** — a
+single gait cycle of a single limb. The per-column treatment in `gdi_reference.build_reference` is
+therefore correct, the constants stand, and **the +3.9-point rebuild proposed in section 2 must not
+be done.**
+
+Three independent lines of evidence agree.
+
+**1. The published method.** Herrera-Valenzuela et al. 2022, *Derivation of the Gait Deviation
+Index for Spinal Cord Injury* (`10.3389/fbioe.2022.874074`) — the closest published analogue of this
+project's own `sciflag` path:
+
+> "a matrix with kinematic data from several walking strides where **each column vector is a
+> stride** represented by nine joint angles of a whole gait cycle extracted at 2% increments: three
+> planes for the pelvis and hip, knee flex/extension, ankle dorsi/plantarflexion, and foot
+> progression angle"
+
+Its control group is counted the same way — "446 **strides** from adults without gait pathologies".
+Sinovas-Alonso et al. 2022 (`10.3389/fnhum.2022.826333`) states the distance is taken to "the
+average of a set of healthy control **strides**", and traces the basis to >6,000 CP strides in
+Schwartz & Rozumalski 2008.
+
+Three incidental confirmations of things this repo had recovered by inference: 459 = 9 × 51 at 2%
+increments, 15 retained features, and **the ninth variable is the foot progression angle** — the
+`fpa`-not-`subtalar_angle` recovery is now externally corroborated rather than argued from
+commented-out code.
+
+**2. The supervisor's code.** `context/replay-os-small/gaitAnalysis.py:763-810` builds `indiv_data`
+as `459 × (n_right_cycles + n_left_cycles)`, one column per gait cycle per limb, right block then
+left block. That is exactly this file's shape.
+
+**3. The file.** The 83-pair structure is adjacent strides sharing a subject, which is what pooling
+per-trial exports produces. It does mean the effective sample is nearer 83 than 166 for a confidence
+interval on the constants — that bears on precision, not on the unit.
+
+**This also settles the section 3 fix.** The calibration unit is the stride, so scoring per stride
+and averaging the scores is right, and `gdi_for_side`'s behaviour is correct as shipped.
+
+### A new defect found on the way: `+20` on `pelvis_tilt` disagrees with the cohort
+
+The test that ruled out one reading of the pairing was to look for the driver's left-limb sign
+flips. They are not there — and neither is its `+20`:
+
+    control_kinematics.csv column-mean pelvis_tilt = 11.99   (raw; a stored +20 would give ~32)
+
+So `_CURVE_ADJUSTMENTS`' `+20` offsets a `gdi9` subject vector from the reference in 51 of its 459
+rows. Scoring the control cycles through gdi9 both ways:
+
+    as stored (raw tilt)              100.0 ± 10.0     <- correct by construction
+    with the +20 adjustment applied    89.5 ±  9.1     <- a 10.5-point loss on normal subjects
+
+**Not currently reachable**, because `DEFAULT_FEATURE_SET` is `reduced6` and reduced6/5/4 carry no
+pelvis terms — the same immunity the 2026-08-30 addendum noted in reduced6's favour, now with a
+measured cost for the set that lacks it. But `gdi9` is shipped and would return a plausible wrong
+number.
+
+**Not fixed, deliberately.** Deleting the `+20` is not obviously right: it is a convention offset,
+and this pipeline makes the mismatch worse rather than better — its own raw `pelvis_tilt` runs ~21.5°
+against the cohort's ~12°, so `+20` takes it to ~41°. Which of the three conventions is the odd one
+out is a provenance question of exactly the kind just settled above, and it deserves the same
+treatment rather than a guess. Recorded at the adjustment table in `gdi.py`.
+
+**Still open, and narrower than before.** `control_kinematics.csv` was **not** written by the driver
+— the raw tilt proves it — so it is an earlier artefact of the collaborator's, and which cohort and
+pipeline produced it remains unestablished. The *unit* question is closed; the *provenance* question
+is not.

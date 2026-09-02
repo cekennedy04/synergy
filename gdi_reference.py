@@ -155,45 +155,49 @@ def build_reference(control_matrix, n_components=None, variance=None):
     projected = basis.T @ control_matrix          # (n_components x n_cycles)
     control_mean = projected.mean(axis=1)
 
-    # OPEN QUESTION FOR THE COLLABORATOR -- what is one column of
-    # control_kinematics.csv?
+    # ANSWERED 2026-09-01: one column is ONE STRIDE -- a single gait cycle of a
+    # single limb. Not a subject, not a per-limb average. So the per-column
+    # treatment below is correct and the constants stay as they are.
     #
-    # Everything below treats each column as one independent observation: the
-    # control mean is a mean over columns, and ln_control_mean/ln_control_sd
-    # are the moments of the per-column log distances. The 166 columns are not
-    # independent. Measured on the file (docs/2026-08-31-gdi-vs-ucm-audit.md,
-    # section 2):
+    # Three independent lines of evidence agreed:
     #
-    #   correlation between columns, by separation in file order
-    #     lag 1  +0.267      lag 2  -0.001      lag 3  +0.052
-    #     random pair -0.006
+    # 1. The method. Herrera-Valenzuela et al. 2022 (10.3389/fbioe.2022.874074),
+    #    which re-derives GDI for SCI and is the closest published analogue of
+    #    this project's `sciflag` path: "a matrix with kinematic data from
+    #    several walking strides where each column vector is a stride
+    #    represented by nine joint angles of a whole gait cycle extracted at 2%
+    #    increments". Its own control group is counted the same way -- "446
+    #    strides from adults without gait pathologies". Sinovas-Alonso et al.
+    #    2022 (10.3389/fnhum.2022.826333) states the distance is taken to "the
+    #    average of a set of healthy control strides". Both trace to Schwartz &
+    #    Rozumalski 2008, whose basis came from >6,000 CP strides.
+    #    The same sources independently confirm 9 variables x 51 points = 459,
+    #    15 retained features, and that the ninth variable is the foot
+    #    progression angle -- corroborating the fpa-not-subtalar recovery.
     #
-    #   within-pair vs across-boundary, per variable
-    #     pelvis_list +0.669/+0.037   pelvis_rot  +0.728/+0.089
-    #     ankle_angle +0.585/-0.032   hip_flexion +0.498/+0.238
-    #     hip_adduct  +0.447/+0.040   knee_angle  +0.447/+0.054
-    #     fpa         +0.456/+0.033   hip_rotation+0.365/+0.052
+    # 2. The supervisor's own code. `context/replay-os-small/gaitAnalysis.py`
+    #    lines 763-810 build `indiv_data` as 459 x (n_right_cycles +
+    #    n_left_cycles), one column per gait cycle per limb, right block then
+    #    left block, and write it unsuffixed. That is this file's shape.
     #
-    # Correlation lives entirely at lag 1 and vanishes at lag 2, on every one
-    # of the nine variables. So the cohort is 83 pairs, not 166 independent
-    # units. It is NOT two limbs of the same cycle -- the three pelvis
-    # variables, which both limbs of one cycle share, differ within a pair by
-    # a median of 7.4 degrees. That leaves two readings the data cannot
-    # separate: two cycles of one limb, or two limbs of one subject.
+    # 3. The file. 166 columns carry an 83-pair structure -- cohort-centred
+    #    correlation +0.37..+0.73 within pairs against ~+0.04 across pair
+    #    boundaries, present at lag 1 only. Adjacent strides sharing a subject
+    #    is exactly what pooling per-trial exports produces.
     #
-    # WHY IT MATTERS. If the pair is the intended unit, every contributing
-    # unit is currently weighted twice in both the basis and the mean, and the
-    # SD conflates within-pair with between-pair variability. Collapsing each
-    # pair to one column and scoring the 83 pair-means against today's shipped
-    # constants gives 103.9 +/- 9.3 where 100.0 +/- 10.0 is required -- worth
-    # +3.9 GDI points and a 7% scale compression. Rebuilding at 83 units is a
-    # one-line change here (average the pairs before the SVD); knowing whether
-    # to is not something the file can answer.
+    # WHAT THIS RETIRES. An earlier reading of the pairing suggested rebuilding
+    # the reference at 83 units, which would have moved every score by about
+    # +3.9 points and 7% of scale. That rebuild is NOT correct and must not be
+    # done: the stride is the unit the method defines, so 166 is the right
+    # count. The pairing still means the effective sample is nearer 83 than 166
+    # for any confidence interval on these constants -- it bears on precision,
+    # not on the unit.
     #
-    # Do NOT guess. A wrong choice here is invisible downstream: it produces a
-    # plausible number, shifts every score by about four points, and is exactly
-    # the class of error the digest check in gdi.py exists to stop being made
-    # silently a second time. Ask, then record the answer here.
+    # STILL OPEN, and narrower: this file was not written by the driver above.
+    # The driver adds +20 to pelvis_tilt; this file's column-mean pelvis_tilt is
+    # 11.99, i.e. raw. It is an earlier artefact of the collaborator's, so which
+    # cohort and which pipeline produced it remains unestablished. See the
+    # pelvis_tilt note in gdi.py, which is a live defect for `gdi9`.
     distances = np.linalg.norm(projected - control_mean[:, None], axis=0)
     if np.any(distances <= 0.0):
         raise ValueError(

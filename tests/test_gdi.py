@@ -589,3 +589,25 @@ def test_gdi_for_side_accepts_the_real_runtime_type(gdi, tmp_path, scoring_set):
     ]
 
     assert scored == pytest.approx(sum(expected) / 3)
+
+
+def test_the_pelvis_tilt_adjustment_is_documented_as_a_gdi9_only_hazard(gdi):
+    """Guard on the 2026-09-01 finding: the +20 on pelvis_tilt disagrees with
+    the cohort the references are built from (control_kinematics.csv stores raw
+    tilt, column-mean 11.99), costing gdi9 10.5 points on subjects who are
+    normal by construction. It is unreachable only because no shipped default
+    carries a pelvis term. If that ever changes, this test fails and sends the
+    reader to the note explaining why deleting the +20 is not the fix."""
+    assert gdi.DEFAULT_FEATURE_SET.name != "gdi9", (
+        "gdi9 became the default while _CURVE_ADJUSTMENTS still applies +20 to "
+        "pelvis_tilt against a raw-tilt reference -- see the LIVE DEFECT note "
+        "above _CURVE_ADJUSTMENTS in gdi.py before changing this."
+    )
+    adjusted = set(gdi._CURVE_ADJUSTMENTS)
+    for name in ("reduced6", "reduced5", "reduced4"):
+        features = set(gdi.FEATURE_SETS[name].features)
+        assert not (features & adjusted), (
+            f"{name} gained a variable that _CURVE_ADJUSTMENTS touches; it was "
+            "immune to the pelvis convention mismatch precisely because it had "
+            "none."
+        )
