@@ -1,0 +1,50 @@
+name: tests
+
+# Every readiness claim made about this repo so far rested on someone
+# remembering to run pytest locally, under the right one of the two
+# interpreters this project uses. This makes that claim reproducible by a
+# reviewer who does not have the machine it was made on.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow clone. The provenance gate
+          # in tests/test_deployment_readiness.py derives tier A by running
+          # `git ls-tree -r cfcf7ad` -- the same command PROVENANCE.md
+          # documents -- and that commit is not present in a depth-1 fetch.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the runtime environment (see environment.yml), which is
+          # held at 3.11 by the opensim 4.5 build.
+          python-version: '3.11'
+
+      - name: Install tkinter
+        # clinician_gui.py imports tkinter at module scope, so the tests that
+        # import it need the module present. No display is required: nothing
+        # in the suite constructs a Tk root, and the plotting tests force the
+        # Agg backend.
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install test dependencies
+        # Deliberately not `pip install -r requirements.txt`. That file is
+        # upstream's, pins scipy to a version that no longer builds on current
+        # Python, and describes the *runtime* environment -- which needs
+        # opensim from conda and is not what the tests run under. The README
+        # is explicit that tests run under a different interpreter than the
+        # app; this is that interpreter.
+        run: pip install numpy scipy pandas matplotlib pytest
+
+      - name: Run the suite
+        run: pytest tests/ -q
