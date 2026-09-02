@@ -19,6 +19,7 @@ import os
 os.environ.setdefault("API_TOKEN", "clinician-gui-placeholder-token")
 
 # Every other import must come after the os.environ.setdefault call above.
+import argparse
 import importlib.util
 import json
 import queue
@@ -2287,7 +2288,40 @@ class ClinicianGUI:
             )
 
 
-def main():
+def build_arg_parser():
+    """The CLI surface. Small on purpose -- this is a GUI.
+
+    It exists so that `--help` answers instead of opening a window. Before
+    this, any argument was silently ignored and `--help` started the GUI and
+    blocked, which meant a deployment smoke-check could not ask this entry
+    point anything at all, and an operator had no way to discover how to run
+    it. Rejecting an unknown flag is also better than ignoring it: a typo in a
+    launch script now says so rather than starting a session that is not the
+    one the script asked for.
+    """
+    parser = argparse.ArgumentParser(
+        prog="clinician_gui.py",
+        description=(
+            "Clinician trial report GUI: select an OpenCap session directory "
+            "and an Xsens .mvnx trial, run the pipeline, review the results, "
+            "and export a PDF report."
+        ),
+        epilog=(
+            "Needs the opencap-processing environment (opensim). Prefer "
+            "`python launch_gui.py`, which finds that environment and "
+            "re-executes this script under it."
+        ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="clinician_gui.py (synergy)",
+    )
+    return parser
+
+
+def main(argv=None):
+    build_arg_parser().parse_args(sys.argv[1:] if argv is None else argv)
     app = ClinicianGUI()
     app.root.mainloop()
 

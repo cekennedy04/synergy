@@ -118,8 +118,42 @@ def build_command(interpreter, extra_args):
     return [str(interpreter), str(REPO_ROOT / GUI_SCRIPT), *extra_args]
 
 
+HELP_FLAGS = ("-h", "--help")
+
+USAGE = f"""\
+usage: launch_gui.py [-h] [ARG ...]
+
+Launch the clinician GUI in the environment it actually needs.
+
+Run this with any python -- base, system, whatever is on PATH. It locates the
+{ENV_NAME!r} conda environment and re-executes {GUI_SCRIPT} under that
+interpreter, so you do not need to `conda activate` first.
+
+options:
+  -h, --help  show this message and exit
+
+Any other arguments are forwarded unchanged to {GUI_SCRIPT}.
+
+environment:
+  {OVERRIDE_VAR}  override the interpreter to launch under, if your conda
+  {' ' * len(OVERRIDE_VAR)}  lives somewhere unusual
+
+exit codes:
+  0  the GUI ran and exited normally
+  2  no usable {ENV_NAME!r} interpreter could be found
+"""
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+
+    # Answered here rather than forwarded. Forwarding would make --help
+    # depend on locating the conda environment first, so on a machine where
+    # the environment is missing the one command that explains how to fix it
+    # would be the one command that cannot run.
+    if any(arg in HELP_FLAGS for arg in argv):
+        print(USAGE, end="")
+        return 0
 
     if current_interpreter_is_ready():
         # Already inside the right env (someone did `conda activate` by hand,
