@@ -92,6 +92,8 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `xsens_to_opensim.py` | 1208 | Primary Xsens→OpenSim route via OpenSense IMU orientation. Written to replace the `getMarkers.py` + MATLAB round-trip. Later gained per-stage timing, a leg-tracking accuracy fix, marker/`.trc` export, and session-path handling. |
 | `xtoo.py` | 294 | Second conversion route, no inverse kinematics. Port of `XtoO.m` (see tier B). |
 | `module_loading.py` | 41 | Dynamic module loading support for the GUI. |
+| `session_scaffold.py` | 274 | Builds an OpenSim session directory for a participant's Xsens trials, from that participant's own OpenCap model. Unblocks first-pass processing. |
+| `process_participants.py` | 153 | Runs the full pipeline over every scaffolded participant, one at a time. The driver for first-pass batch processing. |
 
 ### Clinician GUI
 
@@ -101,6 +103,10 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `report_export.py` | 248 | PDF report generation. |
 | `report_formatting.py` | 38 | Report formatting helpers. |
 | `joint_confidence.py` | 361 | Per-segment confidence: compares pipeline `.mot` joint angles against the Xsens suit's own. |
+| `launch_gui.py` | 144 | Launches the GUI in the environment it actually needs. Run with any python; it finds the `opencap-processing` environment and re-executes under it. |
+| `make_reports.py` | 140 | Writes a clinical PDF report for every trial in a processed session. |
+| `motion_scrubber.py` | 289 | Scrubs an OpenSim motion frame by frame and reads back the current position. |
+| `gait_event_picker.py` | 171 | Picks gait events by hand when automatic detection cannot, on top of `motion_scrubber.py`. |
 
 ### Analysis and metrics
 
@@ -114,11 +120,20 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `combine_curves.py` | 207 | Pools a participant's session into one gait-cycle curve matrix. |
 | `jointcheck.py` | 92 | 3-way comparison ribbon figure. |
 | `make_comparison_figures.py` | 127 | Figure generation. |
+| `curve_features.py` | 202 | Turns exported gait-cycle curve matrices into GDI feature vectors. The bridge between the export format and `gdi.py`. |
+| `gdi_reference.py` | 383 | Regenerates a GDI normative reference from a pooled control cohort by SVD, and attributes it. |
+| `session_drift.py` | 238 | Detects measurement drift across a session's trials. |
+| `raw_drift.py` | 240 | Checks a session's raw Xsens recordings for heading drift *before* processing, so an hour is not spent on a recording that cannot be used. |
+| `rerun_survey.py` | 244 | Surveys which archived trials the left/right swap actually corrupted, and which were unaffected. |
 
 ### Tests and docs
 
-All 22 files in `tests/` are ours. So are `README.md`, `VENDORING.md`, `CLAUDE.md`, `DESIGN.md`,
-`CHANGELOG.md`, `.gitignore`, `docs/plans/`, and `docs/residual-review-findings/`.
+All 33 files in `tests/` are ours. So are `README.md`, `VENDORING.md`, `CLAUDE.md`, `DESIGN.md`,
+`environment.yml`, `.gitignore`, `docs/plans/`, and `docs/residual-review-findings/`.
+
+`CHANGELOG.md` is **not** ours despite being listed here previously: it is upstream
+`opencap-processing`'s own changelog, vendored with the rest of tier A, and its most recent entry
+predates this project. Nothing in it describes work done here.
 
 Note that `tests/test_gaitAnalysis_UCM_chdir.py` and `tests/test_gaitAnalysis_UCM_rewrite.py` are
 ours even though their subject is a supervisor file.
