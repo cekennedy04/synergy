@@ -111,7 +111,10 @@ ORTHONORMALITY_TOLERANCE = 1e-2
 # individual gait cycles. A subject's mean curve is a different kind of object
 # -- averaging strides removes stride-to-stride noise, so a mean curve sits
 # closer to the control mean than any of the cycles it was built from, and
-# scoring it against a per-cycle norm reads high. Always high, never low.
+# scoring it against a per-cycle norm reads high. Measured high on every leg
+# tested here; not proved to be high universally, since the constants are
+# moments of the *log* distances and no general ordering follows from
+# convexity alone.
 #
 # Measured on the 90 exported trial-legs in `context/gait_curves/`: the mean
 # curve scores +0.53 above the mean of the per-stride scores on average, +3.30
@@ -166,9 +169,16 @@ _CANONICAL_9 = (
 # the one settled in gdi_reference.build_reference, and it needs the same
 # treatment: ask, then record.
 #
-# Not currently reachable in practice: DEFAULT_FEATURE_SET is reduced6, and
-# reduced6/5/4 carry no pelvis terms at all, so none of them applies either
-# adjustment. gdi9 is shipped and would produce a plausible wrong number.
+# Reachability, corrected 2026-09-02 after an outside review. An earlier
+# version of this note said the defect was "not currently reachable in
+# practice" because DEFAULT_FEATURE_SET is reduced6 and reduced6/5/4 carry no
+# pelvis terms. That was wrong: `--feature-set gdi9` is a documented flag on
+# both curve_features.py and session_drift.py, and it ran clean --
+# `CK-CK-003_right` scored 82.6 against reduced6's 88.4, exit 0, no warning.
+# Being off the default path is not the same as being unreachable.
+#
+# gdi9 is now disabled outright (see its `disabled_reason`), so both routes to
+# a score raise. That is the guard, not this comment.
 _CURVE_ADJUSTMENTS = {
     "pelvis_tilt": lambda value: value + 20.0,
     "pelvis_rotation": lambda value: value - 180.0 if value > 180.0 else value,
@@ -206,10 +216,22 @@ class GdiFeatureSet:
     # archived reduced4 basis at 96.6 -- both close enough to normal to pass
     # unnoticed, and both wrong. `None` disables the check.
     reference_digest: str = None
+    # Set to a sentence explaining why, when a set is known to produce wrong
+    # numbers and must not be scored with. `get_feature_set` and `compute_gdi`
+    # both refuse it. This is deliberately NOT waivable: unlike
+    # `check_digest=False`, which lets an expert reproduce a historic result
+    # from a reference that is merely unattributed, a disabled set is one whose
+    # output is known to be wrong in a known direction, and there is no honest
+    # reason to want that number.
+    disabled_reason: str = None
 
     @property
     def n_features(self):
         return len(self.features)
+
+    @property
+    def is_disabled(self):
+        return self.disabled_reason is not None
 
     @property
     def vector_length(self):
@@ -244,6 +266,21 @@ GDI9 = GdiFeatureSet(
         "calibration stranded in a branch referencing an undefined `ln_result`."
     ),
     reference_digest="ee05c4a85881b8a1079d001e5b1ef87f1d7ad17afe3734db5211fcfb5741d587",
+    disabled_reason=(
+        "gdi9 is the only shipped set carrying pelvis terms, and this "
+        "pipeline's pelvis convention does not match the control cohort the "
+        "references are built from. _CURVE_ADJUSTMENTS adds +20 to "
+        "pelvis_tilt; control_kinematics.csv stores it raw (column-mean "
+        "11.99). Scoring the control cycles through gdi9 gives 100.0 +/- 10.0 "
+        "as stored and 89.5 +/- 9.1 with the adjustment applied -- healthy "
+        "controls read ~10.5 points low, and a real trial reads 82.6 where "
+        "reduced6 reads 88.4. Trimming does not fix this: it recovers clean "
+        "gait cycles, it does not recalibrate a coordinate offset, so cleanly "
+        "trimmed data still scores wrong. Use reduced6, which carries no "
+        "pelvis terms and bypasses the mismatch entirely. Disabled until the "
+        "authoritative pelvis convention is defined by the collaborator -- see "
+        "the LIVE DEFECT note above _CURVE_ADJUSTMENTS."
+    ),
 )
 
 REDUCED6 = GdiFeatureSet(
@@ -326,12 +363,14 @@ FEATURE_SETS = {fs.name: fs for fs in (GDI9, REDUCED6, REDUCED5, REDUCED4)}
 # supervisor's 2026-08-27 note asks for "6 joints instead of 26 joints", and
 # the six recovered here are the canonical nine minus pelvis.
 #
-# GDI9 remains the standards-canonical set and is still shipped; it is simply
-# not what this project scores against. Two practical consequences of the
-# choice, both in its favour: reduced6 drops the pelvis terms, so neither the
-# `pelvis_tilt` +20 offset nor the `pelvis_rotation` wrap can misalign a
-# subject vector against the reference, and its 15 components capture 99.07%
-# of control variance against 98.67% for the nine.
+# GDI9 remains the standards-canonical set and its definition is kept here --
+# the recovered feature order, the regenerated constants and the digest are all
+# still needed to read the audit and to rebuild it once the pelvis convention
+# is settled. It is DISABLED for scoring, not deleted. What was a preference
+# for reduced6 is now also the only working option: reduced6 drops the pelvis
+# terms, so neither the `pelvis_tilt` +20 offset nor the `pelvis_rotation` wrap
+# can misalign a subject vector against the reference, and its 15 components
+# capture 99.07% of control variance against 98.67% for the nine.
 #
 # Scores are NOT comparable across feature sets. Changing this constant
 # changes every number the project reports.
@@ -339,7 +378,14 @@ DEFAULT_FEATURE_SET = REDUCED6
 
 
 def get_feature_set(name):
-    """Look a feature set up by name, listing the alternatives on a miss."""
+    """Look a feature set up by name, listing the alternatives on a miss.
+
+    Refuses a disabled set. This is the CLI's path -- `--feature-set gdi9`
+    resolves here -- so it is where a request for a known-wrong set has to
+    stop. Passing the feature-set *object* bypasses this by design (see the
+    duck-typing note below); `compute_gdi` catches that path instead, so no
+    route reaches a score.
+    """
     # Duck-typed, not isinstance: this repo loads modules by path (see
     # module_loading.py), so the same gdi.py can be live under two different
     # module objects at once and an isinstance check would reject a perfectly
@@ -347,12 +393,18 @@ def get_feature_set(name):
     if hasattr(name, "features") and hasattr(name, "vector_length"):
         return name
     try:
-        return FEATURE_SETS[name]
+        feature_set = FEATURE_SETS[name]
     except KeyError:
         raise KeyError(
             f"unknown GDI feature set {name!r}; available: "
             f"{sorted(FEATURE_SETS)}"
         ) from None
+    if feature_set.is_disabled:
+        raise GdiFeatureSetDisabledError(
+            f"GDI feature set {feature_set.name!r} is disabled and cannot be "
+            f"used. {feature_set.disabled_reason}"
+        )
+    return feature_set
 
 
 def canonical_row_indices(feature_set=DEFAULT_FEATURE_SET):
@@ -408,6 +460,15 @@ class GdiConstantsMissingError(ValueError):
     """The feature set has no attributed normative constants, so a distance
     cannot be converted into a score. Distinct from a shape error: the
     projection is fine, the calibration is absent."""
+
+
+class GdiFeatureSetDisabledError(RuntimeError):
+    """The feature set is known to produce wrong scores and has been taken out
+    of service. Distinct from GdiConstantsMissingError, which means "we cannot
+    compute a number": here we can, and the number would be wrong in a known
+    direction. A RuntimeError rather than a ValueError because nothing about
+    the caller's arguments is malformed -- the pipeline is not in a state where
+    this set can be honestly scored."""
 
 
 def gdi_features(side, feature_set=DEFAULT_FEATURE_SET):
@@ -581,6 +642,16 @@ def compute_gdi(feature_vector, reference, feature_set=None):
     if feature_set is None:
         feature_set = reference.get("feature_set", DEFAULT_FEATURE_SET)
     feature_set = get_feature_set(feature_set)
+
+    # Second of the two hard stops. `get_feature_set` above catches a disabled
+    # set requested by name (the CLI path); this catches it passed as an
+    # object, which duck-typing lets through. Scoring is the last point where
+    # refusing still prevents a wrong number from existing.
+    if feature_set.is_disabled:
+        raise GdiFeatureSetDisabledError(
+            f"GDI feature set {feature_set.name!r} is disabled and cannot be "
+            f"scored with. {feature_set.disabled_reason}"
+        )
 
     if not feature_set.can_score:
         raise GdiConstantsMissingError(

@@ -385,3 +385,75 @@ treatment rather than a guess. Recorded at the adjustment table in `gdi.py`.
 — the raw tilt proves it — so it is an earlier artefact of the collaborator's, and which cohort and
 pipeline produced it remains unestablished. The *unit* question is closed; the *provenance* question
 is not.
+
+---
+
+## 11. gdi9 disabled (2026-09-02), after an outside review
+
+Section 10 recorded the `pelvis_tilt` mismatch and left it unfixed, on the reasoning that it was
+"not currently reachable in practice" because `DEFAULT_FEATURE_SET` is `reduced6`. **That reasoning
+was wrong**, and an independent Codex review caught it.
+
+`--feature-set gdi9` is a documented flag on both `curve_features.py` and `session_drift.py`. It ran
+clean:
+
+    --feature-set gdi9      GDI mean 82.6      exit 0, no warning
+    default reduced6        GDI mean 88.4
+
+Being off the default path is not the same as being unreachable. A user following the CLI's own
+`--help` could produce a number ~10.5 points low against controls that are normal by construction,
+with nothing in the output to suggest anything was wrong. That is precisely the "plausible wrong
+number" failure the rest of this work exists to prevent, shipped while being documented.
+
+**gdi9 is now disabled outright.** `GdiFeatureSet.disabled_reason` carries the explanation, and two
+hard stops raise `GdiFeatureSetDisabledError` (a `RuntimeError` — nothing about the caller's
+arguments is malformed; the pipeline is not in a state where this set can be honestly scored):
+
+- `get_feature_set()` refuses it **by name** — the CLI path.
+- `compute_gdi()` refuses it **as an object** — `get_feature_set` duck-types feature-set objects
+  straight through, so the name guard alone would leave `compute_gdi(v, ref, gdi.GDI9)` open.
+  Scoring is the last point where refusing still stops a wrong number existing.
+
+Both CLIs print the reason and exit 1 rather than dumping a traceback, matching how reference
+failures are already handled.
+
+**Deliberately not waivable.** Every other check here has an escape hatch (`check_digest=False`,
+`check_orthonormality=False`) because an expert may legitimately want to reproduce a historic
+result. This one does not: those hatches permit a reference that is merely *unattributed*, whereas a
+disabled set produces output known to be wrong in a known direction, and there is no honest reason
+to want that number.
+
+**Disabled, not deleted.** The recovered feature order, the regenerated constants and the digest all
+remain — they are needed to read this document and to rebuild gdi9 once the convention is settled.
+`GDI9.can_score` is still true: gdi9 is out of service for a *convention mismatch*, not for missing
+calibration, and collapsing that into `GdiConstantsMissingError` would lose a distinction this
+module draws deliberately.
+
+**Why not just delete the `+20`.** Trimming and calibration are orthogonal: auto-trimming recovers
+steady-state cycles from noisy trial bounds, it does not recalibrate a coordinate offset, so cleanly
+trimmed data still scores wrong through gdi9. And deleting the offset would be a guess — this
+pipeline's own raw `pelvis_tilt` runs ~21.5° against the cohort's ~12°, so `+20` takes it to ~41°;
+which of the three conventions is authoritative is the collaborator's call. Guessing wrong
+reintroduces the same class of error at a different offset.
+
+**Status: the ship blocker is closed.** No route now reaches a gdi9 score. 598 tests pass. The
+remaining open item is unchanged and is a question, not a defect: what the authoritative pelvis
+convention is.
+
+### What the review got right, and where it was over-severe
+
+Codex raised two further `[P1]`s about the digest: that it hashes only `(matrix, control_mean)` and
+so binds neither the constants nor the scoring unit, and that enforcement is skipped for any feature
+set with `reference_digest=None`. Both are **factually correct** and verified against the code.
+
+They are recorded here as **P2**, not fixed. The digest was built to catch the failure that actually
+occurred — loading an archived reference directory whose matrix belongs to a different cohort — and
+it does that provably: all four archived pairings are refused, all four regenerated ones verify. The
+residual risk Codex describes is someone hand-editing `ln_control_mean` in source without updating
+the digest literal beside it. That is a different and much smaller threat, and no digest computed
+over on-disk files can detect it. Worth revisiting if feature sets ever become user-supplied rather
+than defined in this module.
+
+One documentation finding is accepted: the flat assertion "Always high, never low" above
+`SCORING_UNIT_CYCLE` overclaims. The ordering is measured over 90 trial-legs, not proved; the
+comparison is against the mean of *log* distances and no universal ordering follows.

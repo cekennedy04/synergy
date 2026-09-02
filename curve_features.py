@@ -165,7 +165,17 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     gdi = _load_gdi()
-    feature_set = gdi.get_feature_set(args.feature_set or gdi.DEFAULT_FEATURE_SET)
+    try:
+        feature_set = gdi.get_feature_set(
+            args.feature_set or gdi.DEFAULT_FEATURE_SET)
+    except gdi.GdiFeatureSetDisabledError as exc:
+        # Same reasoning as the reference errors below: the message already
+        # names the defect and the set to use instead, and a traceback buries
+        # exactly the sentence the operator needs.
+        print("Cannot score with that GDI feature set.")
+        print()
+        print(str(exc))
+        return 1
     try:
         reference = gdi.load_gdi_reference(args.reference, feature_set)
     except (gdi.GdiReferenceMissingError, gdi.GdiReferenceMismatchError,
