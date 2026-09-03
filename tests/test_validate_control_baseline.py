@@ -175,16 +175,17 @@ def test_the_report_says_what_the_verdict_does_not_establish(baseline):
 
     text = baseline.format_report(scores, status, mean, detail, strides)
 
-    assert "one subject" in text.lower()
-    assert "within-pipeline comparison" in text
+    assert "caveat" in text.lower()
+    assert "Relative comparison" in text
     assert "CTRL-01" in text
 
 
-def test_the_action_required_report_forbids_the_rejected_fix(baseline):
-    """The obvious response to 'the pipeline is offset' is to subtract the
-    offset. That was measured and rejected -- it removes the impairment GDI
-    exists to detect -- so the report has to say so at the moment someone is
-    most likely to try it."""
+def test_the_action_required_report_points_at_the_subject_not_the_pipeline(baseline):
+    """A low score used to be reported as evidence the pipeline was offset.
+    That was refuted over all six sessions (audit section 13), so the report
+    must now send the reader to that session's data rather than to a rescaling
+    exercise -- while still forbidding the global-offset fix, which stays wrong
+    for a second reason: there is no uniform offset to fit."""
     scores = {"session": "CTRL-02", "feature_set": "reduced6",
               "conversion": "ik",
               "gdi": {"left": {"mean": 80.0, "sd": 5.0, "n_strides": 20,
@@ -195,5 +196,6 @@ def test_the_action_required_report_forbids_the_rejected_fix(baseline):
     text = baseline.format_report(scores, status, mean, detail, strides)
 
     assert status == "ACTION REQUIRED"
-    assert "Do NOT fit a correction" in text
-    assert "concurrent-capture" in text
+    assert "THIS SUBJECT" in text
+    assert "refuted" in text
+    assert "Do NOT fit a global offset" in text

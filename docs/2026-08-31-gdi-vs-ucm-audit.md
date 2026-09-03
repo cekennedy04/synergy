@@ -557,3 +557,92 @@ Failing that, the clean alternative is to build the normative reference from hea
 measured through **this** pipeline, which sidesteps cross-pipeline comparability entirely. A frame
 correction derived from a concurrent-capture validation study (same subjects, both systems) would
 also work; one fitted to our own participants would not.
+
+---
+
+## 13. Section 12 is retracted: there is no uniform pipeline offset (2026-09-03)
+
+Section 12 concluded that either our subjects are impaired or this pipeline is systematically offset
+from the optical-mocap cohort, and that the repo could not distinguish them. **The second
+explanation is now refuted, and section 12's framing of the open question is withdrawn.**
+
+The error was sampling. Section 12 measured three subjects and read 80.20 +/- 8.09 as the pipeline's
+centre. It was the low tail.
+
+### All six sessions
+
+Scored on `reduced6` against `context/gdi_reference_2026-08-27`, verified by running each through
+`validate_control_baseline.py` rather than reading the cohort JSON:
+
+    session   left     right    pooled   verdict
+    SB         98.96   106.13   102.35   sound
+    HH         98.89    97.82    98.32   sound
+    MS        104.79    91.35    98.31   inconclusive -- legs disagree by 13.44
+    KM         93.34    88.41    90.96   sound
+    AN         87.60    85.56    86.64   inconclusive
+    CK         85.22    83.36    84.30   low
+
+    cohort mean 93.45 +/- 7.44, range 83.36-106.13
+
+### Why this settles it without a control capture
+
+A uniform -20 point offset is arithmetically incompatible with the observed maximum. SB's right leg
+scores 106.13; under that hypothesis its true value would be 126.13. HH reaches 98.32 and MS 98.31.
+Same pipeline, same reference, same feature set as CK's 84.30.
+
+**The argument does not depend on anyone's clinical status**, which is what makes it decisive from
+existing data: whatever these subjects' conditions, a constant subtracted from everyone cannot
+produce a 22-point spread that straddles the normative mean.
+
+The pipeline is stable across routes, so this is a sampling difference and not a moving target: CK
+measures 84.62 through `context/gait_curves` and 84.30 through the session route.
+
+### What section 12's other numbers become
+
+**The 33.1 deg figure is superseded.** It was computed on the same three subjects. Recomputed over
+all six sessions (180 curve files):
+
+    variable          cohort     ours     offset      (3-subject figure)
+    pelvis_tilt        11.99    22.27    +10.27           +9.24
+    hip_flexion        19.50     8.93    -10.57          -13.47
+    fpa                -7.64    -2.85     +4.78          +10.90
+    ankle_angle         0.26    -2.18     -2.44           -4.70
+    knee_angle         22.99    21.47     -1.51           -2.41
+    hip_adduction      -0.35     0.16     +0.51           +0.85
+    hip_rotation       -2.25    -2.39     -0.14           +0.75
+
+    sum |offset|, six non-pelvis variables: 20.0 deg  (was 33.1)
+
+`pelvis_rotation` is omitted: the raw exports carry unwrapped values near 360 that
+`_CURVE_ADJUSTMENTS` folds back at feature-build time, so a raw mean over it is not comparable to
+the cohort's and the apparent +20 deg is an artefact of the measurement rather than a finding.
+
+Residual coordinate differences therefore persist, and they still do not explain the scores. GDI is
+a Euclidean distance in a 15-dimensional projected space, not a sum of per-coordinate mean offsets,
+so mean-level differences do not simply add into a deficit -- and empirically they do not, since the
+cohort centres near 100 with 20 deg of them present.
+
+### What stays true from section 12
+
+- The `+20` on `pelvis_tilt` was still wrong and is still removed: 41 deg mean tilt is
+  non-physiological, and our raw tilt now measures 22.27 deg against the cohort's 11.99.
+- A fitted global offset is still rejected, now for a second reason -- there is no uniform offset to
+  fit, and mean-matching subjects onto a control reference removes exactly the between-subject
+  variation the score exists to detect.
+- `gdi9` stays disabled: its pelvis terms carry a real convention mismatch against the reference
+  cohort with no offsetting benefit.
+- Within-pipeline comparison was never in question.
+
+### What is actually open now
+
+Narrower, and per-subject rather than global:
+
+1. **CK at 84.30 and AN at 86.64.** Impairment, or that subject's tracking quality? A per-session
+   question, answerable by looking at those two sessions.
+2. **MS's 13.44-point inter-leg gap** (104.79 vs 91.35), which the asymmetry guard flags while the
+   pooled 98.31 looks unremarkable. This is the case that guard was written for.
+3. **Clinical status of the six.** Not needed to refute the uniform offset, but needed before any
+   individual score is interpreted as impairment.
+
+The control capture is no longer the blocking measurement. It would be confirmatory, and its value
+now lies in anchoring individual interpretation rather than in validating the scale.
