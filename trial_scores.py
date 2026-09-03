@@ -28,8 +28,9 @@ REPO_ROOT = Path(__file__).resolve().parent
 
 # The 18 DOFs ucm.py documents as its intended configuration: pelvis
 # orientation, lumbar, and both legs. Excludes the pinned root translations,
-# the toe joints (frozen in both methodologies) and the upper limb (saturated
-# against its bounds on the IMU route).
+# the toe joints (frozen in both methodologies) and the upper limb. The arm
+# exclusion originally rested on IMU-route bound saturation, fixed 2026-09-02;
+# see ucm.py for why the set is unchanged anyway.
 UCM_COORDINATES = (
     "pelvis_tilt", "pelvis_list", "pelvis_rotation",
     "hip_flexion_r", "hip_adduction_r", "hip_rotation_r",

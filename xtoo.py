@@ -10,11 +10,18 @@ That matters because it supplies the three things the IK path cannot:
   * real pelvis translation (IK leaves the root pinned, which is why gait
     speed and stride length there are stance-foot proxies),
   * a live mtp/toe joint (nothing maps RightToe in SEGMENT_TO_IMU_FRAME),
-  * unsaturated arms (no T-pose calibration step to go wrong).
+  * no IMUPlacer calibration step at all, so no model pose to get wrong.
+
+This third item used to read "unsaturated arms", and it was a real advantage
+until 2026-09-02. The IK route's arm saturation turned out to be a
+calibration-pose bug (see xsens_to_opensim.CALIBRATION_POSES), not a property
+of the route: both now produce physiological arms, agreeing with Xsens's own
+<jointAngle> solver to within a few degrees. Pelvis translation and the toe
+joint are what still separate the two.
 
 Measured on CK-001: pelvis_tx spans 6.998 m against 0.000 m from IK and
 6.275 m from OpenCap; mtp_angle_r spans 57.4 deg against 1.21; arm_flex_l
-spans 45.2 deg against IK's saturated 419.8. Where both paths are valid they
+spans 45.2 deg against IK's then-saturated 419.8 (pre-2026-09-02). Where both paths are valid they
 agree closely -- knee r 0.990, hip 0.988, ankle 0.985, pelvis 0.984-0.992.
 
 Reads .mvnx directly. XtoO.m reads .xlsx exports, but <jointAngle>,

@@ -62,6 +62,47 @@ See `.claude/skills/run-gui/SKILL.md` for the failure modes and the
 
 ## Open concerns — read this first
 
+**The model was never posed to match the IMU calibration frame.** Found and fixed 2026-09-02.
+Mechanism, evidence and the numbers are in `VENDORING.md` under "The calibration pose was never
+set, and the arms paid for it".
+
+`IMUPlacer` computes each body-to-IMU offset against the OpenSim model's **default** pose — it
+never solves for the subject's. The calibration row we hand it is the .mvnx's **T-pose** (all 90
+trials in this study carry one; none carry an N-pose), and `LaiUhlrich2022`'s default pose is
+arms-down. The 90 degrees of shoulder abduction between the two went into the arm IMU offsets, so
+IK had to report a walking arm as ~90 degrees abducted. That is gimbal lock for the shoulder's
+Euler triplet, and `arm_flex`/`arm_rot` then wound up against the model's own **+/-572.96 degree
+(+/-10 rad)** coordinate bounds — roughly three full shoulder revolutions of slack, which is why
+the symptom read as "the arm angles are 180 degrees too high" rather than as an obvious failure.
+
+Fixed by posing the model in the calibration frame's own pose before `IMUPlacer` runs
+(`xsens_to_opensim.CALIBRATION_POSES`). Checked against Xsens's own `<jointAngle>` solver, which
+shares none of this machinery: AN's right forearm pronation is 112.2 deg by Xsens, was 6.6 deg on
+the IK route, and is now 115.1 deg; right elbow flexion is 8.5 deg by Xsens, was pinned at 0.02
+deg, and is now 6.4 deg. Across-stride arm SDs fall from 2-157 deg to 1-3 deg, the same range as
+the marker-based OpenCap route.
+
+**Scope: arms only.** Pelvis and both legs hold the same pose in a T-pose as in the model default,
+so their offsets were already right — measured shift on the regenerated exports is under 0.25 deg
+(p99). Nothing in the gait metrics, GDI or the synergy index changes. The lumbar coordinates do
+move a little, and that is the fix working: `torso_imu`'s tracking residual drops from 1.00 to 0.07
+deg RMS once the arm frames stop pulling on the torso in the global IK solve.
+
+**Audited across all six sessions on 2026-09-03.** Upper-body IMU residual 12.23 deg -> 8.10 deg
+over 90 trials; lower body identical at 3.60 deg, which is the regression evidence. One trial
+regressed: **MS-005's left arm is lost from t = 4.35 s** (humerus residual 16 -> 59 deg RMS) and its
+arm/elbow/forearm kinematics must not be used -- its legs are unaffected, so it stays usable for
+GDI and the synergy index. KM's right hand tracks poorly in nine trials, before and after, which is
+a separate pre-existing defect. Full audit in `VENDORING.md`.
+
+**Any arm, elbow or forearm value produced before 2026-09-02 is superseded.** Pre-fix outputs are
+kept per session as `pre-calibration-fix/` rather than deleted. `verify_calibration_fix.py` is the
+cohort-wide gate. The `xtoo` route was never affected — it does not run `IMUPlacer`.
+
+**One thing the fix does not solve:** `pro_sup` now reaches the model's 119.75 deg limit for AN.
+Xsens puts that subject's forearm pronation at up to 142 deg, so the model's range is genuinely
+narrower than the movement rather than the calibration being wrong. It is reported, not widened —
+a +/-10 rad shoulder range is exactly what let the original defect hide for two weeks.
 **The foot progression angle was never referenced to the walking direction.** Found 2026-09-01.
 Full write-up with every measurement in
 [`docs/2026-09-01-fpa-heading-concerns.md`](docs/2026-09-01-fpa-heading-concerns.md); provenance in

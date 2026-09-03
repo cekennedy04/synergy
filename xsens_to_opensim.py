@@ -98,13 +98,29 @@ knee flexion in the output. Fixed by switching the default to 'x' (confirmed
 empirically: 5.8 degree correction vs. 84-174 degrees for every other axis
 option). Full numbers and the diagnostic process are in VENDORING.md.
 
+SECOND CALIBRATION BUG, FOUND AND FIXED 2026-09-02
+---------------------------------------------------------------------------
+The arm half of the "still open" gap below turned out to be the 2026-08-19
+T-pose hypothesis, and it was right. IMUPlacer measures each body<->IMU
+offset against the model's DEFAULT pose; the calibration frame written as
+row 0 is the Xsens T-pose; the LaiUhlrich2022 default is arms-down. The 90
+degrees of shoulder abduction between them went into the arm IMU offsets, IK
+had to report a walking arm as ~90 degrees abducted, that is gimbal lock for
+the shoulder Euler triplet, and arm_flex/arm_rot then wound up against the
+model's own +/-572.96 deg (+/-10 rad) coordinate bounds. Fixed by posing the
+model in the calibration frame's own pose before IMUPlacer runs -- see
+CALIBRATION_POSES and calibrate_model. Upper-body IMU tracking error on
+CK-001 drops from 4.5 to 2.0 deg RMS; the lower limb moves by under 0.4 deg,
+which is the point: the legs hold the same pose in both, and were never wrong.
+
 WHAT'S STILL OPEN (be honest about the gap)
 ---------------------------------------------------------------------------
 - Some tracking error remains even with the corrected heading axis
-  (femur_r, calcn_r/l, and the arm segments specifically) -- not yet
-  explained. See VENDORING.md's 2026-08-19 entries for the current numbers
-  and untested next hypotheses (T-pose vs. model-default-pose mismatch for
-  arms; alternate `base_imu`).
+  (femur_r and calcn_r/l specifically) -- not yet explained. See
+  VENDORING.md's 2026-08-19 entries for the current numbers and the one
+  untested hypothesis left over from them (alternate `base_imu`). The arm
+  segments used to be on this list; that part is the calibration-pose bug
+  above, now fixed.
 - source="sensor" (raw per-sensor orientation, <sensorOrientation>) is
   still experimental, not a verified alternative to the default
   source="segment": the sensor-to-segment slot-order mapping is inferred
@@ -272,6 +288,84 @@ SEGMENT_TO_IMU_FRAME = {
 # Rajagopal OpenSense example scripts -- not something derived here.
 SENSOR_TO_OPENSIM_ROTATIONS = (-math.pi / 2, 0.0, 0.0)
 
+# The OpenSim model pose that corresponds to each Xsens calibration frame, as
+# {coordinate name: value in DEGREES}. Anything not listed keeps the model's
+# own default value.
+#
+# WHY THIS EXISTS (defect found and fixed 2026-09-02). IMUPlacer does not
+# infer the subject's pose from the data: it computes each body<->IMU offset
+# by comparing the calibration frame's measured orientation against the
+# orientation that body has in the model's DEFAULT pose (IMUPlacer.cpp calls
+# initSystem() and reads the working state; it never solves for a pose). So
+# the model must be standing in the same physical pose the subject held when
+# that frame was recorded, or the difference is silently absorbed into the
+# offsets and reappears as a constant error in every joint angle downstream.
+#
+# build_orientations_sto writes the Xsens T-pose as row 0 (every real .mvnx in
+# this study has one: 90/90 trials carry 'tpose', none carry 'npose'). The
+# LaiUhlrich2022 default pose is arms-DOWN. That 90 degrees of shoulder
+# abduction was going into the humerus/radius/hand offsets, and IK then had to
+# report a walking arm as ~90 degrees abducted -- which is gimbal lock for the
+# shoulder's Euler triplet, so arm_flex and arm_rot became free to trade off
+# against each other and wound up to the model's own +/-572.96 deg (+/-10 rad)
+# coordinate bounds. Measured on CK before the fix: arm_flex_l -566 deg,
+# arm_rot_l +573 deg, across-stride SD ~157 deg. After: SD ~2 deg, and the
+# upper-body IMU tracking error drops from 4.5 to 2.0 deg RMS. The lower limb
+# is unchanged to within 0.4 deg, because the legs hold the same pose in both.
+#
+# The values below were read off the real scaled model, not assumed:
+#   arm_add = -90 abducts on BOTH sides (at arm_add_r = -90 the humerus_r
+#     frame's proximal axis points left, i.e. the right arm points right; the
+#     same value mirrors correctly on the left).
+#   pro_sup = +90 is forearm-neutral on this model (range 0..119.75 deg, 0 =
+#     full supination). The Xsens T-pose is palms-down with the arm abducted,
+#     which is the same forearm rotation as relaxed standing -- adducting the
+#     arm to the side takes palm-down to palm-medial with no forearm rotation.
+#     Confirmed against the marker-based OpenCap solution on the same subject:
+#     with pro_sup posed at 90 the IMU route reports 95-101 deg where OpenCap
+#     reports 89-94; left at 0 it reported 5-11 deg.
+#   arm_flex, arm_rot and elbow_flex are 0 in a T-pose, i.e. already default.
+CALIBRATION_POSES = {
+    "tpose": {
+        "arm_add_r": -90.0,
+        "arm_add_l": -90.0,
+        "pro_sup_r": 90.0,
+        "pro_sup_l": 90.0,
+    },
+    # Relaxed standing, arms at the sides -- already the model's default pose,
+    # so nothing to set. Present as an explicit entry rather than a missing
+    # key so "we know this pose needs no adjustment" reads differently from
+    # "we don't know what this pose is".
+    "npose": {},
+}
+
+
+def resolve_calibration_pose(calibration_pose):
+    """Normalise calibrate_model's `calibration_pose` argument to a
+    {coordinate: degrees} dict.
+
+    Accepts a CALIBRATION_POSES key, an explicit dict, or None (meaning "do
+    not pose the model" -- the right answer when the .mvnx had no static
+    calibration frame at all and row 0 is just whatever the recording started
+    on, since then there is no known pose to match).
+
+    An unrecognised name raises rather than falling back to "leave it alone":
+    a silently unposed model is the exact failure this whole mechanism exists
+    to prevent, and it produces plausible-looking numbers rather than an error.
+    """
+    if calibration_pose is None:
+        return {}
+    if isinstance(calibration_pose, dict):
+        return dict(calibration_pose)
+    if calibration_pose in CALIBRATION_POSES:
+        return dict(CALIBRATION_POSES[calibration_pose])
+    raise ValueError(
+        f"Unknown calibration pose {calibration_pose!r}. Known poses: "
+        f"{sorted(CALIBRATION_POSES)}. Pass an explicit "
+        "{coordinate: degrees} dict for anything else, or None to leave the "
+        "model in its default pose."
+    )
+
 
 def _strip_ns(tag):
     return tag.split("}", 1)[-1] if "}" in tag else tag
@@ -297,6 +391,12 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
             being guessed at parse time.
         calibration_orientation: list[(w, x, y, z), ...] | None -- a static
             tpose/npose frame's segment orientations, if the file has one.
+        calibration_frame_type: "tpose" | "npose" | None -- WHICH static frame
+            the entry above came from. Reported rather than left implicit
+            because the two are different physical poses and the OpenSim
+            model has to be put into the matching one before IMUPlacer runs
+            (see CALIBRATION_POSES / calibrate_model). None means the file had
+            neither and calibration falls back to the first motion frame.
 
     Handles two shapes of .mvnx, confirmed by inspecting a real file
     (0_Bed_to_ShowerChair_M.mvnx, 2026-08-17) rather than assumed:
@@ -407,8 +507,16 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
     # orientations file. Prefer 'tpose' (arms out, a clean reference pose)
     # over 'npose' (relaxed standing, arms at sides -- still static, but a
     # worse IMU-alignment reference) if both are present.
+    #
+    # Which of the two was taken is REPORTED, not just used: they are
+    # different physical poses, and IMUPlacer calibrates against whatever
+    # pose the OpenSim model is in. A T-pose needs the model's shoulders
+    # abducted first (see CALIBRATION_POSES); an N-pose does not. Leaving the
+    # caller to assume one is exactly how the arm defect fixed on 2026-09-02
+    # survived -- see calibrate_model.
     calibration_orientation = None
     calibration_sensor_orientation_raw = None
+    calibration_frame_type = None
     for frame_type in ("tpose", "npose"):
         candidate = next((f for f in all_frames if f.attrib.get("type") == frame_type), None)
         if candidate is not None:
@@ -420,6 +528,7 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
                 calibration_sensor_orientation_raw = _frame_child_values(
                     candidate, "sensorOrientation"
                 )
+                calibration_frame_type = frame_type
                 break
 
     times = []
@@ -522,6 +631,7 @@ def parse_mvnx(mvnx_path, skip_leading_frames=3):
         "sensor_orientations_raw": sensor_orientations_raw,
         "calibration_orientation": calibration_orientation,
         "calibration_sensor_orientation_raw": calibration_sensor_orientation_raw,
+        "calibration_frame_type": calibration_frame_type,
     }
 
 
@@ -629,7 +739,8 @@ def list_segments(mvnx_path):
         print("This file also has Xsens's own <centerOfMass> per frame.")
 
 
-def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="segment"):
+def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="segment",
+                           calibration_info=None):
     """Parse the .mvnx and write an OpenSim orientations .sto file, using only
     the segments named in `segment_to_imu_frame`. Column labels in the .sto
     file are the OpenSim IMU frame names (the dict's values), matching the
@@ -657,6 +768,14 @@ def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="se
     than whatever the recording happened to start on (see parse_mvnx's
     docstring for why that matters for a trial like this one).
 
+    Pass a dict as `calibration_info` to find out WHICH static frame ended up
+    as row 0: it gets a "frame_type" key ("tpose", "npose", or None if the
+    file had neither). That value is what calibrate_model's `calibration_pose`
+    argument wants -- the OpenSim model has to be posed to match, and a caller
+    re-parsing the .mvnx just to find out would double the cost of the
+    slowest stage in this pipeline. An out-parameter rather than a changed
+    return value, so every existing caller keeps working unchanged.
+
     Requires the `opensim` package -- imported lazily so --list-segments
     works without it installed.
     """
@@ -666,6 +785,8 @@ def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="se
         raise ValueError(f"source must be 'segment' or 'sensor', got {source!r}")
 
     parsed = parse_mvnx(mvnx_path)
+    if calibration_info is not None:
+        calibration_info["frame_type"] = parsed["calibration_frame_type"]
     segments = parsed["segments"]
     label_to_id = {label: seg_id for seg_id, label in segments.items()}
     seg_ids_in_order = list(segments.keys())
@@ -779,17 +900,53 @@ def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="se
 
 
 def calibrate_model(model_file, orientations_sto, base_imu_label, base_heading_axis,
-                     output_model_file=None):
+                     output_model_file=None, calibration_pose="tpose"):
     """opensim.IMUPlacer: register IMU frames on the model using the FIRST
     frame of orientations_sto as the calibration pose. Mirrors
-    OpenSense_CalibrateModel.m exactly."""
+    OpenSense_CalibrateModel.m, with one addition it does not have.
+
+    `calibration_pose` names the physical pose the subject held in that first
+    frame -- a CALIBRATION_POSES key ("tpose", "npose"), an explicit
+    {coordinate: degrees} dict, or None for "leave the model as it is". The
+    model is put into that pose before IMUPlacer runs and restored afterwards,
+    because IMUPlacer measures each body<->IMU offset against the model's
+    default pose and has no way to discover the subject's. See
+    CALIBRATION_POSES for the full reasoning and the numbers; the short
+    version is that calibrating a T-pose frame against an arms-down model
+    default buried 90 degrees of shoulder abduction in the arm IMU offsets.
+
+    The default is "tpose" because that is what build_orientations_sto writes
+    as row 0 for every real .mvnx seen (all 90 trials in this study carry a
+    tpose frame and none carry an npose). Drivers should still pass the value
+    parse_mvnx reported rather than rely on the default.
+    """
     import opensim as osim
 
     output_model_file = output_model_file or str(
         Path(model_file).with_name(Path(model_file).stem + "_calibrated.osim")
     )
 
+    # Posed in memory rather than by writing a second .osim: IMUPlacer.setModel
+    # takes precedence over set_model_file (IMUPlacer::run only loads the file
+    # when no model has been set), so this leaves no stray posed model on disk
+    # to be mistaken for a real input later.
+    model = osim.Model(str(model_file))
+    pose = resolve_calibration_pose(calibration_pose)
+    coordinates = model.getCoordinateSet()
+    original_defaults = {}
+    for name, degrees in pose.items():
+        # A model without that coordinate is skipped, not an error: the pose
+        # describes a human, and a reduced model (no arms, say) is still a
+        # legitimate thing to calibrate.
+        if not coordinates.contains(name):
+            continue
+        coordinate = coordinates.get(name)
+        original_defaults[name] = coordinate.getDefaultValue()
+        coordinate.setDefaultValue(math.radians(degrees))
+    model.initSystem()
+
     imu_placer = osim.IMUPlacer()
+    imu_placer.setModel(model)
     imu_placer.set_model_file(str(model_file))
     imu_placer.set_orientation_file_for_calibration(str(orientations_sto))
     imu_placer.set_sensor_to_opensim_rotations(osim.Vec3(*SENSOR_TO_OPENSIM_ROTATIONS))
@@ -800,6 +957,18 @@ def calibrate_model(model_file, orientations_sto, base_imu_label, base_heading_a
 
     imu_placer.run(False)
     calibrated_model = imu_placer.getCalibratedModel()
+
+    # The calibration pose was scaffolding for IMUPlacer, not a property of
+    # the calibrated model: the IMU offsets are baked into the offset frames
+    # it just added, and everything downstream reads this file (IK's initial
+    # guess, the forward-kinematics marker stage, task_functions). Hand it
+    # back with the default pose it arrived with so the only difference from
+    # the input model is the IMU frames.
+    calibrated_coordinates = calibrated_model.getCoordinateSet()
+    for name, radians in original_defaults.items():
+        if calibrated_coordinates.contains(name):
+            calibrated_coordinates.get(name).setDefaultValue(radians)
+
     # The MATLAB/C++ API calls this print(); the Python bindings rename it to
     # printToXML() (confirmed by actually running this, 2026-08-17 -- `print`
     # collides with the Python builtin, so SWIG must rename it there but not
@@ -1151,14 +1320,19 @@ def main():
 
     print(f"[1/{n_stages}] Parsing {args.mvnx_file} -> {sto_path} (source={args.source})")
     t = time.perf_counter()
-    build_orientations_sto(args.mvnx_file, sto_path, SEGMENT_TO_IMU_FRAME, source=args.source)
+    calibration_info = {}
+    build_orientations_sto(args.mvnx_file, sto_path, SEGMENT_TO_IMU_FRAME,
+                           source=args.source, calibration_info=calibration_info)
     timings["parse_and_write_sto_s"] = time.perf_counter() - t
     print(f"       done in {timings['parse_and_write_sto_s']:.1f}s")
 
-    print(f"[2/{n_stages}] Calibrating {model_file} against frame 0 of {sto_path}")
+    calibration_frame_type = calibration_info.get("frame_type")
+    print(f"[2/{n_stages}] Calibrating {model_file} against frame 0 of {sto_path} "
+          f"(pose: {calibration_frame_type or 'none -- first motion frame, model left at default'})")
     t = time.perf_counter()
     calibrated_model = calibrate_model(
-        model_file, sto_path, args.base_imu, args.base_heading_axis
+        model_file, sto_path, args.base_imu, args.base_heading_axis,
+        calibration_pose=calibration_frame_type,
     )
     timings["calibrate_model_s"] = time.perf_counter() - t
     print(f"       -> {calibrated_model} ({timings['calibrate_model_s']:.1f}s)")

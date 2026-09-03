@@ -38,8 +38,11 @@ PIPELINES = (
     ("OpenCap video", "OC-Trial{trial}", [str(n) for n in range(1, 16)]),
 )
 
-# Coordinates the 26-panel grid omits but which carry the whole argument for
-# the direct-remapping route: translation, toes, and the saturated arms.
+# Coordinates the 26-panel grid omits. Translation and toes still carry the
+# argument for the direct-remapping route. The arm panels were here for a
+# third reason -- IK saturation -- which was a calibration-pose bug fixed on
+# 2026-09-02; they are kept because the three routes are now worth comparing
+# on the arms rather than because one of them is broken.
 RESCUED_COORDINATES = (
     "pelvis_tx", "pelvis_ty", "pelvis_tz",
     "mtp_angle_r", "mtp_angle_l",
@@ -113,8 +116,13 @@ def main(argv=None):
          "Three pipelines, 26 coordinates (mean +/- 1 SD across strides)"),
         ("jointcheck_com.png", jc.COM_CHANNELS, 3,
          "Centre of mass, pelvis-relative"),
+        # Title changed 2026-09-02 with the calibration-pose fix. It read "What
+        # direct remapping recovers that inverse kinematics cannot", which the
+        # arm panels in this same figure now contradict: IK tracks XtoO closely
+        # on arm_flex_l, arm_rot_l and pro_sup_r. Translation and the toe joint
+        # are what direct remapping still recovers alone.
         ("jointcheck_rescued.png", RESCUED_COORDINATES, 4,
-         "What direct remapping recovers that inverse kinematics cannot"),
+         "Where the three routes disagree: translation, toes, and the arms"),
     ):
         figure = jc.plot_comparison(datasets, coordinates, columns=columns)
         figure.suptitle(title, y=0.995)

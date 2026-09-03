@@ -1685,7 +1685,10 @@ vary (~3 mm across strides) from limb motion. That is a different construct from
 control, so a COM-based UCM task variable computed here would not mean what the standard gait
 formulation means. Modelling decision, not a coding one.
 
-**The upper limb is invalid — the 2026-08-19 T-pose hypothesis, now confirmed.** That entry
+**The upper limb is invalid — the 2026-08-19 T-pose hypothesis, now confirmed.**
+*(Diagnosis stands; the defect was FIXED on 2026-09-02 — see "The calibration pose was never set,
+and the arms paid for it" at the end of this file. The numbers below describe the pre-fix exports,
+which are kept under `<session>/pre-calibration-fix/`.)* That entry
 predicted the arms would be wrong because "the calibration pose has arms out; this model's default
 pose has arms down," and left it untested. It is now demonstrated:
 
@@ -2123,3 +2126,213 @@ vendored GDI path rather than repairing it.
 supplied copy — all three of its returns are `rHS, lHS, rTO, lTO`
 (`context/gait_analysis/gait_analysis.py:772, 871, 906`). Whatever copy the swap was found in, it
 was not this one, and results processed through the supplied file are unaffected by it.
+
+---
+
+## The calibration pose was never set, and the arms paid for it (2026-09-02)
+
+The upper-limb entry above ("The upper limb is invalid — the 2026-08-19 T-pose hypothesis, now
+confirmed") diagnosed this correctly on 2026-08-19 and again on 2026-08-25, and then it sat there.
+It was a prose finding, not a fix, and the exports kept shipping `arm_flex_l` at −566° next to a
+−572.96° joint bound. This entry closes it.
+
+### The mechanism, stated exactly
+
+`IMUPlacer` does not solve for the subject's pose. It calls `initSystem()`, reads the model's
+**default** configuration, and computes each body-to-IMU offset as the difference between that
+body's default orientation and the calibration frame's measured orientation. Whatever pose
+difference exists between the model and the subject is therefore absorbed into the offsets,
+silently, and comes back out as a constant error in every joint angle downstream.
+
+`build_orientations_sto` writes the .mvnx's **T-pose** frame as row 0 — deliberately, so IMUPlacer
+calibrates against a clean static reference rather than whatever the recording started on. Every
+real file in this study has one: **90 of 90 trials carry a `tpose` frame; none carry an `npose`.**
+(They also carry `identity` and `tpose-isb`. `tpose-isb` is the same physical pose expressed in ISB
+anatomical conventions, where arms-down is identity; `tpose` is Xsens's own convention, where the
+T-pose is identity for every segment. Confirmed by reading both out of `CK-001.mvnx`.)
+
+`LaiUhlrich2022_scaled`'s default pose is arms-**down**. So 90° of shoulder abduction went into the
+humerus / radius / hand offsets. IK then had to report a walking arm — hanging at the side — as
+~90° abducted. `arm_add_l` measured **87.9°** on CK-001 before the fix, which is gimbal lock for
+the shoulder's arm_flex / arm_add / arm_rot Euler triplet: with `arm_add` at ±90°, flexion and
+rotation stop being independent, only their sum is determined, and the solver is free to slide the
+split between them anywhere. It slid to the joint bounds.
+
+**±10 rad = ±572.96°.** That is the range `arm_flex`, `arm_add` and `arm_rot` carry in this model —
+about 3.2 full revolutions of shoulder travel. Nothing stopped a wind-up of a full turn or more,
+and nothing checked afterwards, which is why the symptom read as "arm angles are 180° too high"
+rather than as an error.
+
+The legs, pelvis and torso were never affected, and that is diagnostic rather than lucky: they hold
+the same configuration in the Xsens T-pose as in the model default, so their offsets were already
+right.
+
+### The fix
+
+`xsens_to_opensim.CALIBRATION_POSES` maps each Xsens calibration frame type to the model pose that
+matches it; `calibrate_model` puts the model into that pose before `IMUPlacer.run()` and restores
+the original defaults on the calibrated model before writing it, so the only difference from the
+input model is the IMU frames. `parse_mvnx` now reports `calibration_frame_type`,
+`build_orientations_sto` passes it out through a `calibration_info` dict, and both drivers
+(`xsens_to_opensim.main` and `clinician_gui._run_ik_conversion`) hand it to `calibrate_model`. The
+pose is followed from the data, not assumed — assuming it is how this survived.
+
+Values, read off the real scaled model rather than taken from anatomy textbooks:
+
+| coordinate | T-pose value | how it was established |
+|---|---|---|
+| `arm_add_r`, `arm_add_l` | **-90°** | At `arm_add_r = -90` the `humerus_r` frame's proximal axis points left, i.e. the right arm points right. The same value mirrors correctly on the left. |
+| `pro_sup_r`, `pro_sup_l` | **+90°** | Forearm-neutral on this model (range 0…119.75°, 0 = full supination). The Xsens T-pose is palms-down with the arm abducted, which is the same forearm rotation as relaxed standing — adducting to the side takes palm-down to palm-medial with no forearm rotation. |
+| `arm_flex`, `arm_rot`, `elbow_flex` | 0° | Already the model default in a T-pose. |
+
+### Evidence that it is right, not just better
+
+**Against an independent solver.** Xsens's own `<jointAngle>` stream computes elbow kinematics
+without going anywhere near IMUPlacer or OpenSim. It is the strongest available check, and it was
+not used to derive any of the values above:
+
+| | Xsens `<jointAngle>` | IK route, before | IK route, after |
+|---|---|---|---|
+| AN right forearm pronation | 112.2° | 6.6° | **115.1°** |
+| AN left forearm pronation | 112.3° | 10.1° | **104.9°** |
+| CK right forearm pronation | 104.5° | 11.1° | **101.1°** |
+| CK left forearm pronation | 93.2° | 5.3° | **95.2°** |
+| AN right elbow flexion | 8.5° | 0.02° (pinned at bound) | **6.4°** |
+
+**Against the marker-based methodology.** OpenCap on the same CK trials reports `arm_flex_r` -3.7°,
+`arm_add_r` -7.0°, `pro_sup_r` 88.9°. The IK route now reports -3.2°, -4.0° and ~115° on AN's first
+two trials, against 277.9°, 66.2° and 6.6° before.
+
+**Across-stride SD, AN-001/002 pooled** — the symptom that prompted the report:
+
+| coordinate | before | after | OpenCap, for scale |
+|---|---|---|---|
+| `arm_flex_r` | 4.81° | **2.30°** | 1.86° |
+| `arm_rot_l` | 5.34° | **1.79°** | 3.26° |
+| `arm_flex_l` (CK, pooled 15 trials) | 156.8° | see regenerated exports | 2.28° |
+
+**IMU tracking error, CK-001, per-frame orientation residual RMS:**
+
+| | before | after |
+|---|---|---|
+| `humerus_r_imu` | 9.84° | **1.89°** |
+| `radius_r_imu` | 5.16° | **1.62°** |
+| `humerus_l_imu` | 6.24° | **4.35°** |
+| `torso_imu` | 1.00° | **0.06°** |
+| whole-body RMS | 4.51° | **2.03°** |
+
+**Regression check on the half that was already right.** Every lower-limb and pelvis coordinate
+moves by less than 0.4° on CK-001 and is identical to three decimals on the regenerated AN curves.
+The fix touches the arms and nothing else, which is exactly what the mechanism predicts.
+
+### What is still not right, stated plainly
+
+`pro_sup` now reaches the model's own **119.75° upper bound** for AN — mean 115.1°, max 119.71°.
+That is not a calibration error: Xsens's own solver puts AN's right forearm pronation at up to
+142°, so the subject genuinely rotates further than `LaiUhlrich2022` permits. The model's range is
+narrower than the movement. **Do not widen it.** A ±10 rad range on the shoulder is what let this
+defect hide for two weeks; the answer to a coordinate hitting its limit is to report the limit, not
+to remove it.
+
+### The tripwire that was missing
+
+Nothing in the codebase ever compared an exported curve against the model's own coordinate limits.
+A coordinate pinned against its bound is not a measurement — it is the solver reporting it ran out
+of room — and in a table of degrees it is indistinguishable from a real number.
+`methodology_comparison.read_model_coordinate_ranges` reads the ranges out of the .osim (in
+radians, returned in degrees, translations excluded because their ranges are metres) and
+`saturated_coordinates` flags anything within a degree of one. `format_report` prints the result,
+and prints "not checked" rather than nothing when no model was supplied, because silence reads the
+same as a clean result.
+
+### Consequences for existing analysis
+
+- **GDI: unaffected.** Its nine variables are pelvis orientation plus one leg. No arm coordinate.
+- **UCM / synergy index: unaffected.** `ucm.py`'s 18 DOFs deliberately exclude the upper limb, and
+  the exclusion held throughout. The *reason* recorded for it is now out of date, not the choice.
+- **Clinician trial reports: partly affected.** The plotted curves are lower limb only, but
+  `joint_confidence.py` scores `elbow_flex_r`/`elbow_flex_l` against the .mot, and those were
+  pinned near 0 before the fix. Every regenerated report's confidence panel changes for those rows.
+- **Everything downstream of the .mot is being regenerated** — `.mot`, `.trc`, per-trial and pooled
+  gait curves, and the PDFs — for all six sessions on the `ik` route. The pre-fix outputs are kept
+  under `<session>/pre-calibration-fix/` alongside the pre-fix ledger.
+- **The `xtoo` route is untouched.** It never runs IMUPlacer.
+
+### Post-regeneration audit (2026-09-03)
+
+All six sessions regenerated on the `ik` route and audited against the preserved
+`pre-calibration-fix/` baselines. 90 trials compared. Three things the audit found that the fix
+itself did not predict, one of them a regression.
+
+**The headline numbers hold.** Mean IMU orientation residual, 90 trials:
+
+| | before | after |
+|---|---|---|
+| upper body (humerus/radius/hand, both sides) | 12.23° | **8.10°** |
+| lower body (femur/tibia/calcn, both sides) | 3.60° | **3.60°** |
+
+The lower body being identical to two decimals across 90 trials is the regression evidence, not a
+coincidence: the calibration pose cannot reach coordinates that hold the same configuration in a
+T-pose as in the model default. Per-coordinate, the worst pelvis/leg shift in any session is
+**p99 ≤ 0.25°**.
+
+Elbow confidence, scored by `joint_confidence.py` against Xsens's own `<jointAngle>` stream —
+an independent measure that knows nothing about IMU residuals — moved in 35 of 36 sampled rows,
+typically `medium`/`low` → `high` with RMS falling from 9–29° to 1–7°.
+
+Trial counts also improved: HH went 9/15 → 15/15 and CK 14/15 → 15/15. Both `Xml::writeToFile`
+and `Expected 4x (multiple of 4) number of tokens` failures are absent this run. **Not claimed as
+fixed** — no mechanism was established, and the `3221226505` native crash remains an open
+intermittent issue. The one candidate worth testing if it recurs: `calibrate_model` now builds the
+`Model` in-process and passes it via `setModel` instead of letting `IMUPlacer` load it from disk,
+which changes the calibrated model's XML document provenance at `printToXML` time.
+
+#### MS-005: one trial where the fix made things worse
+
+`humerus_l_imu` residual **16.0° → 59.1°**; `radius_l` 8.5 → 31.6; `hand_l` 11.0 → 28.5. Whole-trial
+upper-body residual 12.2 → 30.0. Every other trial in the cohort improved or held.
+
+The left arm departs in a single frame at t = 4.35 s — (flex 9.8°, add −0.4°, rot 1.7°) to
+(142.5°, 32.7°, −127.2°) — and stays departed for 615 of 877 frames. It is **not** an Euler branch
+flip: posing the model at both triplets puts `humerus_l` 133° apart. And the subject did not move
+their arm — Xsens's own `jLeftShoulder` is flat across the same instant (abduction 13.4° → 14.3°,
+rotation 6.7° → 6.5°). The IK solver jumped to a wrong local minimum and, being seeded from the
+previous frame, never came back. `joint_confidence` independently catches it: MS-005's left elbow
+is the only row in the cohort that got worse, `high` (6.65° RMS) → `low` (65.41°).
+
+**Scope.** MS-005's lower body is untouched — its leg residuals are identical before and after
+(femur_r 3.12/3.11, tibia_r 2.70/2.71). GDI and the UCM synergy index use no arm coordinate, so
+MS-005 remains fully usable for every analysis currently run. What is not usable is its left arm,
+elbow and forearm kinematics. Flagged, not dropped.
+
+#### KM's right hand was already lost, and still is
+
+Nine KM trials carry `hand_r_imu` residuals of 21–33° RMS after the fix — but they were 25–40°
+before it. `humerus_r_imu` on KM-006/009 likewise. This is a pre-existing tracking problem on that
+participant, improved by the fix and not caused by it. It is reported as a note rather than a
+failure, and it is a separate defect worth its own investigation: a residual that high across most
+of a session points at sensor placement or a calibration-frame problem specific to KM.
+
+#### `pelvis_rotation` has a ±5729.58° range, and uses it
+
+Found while chasing a false alarm. The gate reported SB's `pelvis_rotation` shifting **360.09°**
+(p99) between runs. It is a wrap: SB-001 read 529.4° before and 169.8° after, SB-002 the reverse,
+the other thirteen trials agree to 0.01°, and wrapped to ±180° the worst shift across all fifteen
+is 0.28°.
+
+The underlying fact is not a false alarm. `pelvis_rotation`'s range is **±100 radians = ±5729.58°,
+sixteen full revolutions** — wider even than the ±10 rad the arms carry. IK is therefore free to
+report a heading one or more turns away from the previous run's, and does. Nothing downstream that
+differences the heading is affected, but anything reading absolute pelvis yaw is, and that includes
+the foot-progression-angle heading work recorded under edit #15. Worth checking before any FPA
+result is quoted against a re-run.
+
+`verify_calibration_fix.wrapped_difference` now compares these as angles. Two defects in the gate
+itself were fixed in the same pass: it compared raw degrees (hence the false alarm), and it used a
+±180° range heuristic to detect a mistracked segment — which is the wrong instrument, because IK
+reports a confident, physiological-looking number for a segment it has lost by 70°. The residual
+check added in `tracking_residuals` is what actually catches MS-005.
+
+One further false alarm worth recording so it is not rediscovered: KM-003 showed a 129° single-frame
+`hip_flexion_l` difference. That frame is the *pre-fix* run spiking to 119.9° where the new run
+reads −9.5°. The fix removed an artifact; the check reported magnitude without direction.

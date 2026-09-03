@@ -116,11 +116,18 @@ def test_pinned_root_is_flagged_for_the_imu_methodology(mc):
     assert "pinned" in reason
 
 
-def test_upper_limb_is_flagged_invalid_with_the_saturation_evidence(mc):
-    status, reason = mc.classify("arm_rot_l", _summaries({"Xsens": 156.6, "OpenCap": 3.3}, "arm_rot_l"))
+def test_the_upper_limb_is_no_longer_excluded_by_name(mc):
+    """Was `imu-invalid` from 2026-08-25 until the calibration-pose defect
+    behind it was fixed on 2026-09-02. The arms now agree with Xsens's own
+    <jointAngle> solver to within a few degrees, so a hardcoded exclusion
+    would be discarding real data. Saturation is what should exclude a
+    coordinate now, and it is measured per export -- see
+    test_a_coordinate_pinned_against_its_bound_is_flagged."""
+    status, _reason = mc.classify(
+        "arm_rot_l", _summaries({"Xsens": 1.8, "OpenCap": 3.3}, "arm_rot_l"))
 
-    assert status == "imu-invalid"
-    assert "10 rad" in reason
+    assert status == "usable"
+    assert mc.INVALID_IMU_ONLY == set()
 
 
 def test_toe_joint_is_degenerate_in_both_methodologies(mc):
@@ -318,3 +325,178 @@ def test_a_wrong_cohort_reference_is_reported_not_raised(mc, tmp_path):
     assert result["available"] is False
     assert result["scores"] == {}
     assert "digest" in result["reason"]
+
+
+# -- bound saturation, the tripwire that was missing ----------------------
+#
+# Added 2026-09-02 with the calibration-pose fix. The arm defect it caught was
+# visible for two weeks as "arm_flex_l reaches -566 deg" sitting in a prose
+# note, because nothing in the code ever compared an exported curve against
+# the model's own coordinate limits. A coordinate pinned against its bound is
+# not a measurement -- it is the solver reporting that it ran out of room --
+# and it looks entirely plausible in a table of degrees.
+
+
+def _model_ranges_stub(**pairs):
+    """{coordinate: (min_deg, max_deg)}, the shape read_model_coordinate_ranges
+    returns."""
+    return dict(pairs)
+
+
+def test_a_coordinate_pinned_against_its_bound_is_flagged(mc, tmp_path):
+    names = ["knee_angle_r", "arm_rot_l"]
+    _write_matrix(
+        tmp_path / "CK-CK-001_right.csv", names, n_cycles=2,
+        value_fn=lambda name, point, cycle: 572.9 if name == "arm_rot_l" else 30.0,
+    )
+    summary = mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names)
+    ranges = _model_ranges_stub(knee_angle_r=(-10.0, 150.0), arm_rot_l=(-572.96, 572.96))
+
+    flagged = mc.saturated_coordinates(summary, ranges)
+
+    assert "arm_rot_l" in flagged
+    assert "knee_angle_r" not in flagged
+
+
+def test_saturation_is_reported_with_the_bound_it_hit(mc, tmp_path):
+    """A bare name is not actionable: which end, how close, and what the limit
+    is are what tell you whether it is a calibration fault or a model whose
+    range is genuinely narrower than the movement."""
+    names = ["pro_sup_r"]
+    _write_matrix(tmp_path / "CK-CK-001_right.csv", names, n_cycles=2,
+                  value_fn=lambda name, point, cycle: 119.7)
+    summary = mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names)
+
+    flagged = mc.saturated_coordinates(summary, _model_ranges_stub(pro_sup_r=(0.0, 119.75)))
+
+    entry = flagged["pro_sup_r"]
+    assert entry["bound"] == "max"
+    assert entry["limit"] == pytest.approx(119.75)
+    assert entry["reached"] == pytest.approx(119.7)
+
+
+def test_a_coordinate_well_inside_its_range_is_not_flagged(mc, tmp_path):
+    names = ["arm_flex_r"]
+    _write_matrix(tmp_path / "CK-CK-001_right.csv", names, n_cycles=2,
+                  value_fn=lambda name, point, cycle: -3.0 + point * 0.1)
+    summary = mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names)
+
+    assert mc.saturated_coordinates(
+        summary, _model_ranges_stub(arm_flex_r=(-572.96, 572.96))) == {}
+
+
+def test_the_tolerance_is_configurable_and_defaults_to_one_degree(mc, tmp_path):
+    """IK stops just shy of a bound rather than exactly on it, so an
+    exact-equality test would never fire. One degree is tight enough not to
+    flag real motion and loose enough to catch a pinned coordinate."""
+    names = ["arm_rot_l"]
+    _write_matrix(tmp_path / "CK-CK-001_right.csv", names, n_cycles=2,
+                  value_fn=lambda name, point, cycle: 570.0)
+    summary = mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names)
+    ranges = _model_ranges_stub(arm_rot_l=(-572.96, 572.96))
+
+    assert mc.saturated_coordinates(summary, ranges) == {}
+    assert "arm_rot_l" in mc.saturated_coordinates(summary, ranges, tolerance_deg=5.0)
+
+
+def test_a_coordinate_with_no_known_range_is_skipped_not_guessed(mc, tmp_path):
+    """comx/comy/comz and the computed foot-progression angles are in the
+    export but are not model coordinates at all."""
+    names = ["comx"]
+    _write_matrix(tmp_path / "CK-CK-001_right.csv", names, n_cycles=2,
+                  value_fn=lambda name, point, cycle: 0.4)
+    summary = mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names)
+
+    assert mc.saturated_coordinates(summary, _model_ranges_stub()) == {}
+
+
+_MODEL_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<OpenSimDocument Version="40000">
+  <Model name="stub">
+    <JointSet>
+      <objects>
+        <CustomJoint name="ground_pelvis">
+          <SpatialTransform>
+            <TransformAxis name="rotation1">
+              <coordinates>pelvis_tilt</coordinates>
+            </TransformAxis>
+            <TransformAxis name="translation1">
+              <coordinates>pelvis_tx</coordinates>
+            </TransformAxis>
+          </SpatialTransform>
+          <coordinates>
+            <Coordinate name="pelvis_tilt">
+              <range>-1.5707963 1.5707963</range>
+            </Coordinate>
+            <Coordinate name="pelvis_tx">
+              <range>-100 100</range>
+            </Coordinate>
+          </coordinates>
+        </CustomJoint>
+      </objects>
+    </JointSet>
+  </Model>
+</OpenSimDocument>
+"""
+
+
+def test_coordinate_ranges_come_back_in_degrees(mc, tmp_path):
+    """The .osim stores rotational ranges in radians; the curve exports are in
+    degrees. Comparing the two without converting would never flag anything."""
+    model = tmp_path / "stub.osim"
+    model.write_text(_MODEL_XML)
+
+    ranges = mc.read_model_coordinate_ranges(model)
+
+    assert ranges["pelvis_tilt"] == pytest.approx((-90.0, 90.0), abs=1e-4)
+
+
+def test_translational_coordinates_are_left_out_of_the_ranges(mc, tmp_path):
+    """pelvis_tx's range is metres. Running degrees() over it produces a
+    plausible-looking +/-5729 instead of an error, which is the same class of
+    silent unit mistake this whole check exists to catch."""
+    model = tmp_path / "stub.osim"
+    model.write_text(_MODEL_XML)
+
+    assert "pelvis_tx" not in mc.read_model_coordinate_ranges(model)
+
+
+def test_the_report_names_any_coordinate_pinned_against_a_bound(mc, tmp_path):
+    names = ["knee_angle_r", "arm_rot_l"]
+    for prefix, trial in (("CK-CK-", "001"), ("OC-Trial", "1")):
+        _write_matrix(
+            tmp_path / f"{prefix}{trial}_right.csv", names, n_cycles=2,
+            value_fn=lambda name, point, cycle: 572.9 if name == "arm_rot_l" else 30.0,
+        )
+    summaries = {
+        "Xsens": mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names),
+        "OpenCap": mc.summarise_methodology(tmp_path, "OC-Trial", ["1"], names),
+    }
+    ranges = {"knee_angle_r": (-10.0, 150.0), "arm_rot_l": (-572.96, 572.96)}
+
+    report = mc.format_report(summaries, names, ranges)
+
+    assert "arm_rot_l" in report
+    assert "572.96" in report
+
+
+def test_the_report_says_so_when_nothing_is_pinned(mc, tmp_path):
+    """Silence would read the same as "not checked". After the 2026-09-02 fix
+    the healthy answer is "none", and it has to be visible as one."""
+    names = ["knee_angle_r"]
+    _write_matrix(tmp_path / "CK-CK-001_right.csv", names, n_cycles=2,
+                  value_fn=lambda name, point, cycle: 30.0)
+    summaries = {"Xsens": mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names)}
+
+    report = mc.format_report(summaries, names, {"knee_angle_r": (-10.0, 150.0)})
+
+    assert "none" in report
+
+
+def test_the_report_omits_the_bound_section_when_no_model_was_given(mc, tmp_path):
+    names = ["knee_angle_r"]
+    _write_matrix(tmp_path / "CK-CK-001_right.csv", names, n_cycles=2,
+                  value_fn=lambda name, point, cycle: 30.0)
+    summaries = {"Xsens": mc.summarise_methodology(tmp_path, "CK-CK-", ["001"], names)}
+
+    assert "joint bound" not in mc.format_report(summaries, names)

@@ -59,7 +59,8 @@ def _resolve_paths_for(session_dir, trial_name="trial1"):
 
 def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=None,
                              sleep_before_calibrate=0.0, write_trc_error=None,
-                             calibrate_error=None, run_imu_ik_error=None):
+                             calibrate_error=None, run_imu_ik_error=None,
+                             calibration_frame_type="tpose"):
     calls = {"build_orientations_sto": [], "calibrate_model": [], "run_imu_ik": [], "write_markers_trc": []}
 
     def resolve_session_output_paths(session_dir, trial_name):
@@ -67,15 +68,24 @@ def _make_fake_xsens_module(resolve_paths=None, resolve_error=None, build_error=
             raise resolve_error
         return resolve_paths
 
-    def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="segment"):
+    def build_orientations_sto(mvnx_path, sto_path, segment_to_imu_frame, source="segment",
+                               calibration_info=None):
         calls["build_orientations_sto"].append((mvnx_path, sto_path, source))
+        if calibration_info is not None:
+            # Every real .mvnx in this study calibrates off a tpose frame; the
+            # real function reports which one it used so the model can be posed
+            # to match (xsens_to_opensim.CALIBRATION_POSES).
+            calibration_info["frame_type"] = calibration_frame_type
         if build_error is not None:
             raise build_error
 
-    def calibrate_model(model_file, sto_path, base_imu_label, base_heading_axis):
+    def calibrate_model(model_file, sto_path, base_imu_label, base_heading_axis,
+                        calibration_pose="tpose"):
         if sleep_before_calibrate:
             time.sleep(sleep_before_calibrate)
-        calls["calibrate_model"].append((model_file, sto_path, base_imu_label, base_heading_axis))
+        calls["calibrate_model"].append(
+            (model_file, sto_path, base_imu_label, base_heading_axis, calibration_pose)
+        )
         if calibrate_error is not None:
             raise calibrate_error
         return str(Path(model_file).with_name(Path(model_file).stem + "_calibrated.osim"))
@@ -915,6 +925,66 @@ def test_ik_remains_the_default_route(mod, tmp_path):
     assert result["conversion"] == "ik"
 
 
+# -- the calibration pose reaches IMUPlacer (2026-09-02) -------------------
+#
+# IMUPlacer measures each body<->IMU offset against the model's DEFAULT pose,
+# so the model has to be standing in whatever pose the .mvnx's calibration
+# frame holds. Row 0 is the Xsens T-pose, the model default is arms-down, and
+# for months the 90 degrees of shoulder abduction between them went into the
+# arm IMU offsets instead -- arm_flex_l came out at -566 deg against the
+# model's own -572.96 deg bound. What makes it a *pipeline* bug rather than
+# just a calibrate_model bug is the handoff: the frame type is discovered in
+# the conversion stage and needed in the calibration stage.
+
+def test_the_calibration_frame_type_reaches_calibrate_model(mod, tmp_path):
+    _result, fake_xsens = _run_route(mod, tmp_path, conversion=None)
+
+    (_model, _sto, _imu, _axis, calibration_pose), = fake_xsens._calls["calibrate_model"]
+    assert calibration_pose == "tpose"
+
+
+def test_an_npose_calibration_frame_is_not_passed_off_as_a_tpose(mod, tmp_path):
+    """The pose must follow the data, not a hardcoded assumption: an N-pose
+    frame already matches the model default and posing the shoulders for it
+    would introduce the very error this mechanism removes."""
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fake_xsens = _make_fake_xsens_module(
+        resolve_paths=_resolve_paths_for(session_dir), calibration_frame_type="npose",
+    )
+    mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=fake_xsens,
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=_fake_fp_module_with_export([]),
+    )
+
+    (_model, _sto, _imu, _axis, calibration_pose), = fake_xsens._calls["calibrate_model"]
+    assert calibration_pose == "npose"
+
+
+def test_a_file_with_no_static_calibration_frame_leaves_the_model_unposed(mod, tmp_path):
+    """No static frame means row 0 is whatever the recording started on, so
+    there is no known pose to match and guessing one would be worse than
+    leaving the model alone."""
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fake_xsens = _make_fake_xsens_module(
+        resolve_paths=_resolve_paths_for(session_dir), calibration_frame_type=None,
+    )
+    mod.run_pipeline(
+        str(session_dir), str(mvnx_path),
+        xsens_module=fake_xsens,
+        gait_fixed_module=_fake_gait_module_with_curves(),
+        foot_progression_module=_fake_fp_module_with_export([]),
+    )
+
+    (_model, _sto, _imu, _axis, calibration_pose), = fake_xsens._calls["calibrate_model"]
+    assert calibration_pose is None
+
+
 def test_xtoo_route_skips_calibration_and_inverse_kinematics(mod, tmp_path):
     """The whole point: no IMUPlacer, no IK, no model solve. Calling them
     anyway would waste ~40 s per trial and reintroduce the pinned root."""
@@ -1465,3 +1535,29 @@ def test_isolation_drops_values_that_merely_fail_to_serialise(mod):
     assert trimmed["trial_name"] == "CK-001"
     assert sorted(trimmed["dropped_by_isolation"]) == ["fpa_r", "gait_r"]
     assert json.dumps(trimmed)
+
+
+def test_a_conversion_that_does_not_report_its_calibration_frame_is_refused(mod, tmp_path):
+    """A missing report is not the same as "no static frame". Treating it as
+    None would put the model back in its arms-down default against a T-pose
+    calibration frame, which is the 2026-09-02 defect, and nothing in the
+    output would show it."""
+    session_dir = tmp_path / "OpenCapData_test"
+    mvnx_path = tmp_path / "trial1.mvnx"
+    mvnx_path.write_text("<mvnx/>")
+    fake_xsens = _make_fake_xsens_module(resolve_paths=_resolve_paths_for(session_dir))
+
+    def silent_conversion(mvnx, sto, mapping, source="segment", calibration_info=None):
+        fake_xsens._calls["build_orientations_sto"].append((mvnx, sto, source))
+
+    fake_xsens.build_orientations_sto = silent_conversion
+
+    with pytest.raises(mod.MvnxParsingError, match="Refusing to guess"):
+        mod.run_pipeline(
+            str(session_dir), str(mvnx_path),
+            xsens_module=fake_xsens,
+            gait_fixed_module=_fake_gait_module_with_curves(),
+            foot_progression_module=_fake_fp_module_with_export([]),
+        )
+
+    assert not fake_xsens._calls["calibrate_model"]
