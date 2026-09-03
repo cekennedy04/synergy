@@ -163,13 +163,19 @@ that was fixed -- KM read "sound" on a point estimate one point clear of the flo
 
 Cohort mean **93.45 +/- 7.44**, range 83.36-106.13 -- within one SD of the normative 100 +/- 10.
 
-**A uniform offset is strongly disfavoured.** If the pipeline subtracted ~20 points from everyone,
-the true values would run 103.36-126.13 -- all twelve limbs at or above the normative mean, the
-cohort sitting 1.35 SD *above* the healthy controls the reference was built from. For a group of
-unknown clinical status that is implausible. Note this is a distributional argument and it is
-probabilistic, not arithmetic: B is unlikely, not impossible. Section 14 of the audit states it
-precisely, including a category error section 13 made in leaning on per-session SOUND verdicts for
-subjects whose health is not recorded.
+**A uniform offset is disfavoured, and cannot be ruled out from this data at all.** If the pipeline
+subtracted ~20 points from everyone, the true values would run 103.36-126.13 -- all twelve limbs at
+or above the normative mean. That is unlikely for a group of unknown clinical status, but the
+calculation assumes a sampling model these six sessions do not have, so it is not a usable
+likelihood ratio.
+
+The deeper point, and the one that governs what any future analysis can achieve: **without
+known-uninjured calibration data through this pipeline, "true score" and "additive pipeline offset"
+are not separately identifiable.** Every observed score is consistent with a continuum of (true
+ability, offset) pairs, and no quantity of unlabelled sessions decomposes it. Audit sections 14-15
+state this in full, including a category error section 13 made in citing per-session SOUND verdicts
+for subjects whose health is not recorded. So the control capture is not a confirmation of a settled
+result -- it is the only thing that identifies the model.
 
 **So low scores, where they can be placed at all, look subject-specific.** CK at 84.30 and AN at
 86.64 are low for reasons particular to those subjects -- real impairment, or that subject's tracking quality -- not because the scale is
