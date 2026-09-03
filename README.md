@@ -100,6 +100,50 @@ Two questions for whoever maintains the upstream code, both in the write-up: wha
 foot offsets encode (no derivation found anywhere), and whether anything downstream was tuned
 against the old near-zero heading.
 
+**Absolute GDI is not on the published normative scale — only relative comparison is safe.**
+Our three processed subjects score **80.20 +/- 8.09** on `reduced6` against the control cohort's
+**100.0 +/- 10.0**. `reduced6` carries no pelvis terms, so this has nothing to do with the pelvis
+convention below. Two explanations fit the same numbers, and nothing in this repo separates them:
+
+- the subjects are genuinely impaired, and the pipeline is sound, or
+- this pipeline's kinematics are systematically offset from the optical-mocap cohort the reference
+  was built on, and every score we report is ~20 points low.
+
+The offset is not confined to the pelvis: measured against the cohort, `hip_flexion` is off by
+-13.47 deg and `fpa` by +10.90, summing to 33.1 deg across the six non-pelvis variables. Full
+analysis in `docs/2026-08-31-gdi-vs-ucm-audit.md` section 12.
+
+**What this means in practice.** Trial-to-trial, leg-to-leg and session-to-session comparison was
+never in question and stays valid — a common offset cancels. Do **not** report an absolute GDI as
+though 100 means what it means in the literature.
+
+**Do not "fix" it by fitting an offset to our own participants.** That was measured and rejected: it
+subtracts precisely the impairment GDI exists to measure. The estimator is also three subjects whose
+between-subject spread (6.5 deg) is 70% of the offset itself.
+
+**How to settle it — one control subject, one command.** The question is a capture, not a
+computation: a subject *known* to be uninjured scores ~100 under the first explanation and ~80 under
+the second.
+
+```bash
+python validate_control_baseline.py     --session PATH/TO/CONTROL_SESSION     --reference context/gdi_reference_2026-08-27
+```
+
+Exit status is the verdict, so it drops into a post-capture script:
+
+| code | verdict | meaning |
+| --- | --- | --- |
+| 0 | SOUND | scores >= 90; the frame is fine, the cohort is impaired |
+| 1 | ACTION REQUIRED | scores <= 85; the pipeline is offset, rescaling needed |
+| 2 | INCONCLUSIVE | the 85-90 band, legs disagreeing by more than one normative SD, or too few strides |
+| 3 | UNABLE TO RUN | missing reference, invalid session, or a pelvis-bearing feature set |
+
+**`gdi9` is disabled** and raises `GdiFeatureSetDisabledError` from both `get_feature_set` (by name,
+the CLI path) and `compute_gdi` (as an object). It adds three frame-mismatched pelvis terms on top
+of six already-mismatched ones with no offsetting benefit. `reduced6` is the default and the only
+set the project reports through. This is not waivable, unlike `check_digest` — a disabled set's
+output is wrong in a known direction, and there is no honest reason to want that number.
+
 ## Known issues / open problems
 
 - **An intermittent native crash with no Python traceback.** Trials occasionally exit with
