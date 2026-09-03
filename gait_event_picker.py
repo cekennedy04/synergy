@@ -43,6 +43,48 @@ EXPECTED_ORDER = {
 EVENT_TYPES = ("rHS", "rTO", "lHS", "lTO")
 
 
+def _chain_from(start, names):
+    """`names` read as consecutive cycle steps beginning at `start`.
+
+    Returns (ordered, run) where `run` is how many of them actually chained;
+    anything the cycle could not reach is appended alphabetically so nothing
+    is ever dropped. A pathological set that no order rescues therefore keeps
+    all its events and still fails the ordering verdict, which is the
+    behaviour this project wants: report, do not refuse.
+    """
+    pool = [name for name in names if name != start]
+    ordered = [start]
+    current = start
+    while EXPECTED_ORDER[current] in pool:
+        current = EXPECTED_ORDER[current]
+        pool.remove(current)
+        ordered.append(current)
+    return ordered + sorted(pool), len(ordered)
+
+
+def _order_within_frame(names, previous):
+    """Order the events sharing one frame so they read as the cycle does.
+
+    Double support puts one foot's toe-off and the other's heel-strike within
+    a few frames of each other, and at the 60Hz these trials are captured at
+    they land on the same frame often enough to matter.
+
+    The start is whichever event chains the most of the group; ties go to the
+    one `previous` expects next, then alphabetically -- so the result depends
+    only on the picked set, never on the order the operator clicked.
+    """
+    candidates = sorted(names)
+    if len(candidates) < 2:
+        return candidates
+    expected = EXPECTED_ORDER.get(previous) if previous else None
+    ranked = min(
+        candidates,
+        key=lambda start: (-_chain_from(start, candidates)[1],
+                           0 if start == expected else 1,
+                           start))
+    return _chain_from(ranked, candidates)[0]
+
+
 class GaitEventPicker:
     """Accumulates hand-picked gait events for one trial.
 
@@ -88,10 +130,26 @@ class GaitEventPicker:
     # -- what the operator sees -------------------------------------------
 
     def timeline(self):
-        """Every picked event in time order: (row, time, event_type)."""
-        entries = [(row, self.motion.time_at(row), name)
-                   for name, rows in self._events.items() for row in rows]
-        return sorted(entries)
+        """Every picked event in time order: (row, time, event_type).
+
+        Frames decide the order. Two events on ONE frame are decided by the
+        gait cycle instead -- see `_order_within_frame`. A plain sort broke
+        here: it fell back to sorting by name, and 'lTO' < 'rHS' is the
+        reverse of the cycle's rHS -> lTO, so a correctly-picked trial with a
+        double-support collision was reported as out of order.
+        """
+        by_frame = {}
+        for name, rows in self._events.items():
+            for row in rows:
+                by_frame.setdefault(row, []).append(name)
+
+        entries = []
+        previous = None
+        for row in sorted(by_frame):
+            for name in _order_within_frame(by_frame[row], previous):
+                entries.append((row, self.motion.time_at(row), name))
+                previous = name
+        return entries
 
     def counts(self):
         return {name: len(rows) for name, rows in self._events.items()}
