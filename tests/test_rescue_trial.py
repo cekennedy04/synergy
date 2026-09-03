@@ -249,3 +249,111 @@ def test_the_gui_still_runs_unattended_by_default():
 
     assert "make_manual_event_provider" not in source
     assert source.count("allow_manual_entry=False") >= 1
+
+
+# -- the whole recovery, on a trial that genuinely fails -------------------
+#
+# Everything above uses fakes. This drives the real thing: a real session, a
+# real conversion on disk, real prominence escalation and auto-trim retries
+# failing for real, the picker asked, and gait cycles coming out the far end.
+#
+# Trial9 of session dc490fa4 is the trial the picker exists for -- it fails
+# ordering at every prominence. It is an OpenCap session rather than an Xsens
+# one because no Xsens trial in Data/ currently fails detection, and
+# resolve_session_output_paths computes the same layout for both, which is why
+# the rescue works on either.
+#
+# Copied into tmp_path rather than run in place. _run_gait_stages writes the
+# session's per-trial curve matrices AND rebuilds its pooled matrix, so
+# running this against Data/ would silently rewrite real session artefacts
+# every time the suite ran.
+
+DATA_ROOT = REPO_ROOT / "Data"
+FAILING_SESSION_GLOB = "OpenCapData_dc490fa4*"
+FAILING_TRIAL = "Trial9"
+
+
+@pytest.fixture(scope="module")
+def failing_session_copy(tmp_path_factory):
+    """The minimum of a real failing session, somewhere writes do no harm."""
+    import shutil
+
+    pytest.importorskip("opensim",
+                        reason="needs the opencap-processing environment")
+    sessions = list(DATA_ROOT.glob(FAILING_SESSION_GLOB)) if DATA_ROOT.is_dir() else []
+    if not sessions:
+        pytest.skip("the known detection-failure session is not in Data/")
+    source = sessions[0]
+    if not (source / "MarkerData" / (FAILING_TRIAL + ".trc")).is_file():
+        pytest.skip("%s is not in the session" % FAILING_TRIAL)
+
+    target = tmp_path_factory.mktemp("session") / source.name
+    (target / "OpenSimData" / "Kinematics").mkdir(parents=True)
+    (target / "MarkerData").mkdir(parents=True)
+    shutil.copytree(source / "OpenSimData" / "Model",
+                    target / "OpenSimData" / "Model")
+    for relative in (Path("OpenSimData") / "Kinematics" / (FAILING_TRIAL + ".mot"),
+                     Path("MarkerData") / (FAILING_TRIAL + ".trc"),
+                     Path("sessionMetadata.yaml")):
+        if (source / relative).is_file():
+            shutil.copy2(source / relative, target / relative)
+    return target
+
+
+@pytest.fixture(scope="module")
+def rescued(mod, failing_session_copy):
+    import os
+
+    opened = []
+
+    def scripted_operator(model):
+        """The human at the window, clicking a clean cycle."""
+        motion = model.picker.motion
+        opened.append(motion.name)
+        for event_type, fraction in (
+                ('rHS', 0.10), ('lTO', 0.16), ('lHS', 0.30), ('rTO', 0.36),
+                ('rHS', 0.50), ('lTO', 0.56), ('lHS', 0.70), ('rTO', 0.76),
+                ('rHS', 0.90)):
+            model.select(event_type)
+            model.pick_at(float(int(motion.n_rows * fraction)))
+
+    # utils.py runs get_token() at import; nothing on this path calls the API.
+    os.environ.setdefault("API_TOKEN", "placeholder-no-api-calls-on-this-path")
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        result = mod.rescue(str(failing_session_copy), FAILING_TRIAL,
+                            show=scripted_operator)
+    finally:
+        os.chdir(cwd)
+    return result, opened
+
+
+def test_a_trial_the_pipeline_gave_up_on_is_recovered(rescued):
+    """The claim the whole feature rests on: a trial no automatic rung could
+    segment produces gait cycles once a human picks its events."""
+    result, _opened = rescued
+
+    for side in ("r", "l"):
+        cycles = result["gait_" + side].gaitEvents["ipsilateralIdx"]
+        assert len(cycles) >= 1, "the %s leg recovered no gait cycle" % side
+
+
+def test_the_recovery_asks_the_operator_once(rescued):
+    """Both legs fail together, so the rescue must not open two windows."""
+    _result, opened = rescued
+
+    assert opened == [FAILING_TRIAL], (
+        "the picker opened %d times for one trial" % len(opened))
+
+
+def test_the_recovery_writes_the_same_artefacts_a_normal_run_would(rescued):
+    """It re-enters _run_gait_stages rather than re-implementing it, so a
+    recovered trial has to be as complete as an ordinary one -- per-trial
+    curve matrices and the session's pooled matrix included."""
+    result, _opened = rescued
+
+    for key in ("curves_matrix_r_path", "curves_matrix_l_path",
+                "combined_matrix_r_path", "combined_matrix_l_path"):
+        assert result[key], "%s was not written" % key
+        assert Path(result[key]).is_file()
