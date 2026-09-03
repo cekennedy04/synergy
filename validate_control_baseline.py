@@ -1,9 +1,10 @@
 """Score one processed session and say whether it reads normal, low, or unclear.
 
 Built 2026-09-03 to settle whether this pipeline's GDI scale was offset from the
-normative cohort's. **It settled it: the scale is fine.** The script is kept, and
-reframed, because the per-session check it performs turned out to be the useful
-part.
+normative cohort's. The specific ~20-point claim did not survive contact with the
+full cohort; whether any smaller offset exists is still open, and one subject
+known to be uninjured would settle it. The script is kept, and reframed, because
+the per-session check it performs turned out to be the useful part.
 
 WHAT IT WAS FOR, AND WHAT HAPPENED
 ---------------------------------------------------------------------------
@@ -12,11 +13,17 @@ cohort's 100.0 +/- 10.0, and two explanations fit: our subjects are impaired, or
 the pipeline is systematically ~20 points low. The plan was to settle it by
 capturing a subject known to be uninjured.
 
-It did not need a capture. Over all six processed sessions the cohort means
-93.45 +/- 7.44, range 83.36-106.13, and a uniform -20 offset cannot produce a
-maximum of 106 -- SB's right leg would need a true score of 126. The
-three-subject sample had been the low tail. Full retraction in section 13 of
-docs/2026-08-31-gdi-vs-ucm-audit.md.
+Over all six processed sessions the cohort means 93.45 +/- 7.44, range
+83.36-106.13. Under a uniform -20 offset the true values would run 103-126, i.e.
+all twelve limbs above the normative mean -- implausible for a group of unknown
+clinical status, though not impossible. The three-subject sample had been the low
+tail. Sections 13 and 14 of docs/2026-08-31-gdi-vs-ucm-audit.md carry the
+retraction and its precise strength.
+
+NOTE ON THESE THRESHOLDS. The bands below were drawn for a subject KNOWN to be
+uninjured. Applied to a session of unknown status they describe the score, not
+the person: a SOUND verdict is not evidence that subject is healthy, and reading
+it that way is the error section 14 records.
 
 WHAT IT IS FOR NOW
 ---------------------------------------------------------------------------

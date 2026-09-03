@@ -646,3 +646,58 @@ Narrower, and per-subject rather than global:
 
 The control capture is no longer the blocking measurement. It would be confirmatory, and its value
 now lies in anchoring individual interpretation rather than in validating the scale.
+
+---
+
+## 14. How strong is section 13's refutation? Strong, but not arithmetic (2026-09-03)
+
+Section 13 says a uniform ~20-point offset "is refuted" and that a maximum of 106.13 "cannot" be
+produced under it. **That overstates the argument.** Written after a challenge that the refutation
+leans on a category error, which it partly did.
+
+### The argument, stated properly
+
+Under hypothesis B every observed score is 20 points low, so the true values would be:
+
+    observed, 12 limbs      83.36 .. 106.13   mean  93.45
+    implied true values    103.36 .. 126.13   mean 113.45
+
+    limbs at or above the normative mean of 100:  12 of 12
+    cohort mean sits 1.35 SD above normative
+
+So B requires a cohort of **unknown clinical status** — plausibly including impaired participants —
+to be uniformly *better* than the healthy controls the reference was built from. In a healthy
+population roughly half of limbs fall below 100; here all twelve would sit above 103.
+
+That is strong evidence against B. It is **probabilistic, not arithmetic**: B is implausible, not
+impossible. A single limb at a true 126 is unusual rather than forbidden, and GDI has no upper
+bound.
+
+### The category error, acknowledged
+
+`validate_control_baseline.py`'s 90.0 SOUND floor was designed for a subject *known* to be
+uninjured. Section 13 leaned on HH, SB and KM returning SOUND as if that were evidence about the
+pipeline. It is not: none of the six has demographics, diagnoses or clinical grouping recorded
+anywhere in this repo (`cohort_report.md` section 4), so a verdict on those sessions is a statement
+about their *scores*, not about their health.
+
+The distributional argument above does not depend on the tool's thresholds, and is what the
+refutation should have rested on from the start.
+
+### What is and is not settled
+
+**Settled.** Section 12's specific claim -- that the cohort sits ~20 points low and that this
+indicates a pipeline offset -- is not supported. The cohort centres at 93.45, within one SD of
+normative, and the three-subject 80.20 figure was the low tail.
+
+**Not settled.** That the pipeline is *definitely* free of any scale offset. A smaller offset, or
+one that varies by subject, remains consistent with everything measured here.
+
+**Unchanged.** Fitting a global correction to our own participants stays rejected -- under either
+reading it subtracts between-subject variation the score exists to detect. Within-pipeline
+comparison stays valid. `gdi9` stays disabled on its own (convention) grounds.
+
+**Still the clean settle.** One subject known to be uninjured, run through
+`validate_control_baseline.py`. Section 13 said the capture was "no longer blocking"; more precisely,
+it is no longer needed to reject the *specific* 20-point claim, and it remains the only thing that
+would settle the general question. It is cheap, and it is worth doing.
