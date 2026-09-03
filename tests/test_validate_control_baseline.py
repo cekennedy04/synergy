@@ -39,13 +39,24 @@ def _strides(value, n=20):
     return [value] * n
 
 
+def _trials(value, n=15, spread=0.0):
+    """Per-trial means for the clustering unit. `spread` widens the interval:
+    with spread=0 the CI collapses to a point, which is what most band tests
+    want; a non-zero spread is how a straddling interval is built."""
+    if not spread:
+        return [value] * n
+    step = spread / (n - 1)
+    return [value - spread / 2 + i * step for i in range(n)]
+
+
 # -- the two explanations the check exists to separate ---------------------
 
 
 def test_a_control_scoring_normally_says_the_frame_is_sound(baseline):
     """Explanation A: the pipeline is fine and the existing cohort's low
     scores are real impairment."""
-    status, mean, detail = baseline.verdict(_strides(100.0))
+    status, mean, detail = baseline.verdict(_strides(100.0),
+                                            trials=_trials(100.0))
 
     assert status == "SOUND"
     assert mean == pytest.approx(100.0)
@@ -55,7 +66,8 @@ def test_a_control_scoring_normally_says_the_frame_is_sound(baseline):
 def test_a_control_scoring_like_our_cohort_says_the_pipeline_is_offset(baseline):
     """Explanation B: a subject known to be uninjured scoring where our
     participants score means the scale, not the subjects, is the problem."""
-    status, mean, detail = baseline.verdict(_strides(80.2))
+    status, mean, detail = baseline.verdict(_strides(80.2),
+                                            trials=_trials(80.2))
 
     assert status == "ACTION REQUIRED"
     assert mean == pytest.approx(80.2)
@@ -66,7 +78,7 @@ def test_a_control_between_the_two_is_not_forced_into_the_nearer_one(baseline):
     """The failure mode this guards: a score at 87 is closer to 85 than to 100,
     but 'closer to' is not evidence. Both explanations remain live, and saying
     so is the honest answer."""
-    status, mean, _ = baseline.verdict(_strides(87.0))
+    status, mean, _ = baseline.verdict(_strides(87.0), trials=_trials(87.0))
 
     assert status == "INCONCLUSIVE"
     assert mean == pytest.approx(87.0)
@@ -82,7 +94,7 @@ def test_a_control_between_the_two_is_not_forced_into_the_nearer_one(baseline):
     (85.1, "INCONCLUSIVE"),
 ])
 def test_the_band_edges_are_where_the_constants_say(baseline, value, expected):
-    status, _, _ = baseline.verdict(_strides(value))
+    status, _, _ = baseline.verdict(_strides(value), trials=_trials(value))
 
     assert status == expected
 
@@ -91,7 +103,8 @@ def test_too_few_strides_is_inconclusive_whatever_the_mean(baseline):
     """A perfect-looking mean over three strides is not evidence about bands
     20 points apart. Pinned because 'it said 100' is exactly the kind of result
     someone would act on without checking n."""
-    status, mean, detail = baseline.verdict(_strides(100.0, n=3))
+    status, mean, detail = baseline.verdict(_strides(100.0, n=3),
+                                            trials=_trials(100.0))
 
     assert status == "INCONCLUSIVE"
     assert mean is None
@@ -114,8 +127,8 @@ def test_the_verdict_uses_every_stride_from_both_legs(baseline):
     assert len(strides) == 20
     # Pooled they average to exactly 90.0, which lands on the SOUND floor --
     # so without the asymmetry guard this session would pass.
-    assert baseline.verdict(strides)[0] == "SOUND"
-    status, _, detail = baseline.verdict(strides, sides)
+    assert baseline.verdict(strides, trials=_trials(90.0))[0] == "SOUND"
+    status, _, detail = baseline.verdict(strides, sides, _trials(90.0))
     assert status == "INCONCLUSIVE"
     assert "disagree" in detail
 
@@ -171,7 +184,7 @@ def test_the_report_says_what_the_verdict_does_not_establish(baseline):
                       "right": {"mean": 101.0, "sd": 4.0, "n_strides": 10,
                                 "per_stride": _strides(101.0, n=10)}}}
     strides = baseline.pooled_strides(scores)
-    status, mean, detail = baseline.verdict(strides)
+    status, mean, detail = baseline.verdict(strides, trials=_trials(100.0))
 
     text = baseline.format_report(scores, status, mean, detail, strides)
 
@@ -191,7 +204,7 @@ def test_the_action_required_report_points_at_the_subject_not_the_pipeline(basel
               "gdi": {"left": {"mean": 80.0, "sd": 5.0, "n_strides": 20,
                                "per_stride": _strides(80.0, n=20)}}}
     strides = baseline.pooled_strides(scores)
-    status, mean, detail = baseline.verdict(strides)
+    status, mean, detail = baseline.verdict(strides, trials=_trials(80.0))
 
     text = baseline.format_report(scores, status, mean, detail, strides)
 
@@ -199,3 +212,80 @@ def test_the_action_required_report_points_at_the_subject_not_the_pipeline(basel
     assert "THIS SUBJECT" in text
     assert "refuted" in text
     assert "Do NOT fit a global offset" in text
+
+
+# -- the interval, which is what makes a verdict honest --------------------
+
+
+def test_a_mean_above_the_floor_is_not_sound_if_the_interval_straddles_it(baseline):
+    """The defect this fixes. A session averaging 91 used to be SOUND on the
+    strength of a point estimate one point clear of the floor. With realistic
+    trial-to-trial spread the interval covers 90, so the session cannot be
+    placed on either side of it -- and saying so is the honest answer."""
+    trials = _trials(91.0, spread=12.0)
+    mean, lo, hi = baseline.mean_interval(trials)
+
+    assert mean == pytest.approx(91.0)
+    assert lo < baseline.SOUND_FLOOR < hi, "the interval must span the floor"
+
+    status, _, detail = baseline.verdict(_strides(91.0), trials=trials)
+
+    assert status == "INCONCLUSIVE"
+    assert "straddles" in detail
+
+
+def test_the_interval_is_computed_over_trials_not_strides(baseline):
+    """Strides within a trial are the same person on the same walk, so a
+    standard error over them is several times too tight. Pinned by construction:
+    100 strides that vary exactly as much as 15 trials must give the wider
+    interval for the trials, because n is smaller."""
+    values = [88.0, 92.0] * 8            # same spread either way
+    over_trials = baseline.mean_interval(values[:16])
+    over_strides = baseline.mean_interval(values * 7)
+
+    trial_width = over_trials[2] - over_trials[1]
+    stride_width = over_strides[2] - over_strides[1]
+
+    assert trial_width > stride_width * 2, (
+        "using strides as the unit would shrink the interval by roughly "
+        "sqrt(n_strides/n_trials); that is the overconfidence this avoids."
+    )
+
+
+def test_no_verdict_without_enough_trials_to_form_an_interval(baseline):
+    """A point estimate cannot be placed against a threshold. Previously a
+    session with any number of strides got a confident verdict; now too few
+    trials is INCONCLUSIVE however good the mean looks."""
+    status, mean, detail = baseline.verdict(_strides(100.0),
+                                            trials=_trials(100.0, n=3))
+
+    assert status == "INCONCLUSIVE"
+    assert mean == pytest.approx(100.0)
+    assert "interval" in detail
+
+
+def test_the_sound_verdict_says_it_is_not_a_health_claim(baseline):
+    """About one uninjured limb in six falls below the floor, so SOUND cannot
+    mean the subject is uninjured. The detail line has to say so, because the
+    word 'SOUND' on its own plainly implies otherwise."""
+    _, _, detail = baseline.verdict(_strides(100.0), trials=_trials(100.0))
+
+    assert "not that the subject is uninjured" in detail
+    assert baseline.P_UNINJURED_BELOW_SOUND_FLOOR == pytest.approx(0.159, abs=0.01)
+
+
+def test_the_report_states_the_thresholds_are_unvalidated(baseline):
+    """No sensitivity or specificity has been measured, because that needs
+    known-uninjured and known-impaired samples through this pipeline and none
+    exist. A gate that does not say so invites being read as a classifier."""
+    scores = {"session": "CTRL-03", "feature_set": "reduced6",
+              "conversion": "ik",
+              "gdi": {"left": {"mean": 99.0, "sd": 2.0, "n_strides": 20,
+                               "per_stride": _strides(99.0, n=20)}}}
+    strides = baseline.pooled_strides(scores)
+    status, mean, detail = baseline.verdict(strides, trials=_trials(99.0))
+
+    text = baseline.format_report(scores, status, mean, detail, strides)
+
+    assert "sensitivity or specificity" in text
+    assert "prompt to look rather than a classification" in text

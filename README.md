@@ -147,14 +147,19 @@ against the published scale. **That claim was wrong**, and it was wrong because 
 three subjects who turned out to be the low tail. Over all six processed sessions, scored on
 `reduced6` against `context/gdi_reference_2026-08-27`:
 
-| session | left | right | pooled | verdict |
-| --- | --- | --- | --- | --- |
-| SB | 98.96 | 106.13 | **102.35** | sound |
-| HH | 98.89 | 97.82 | **98.32** | sound |
-| MS | 104.79 | 91.35 | **98.31** | inconclusive -- legs disagree by 13.4 |
-| KM | 93.34 | 88.41 | **90.96** | sound |
-| AN | 87.60 | 85.56 | **86.64** | inconclusive |
-| CK | 85.22 | 83.36 | **84.30** | low |
+| session | left | right | pooled | 95% CI | verdict |
+| --- | --- | --- | --- | --- | --- |
+| SB | 98.96 | 106.13 | **102.35** | 101.1-104.0 | sound |
+| HH | 98.89 | 97.82 | **98.32** | 97.7-99.4 | sound |
+| MS | 104.79 | 91.35 | **98.31** | -- | inconclusive -- legs disagree by 13.4 |
+| KM | 93.34 | 88.41 | **90.96** | 89.7-92.2 | inconclusive -- straddles the floor |
+| AN | 87.60 | 85.56 | **86.64** | 85.3-87.9 | inconclusive |
+| CK | 85.22 | 83.36 | **84.30** | 82.8-86.0 | inconclusive -- straddles the ceiling |
+
+Intervals are over trials, not strides: strides within a trial are strongly correlated, so a
+standard error over them would be several times too tight. Three of these were more confident before
+that was fixed -- KM read "sound" on a point estimate one point clear of the floor, and CK read
+"action required" one point clear of the ceiling.
 
 Cohort mean **93.45 +/- 7.44**, range 83.36-106.13 -- within one SD of the normative 100 +/- 10.
 
@@ -166,8 +171,8 @@ probabilistic, not arithmetic: B is unlikely, not impossible. Section 14 of the 
 precisely, including a category error section 13 made in leaning on per-session SOUND verdicts for
 subjects whose health is not recorded.
 
-**So low scores are subject-specific.** CK at 84.30 and AN at 86.64 are low for reasons particular
-to those subjects -- real impairment, or that subject's tracking quality -- not because the scale is
+**So low scores, where they can be placed at all, look subject-specific.** CK at 84.30 and AN at
+86.64 are low for reasons particular to those subjects -- real impairment, or that subject's tracking quality -- not because the scale is
 shifted. The pipeline is stable across routes: CK measures 84.62 through `context/gait_curves` and
 84.30 through the session route.
 

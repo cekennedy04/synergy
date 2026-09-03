@@ -578,9 +578,9 @@ Scored on `reduced6` against `context/gdi_reference_2026-08-27`, verified by run
     SB         98.96   106.13   102.35   sound
     HH         98.89    97.82    98.32   sound
     MS        104.79    91.35    98.31   inconclusive -- legs disagree by 13.44
-    KM         93.34    88.41    90.96   sound
+    KM         93.34    88.41    90.96   inconclusive -- CI 89.7-92.2 straddles the floor
     AN         87.60    85.56    86.64   inconclusive
-    CK         85.22    83.36    84.30   low
+    CK         85.22    83.36    84.30   inconclusive -- CI 82.8-86.0 straddles the ceiling
 
     cohort mean 93.45 +/- 7.44, range 83.36-106.13
 

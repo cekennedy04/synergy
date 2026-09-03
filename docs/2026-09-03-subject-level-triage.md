@@ -2,8 +2,9 @@
 
 Written 2026-09-03, after audit section 13 refuted the uniform pipeline offset and moved the open
 questions from the scale to individual sessions. Three sessions were flagged by
-`validate_control_baseline.py`: CK (84.30, low), AN (86.64, inconclusive) and MS (98.31 pooled,
-inconclusive on a 13.44-point inter-leg gap).
+`validate_control_baseline.py`: CK (84.30), AN (86.64) and MS (98.31 pooled, on a 13.44-point
+inter-leg gap). Verdicts quoted here predate the 2026-09-03 move to interval-based bands; CK and KM
+are now INCONCLUSIVE rather than placed, which does not change the per-trial findings below.
 
 The question for each was the same: **impairment, or a tracking artefact?** Per-trial scores answer
 it better than session means do, because an artefact usually has a shape in trial order and
