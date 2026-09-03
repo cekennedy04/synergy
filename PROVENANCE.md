@@ -106,7 +106,7 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `launch_gui.py` | 144 | Launches the GUI in the environment it actually needs. Run with any python; it finds the `opencap-processing` environment and re-executes under it. |
 | `make_reports.py` | 140 | Writes a clinical PDF report for every trial in a processed session. |
 | `motion_scrubber.py` | 289 | Scrubs an OpenSim motion frame by frame and reads back the current position. |
-| `gait_event_picker.py` | 171 | Picks gait events by hand when automatic detection cannot, on top of `motion_scrubber.py`. |
+| `gait_event_picker.py` | 229 | Picks gait events by hand when automatic detection cannot, on top of `motion_scrubber.py`. |
 
 ### Analysis and metrics
 
@@ -128,7 +128,7 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `validate_control_baseline.py` | 307 | One-command verdict on whether this pipeline's GDI scale matches the normative cohort's, from a processed control session. Settles the open question from the 2026-08-31 audit. |
 | `trial_scores.py` | 281 | Computes GDI and the synergy index for one trial, so the clinician report can carry both. |
 | `session_report.py` | 287 | Per-session report, with the headline scores at the front. |
-| `gait_event_picker_ui.py` | 462 | matplotlib UI for `gait_event_picker.GaitEventPicker`, asked for only after auto-trim fails to find a gait cycle. |
+| `gait_event_picker_ui.py` | 531 | matplotlib UI for `gait_event_picker.GaitEventPicker`, asked for only after auto-trim fails to find a gait cycle. |
 | `verify_calibration_fix.py` | 262 | Cohort-wide gate on the 2026-09-02 IMUPlacer calibration-pose fix: arms back in range, pelvis and legs provably untouched, nothing pinned against a model bound. |
 
 ### Tests and docs
