@@ -147,27 +147,38 @@ against the published scale. **That claim was wrong**, and it was wrong because 
 three subjects who turned out to be the low tail. Over all six processed sessions, scored on
 `reduced6` against `context/gdi_reference_2026-08-27`:
 
-| session | left | right | pooled | verdict |
-| --- | --- | --- | --- | --- |
-| SB | 98.96 | 106.13 | **102.35** | sound |
-| HH | 98.89 | 97.82 | **98.32** | sound |
-| MS | 104.79 | 91.35 | **98.31** | inconclusive -- legs disagree by 13.4 |
-| KM | 93.34 | 88.41 | **90.96** | sound |
-| AN | 87.60 | 85.56 | **86.64** | inconclusive |
-| CK | 85.22 | 83.36 | **84.30** | low |
+| session | left | right | pooled | 95% CI | verdict |
+| --- | --- | --- | --- | --- | --- |
+| SB | 98.96 | 106.13 | **102.35** | 101.1-104.0 | sound |
+| HH | 98.89 | 97.82 | **98.32** | 97.7-99.4 | sound |
+| MS | 104.79 | 91.35 | **98.31** | -- | inconclusive -- legs disagree by 13.4 |
+| KM | 93.34 | 88.41 | **90.96** | 89.7-92.2 | inconclusive -- straddles the floor |
+| AN | 87.60 | 85.56 | **86.64** | 85.3-87.9 | inconclusive |
+| CK | 85.22 | 83.36 | **84.30** | 82.8-86.0 | inconclusive -- straddles the ceiling |
+
+Intervals are over trials, not strides: strides within a trial are strongly correlated, so a
+standard error over them would be several times too tight. Three of these were more confident before
+that was fixed -- KM read "sound" on a point estimate one point clear of the floor, and CK read
+"action required" one point clear of the ceiling.
 
 Cohort mean **93.45 +/- 7.44**, range 83.36-106.13 -- within one SD of the normative 100 +/- 10.
 
-**A uniform offset is strongly disfavoured.** If the pipeline subtracted ~20 points from everyone,
-the true values would run 103.36-126.13 -- all twelve limbs at or above the normative mean, the
-cohort sitting 1.35 SD *above* the healthy controls the reference was built from. For a group of
-unknown clinical status that is implausible. Note this is a distributional argument and it is
-probabilistic, not arithmetic: B is unlikely, not impossible. Section 14 of the audit states it
-precisely, including a category error section 13 made in leaning on per-session SOUND verdicts for
-subjects whose health is not recorded.
+**A uniform offset is disfavoured, and cannot be ruled out from this data at all.** If the pipeline
+subtracted ~20 points from everyone, the true values would run 103.36-126.13 -- all twelve limbs at
+or above the normative mean. That is unlikely for a group of unknown clinical status, but the
+calculation assumes a sampling model these six sessions do not have, so it is not a usable
+likelihood ratio.
 
-**So low scores are subject-specific.** CK at 84.30 and AN at 86.64 are low for reasons particular
-to those subjects -- real impairment, or that subject's tracking quality -- not because the scale is
+The deeper point, and the one that governs what any future analysis can achieve: **without
+known-uninjured calibration data through this pipeline, "true score" and "additive pipeline offset"
+are not separately identifiable.** Every observed score is consistent with a continuum of (true
+ability, offset) pairs, and no quantity of unlabelled sessions decomposes it. Audit sections 14-15
+state this in full, including a category error section 13 made in citing per-session SOUND verdicts
+for subjects whose health is not recorded. So the control capture is not a confirmation of a settled
+result -- it is the only thing that identifies the model.
+
+**So low scores, where they can be placed at all, look subject-specific.** CK at 84.30 and AN at
+86.64 are low for reasons particular to those subjects -- real impairment, or that subject's tracking quality -- not because the scale is
 shifted. The pipeline is stable across routes: CK measures 84.62 through `context/gait_curves` and
 84.30 through the session route.
 

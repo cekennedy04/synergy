@@ -578,9 +578,9 @@ Scored on `reduced6` against `context/gdi_reference_2026-08-27`, verified by run
     SB         98.96   106.13   102.35   sound
     HH         98.89    97.82    98.32   sound
     MS        104.79    91.35    98.31   inconclusive -- legs disagree by 13.44
-    KM         93.34    88.41    90.96   sound
+    KM         93.34    88.41    90.96   inconclusive -- CI 89.7-92.2 straddles the floor
     AN         87.60    85.56    86.64   inconclusive
-    CK         85.22    83.36    84.30   low
+    CK         85.22    83.36    84.30   inconclusive -- CI 82.8-86.0 straddles the ceiling
 
     cohort mean 93.45 +/- 7.44, range 83.36-106.13
 
@@ -701,3 +701,62 @@ comparison stays valid. `gdi9` stays disabled on its own (convention) grounds.
 `validate_control_baseline.py`. Section 13 said the capture was "no longer blocking"; more precisely,
 it is no longer needed to reject the *specific* 20-point claim, and it remains the only thing that
 would settle the general question. It is cheap, and it is worth doing.
+
+---
+
+## 15. Identifiability: why no amount of unlabelled data settles this (2026-09-03)
+
+Section 14 softened "refuted" to "strong evidence, probabilistic not arithmetic". An outside review
+of the reasoning says even that overclaims, and it is right. Recording the argument because it
+determines what future work on this question can and cannot achieve.
+
+### The bound, and why it is not usable as stated
+
+Section 14's argument is that under a -20 offset all twelve limbs would sit above the normative
+mean. Conditional on twelve **independent** limbs drawn from a **symmetric** reference distribution,
+that has probability 2^-12, about 0.024%. Two corrections make it much weaker:
+
+- **Limbs are paired.** Two limbs of one person are not independent draws. With six sessions the
+  analogous crude bound is 2^-6, about 1.6%.
+- **The cohort is not known to be a control sample.** The calculation asks "how surprising would
+  this be for controls", but these six are of unknown clinical status and were not randomly
+  sampled. There is no sampling model, so the number is not a usable likelihood ratio for A against
+  B.
+
+A second precision point: "the cohort sits 1.35 SD above normative" is in **individual-score** SD
+units, not standard errors of the cohort mean. It describes an effect size, not a significance, and
+should not be read as the latter.
+
+### Hypothesis C, which sections 12-14 never considered
+
+The two hypotheses were framed as a constant offset or none. Both may be wrong:
+
+- the offset may be **non-constant** -- varying with walking speed, subject size, or model scaling;
+- the reference and this pipeline may be **incompatible in a way no single number captures**
+  (different marker or anatomical frame conventions, different age or speed distribution in the
+  reference cohort, different capture protocol);
+- the sample may be **selectively composed**, and
+- what we observe may be a **mixture** of genuine impairment and measurement bias in unknown
+  proportions.
+
+### The part that actually matters
+
+**Without known-uninjured calibration data through this pipeline, "true score" and "additive
+pipeline offset" are not separately identifiable.** Any observed score is consistent with a
+continuum of (true ability, offset) pairs. No quantity of unlabelled sessions changes that; a larger
+cohort estimates the observed distribution more precisely and says nothing about how it decomposes.
+
+That is the honest ceiling on this line of analysis, and it reframes the remaining work. The control
+capture is not a nice-to-have confirmation of a settled result. **It is the only thing that
+identifies the model at all.**
+
+### What survives
+
+- Section 12's specific claim -- cohort ~20 points low, therefore a pipeline offset -- remains
+  unsupported. The cohort centres at 93.45 and the 80.20 figure was three subjects from the low tail.
+  That retraction stands on the sampling error, which is independent of everything above.
+- Fitting a global correction to our own participants stays rejected, and identifiability is a third
+  reason: with the decomposition unidentified, such a fit chooses one arbitrary point on the
+  continuum.
+- Within-pipeline comparison is unaffected. It never depended on the decomposition, which is why it
+  has been the safe claim throughout.

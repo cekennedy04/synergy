@@ -72,6 +72,21 @@ BIASED_CEILING = 85.0
 # points apart, whatever it comes out as.
 MIN_STRIDES = 8
 
+# Trials, not strides, are the unit the interval is computed over. Strides
+# within a trial are strongly correlated -- the same person, the same walk --
+# so a standard error over strides is far too tight and would make a
+# near-threshold verdict look certain when it is not. Trials are closer to
+# independent. Below this many, no interval is computed and no verdict beyond
+# INCONCLUSIVE is reached.
+MIN_TRIALS = 5
+
+# What fraction of genuinely uninjured limbs fall below each band, under the
+# normative model (scores ~ N(100, 10) by construction). These are the reason a
+# verdict is not a statement about a person: roughly one uninjured limb in six
+# lands below the SOUND floor.
+P_UNINJURED_BELOW_SOUND_FLOOR = 0.159
+P_UNINJURED_BELOW_ACTION_CEILING = 0.067
+
 # How far the two legs may disagree before the session stops being usable as
 # evidence about the pipeline. One normative SD. A control whose legs differ by
 # more than this is either not a clean control or was not captured cleanly, and
@@ -116,21 +131,114 @@ def pooled_strides(scores):
     return strides
 
 
+def trial_means(scores):
+    """One mean per TRIAL -- the clustering unit -- with the legs averaged.
+
+    Two levels of clustering have to be collapsed, and missing either one
+    narrows the interval dishonestly:
+
+      strides within a trial   the same person on the same walk
+      legs within a trial      also the same walk, so left and right are not
+                               two independent observations of this session
+
+    Collapsing only the first (pooling 15 left and 15 right trial means as 30
+    units) understates the interval by about 1.4x. So a trial contributes one
+    value: the mean of whichever sides reported it.
+    """
+    by_trial = {}
+    for side, entry in (scores.get("by_trial") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            mean = value.get("mean") if isinstance(value, dict) else value
+            if isinstance(mean, (int, float)):
+                # Strip the side so the same walk's legs land on one key.
+                trial = str(key).replace("_left", "").replace("_right", "")
+                trial = trial.replace("-left", "").replace("-right", "")
+                by_trial.setdefault(trial, []).append(float(mean))
+    return [sum(v) / len(v) for _, v in sorted(by_trial.items())]
+
+
+# Two-sided 95% t multipliers by degrees of freedom (n - 1). Table rather than
+# scipy because the suite runs on an interpreter without it. Anything past the
+# table uses the normal limit; anything between entries takes the LOWER df,
+# which widens the interval -- the safe direction for a gate.
+_T_95 = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+    8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160,
+    14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
+    20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
+    26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
+}
+_T_95_LARGE = 1.960
+
+
+def t_multiplier(n):
+    """Two-sided 95% t multiplier for a sample of `n`.
+
+    Was hardcoded at 2.145 (df=14, the 15-trial protocol), which is wrong at
+    every other count and wrong in the dangerous direction below it: at n=5 the
+    correct multiplier is 2.776, so a fixed 2.145 produced an interval 23%
+    too narrow -- reintroducing exactly the overconfidence the interval exists
+    to remove.
+    """
+    df = max(1, n - 1)
+    if df in _T_95:
+        return _T_95[df]
+    if df > 30:
+        return _T_95_LARGE
+    return max(_T_95.values())
+
+
+def mean_interval(values):
+    """(mean, lo, hi) for the session's level, over the clustering unit.
+
+    A two-sided 95% interval, so each one-sided bound the verdict gates on
+    carries 97.5% coverage. That is deliberately conservative and is named here
+    because "95%" alone would misdescribe the decision rule.
+
+    **What this interval does not cover.** Between-trial sampling variation
+    only. It says nothing about uncertainty in the normative reference itself,
+    about pipeline-versus-reference mismatch, about the score model, or about
+    bias from which trials were retained. A tight interval here means the trials
+    agreed, not that the number is right.
+    """
+    n = len(values)
+    mean = sum(values) / n
+    if n < 2:
+        return (mean, None, None)
+    sd = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
+    half = t_multiplier(n) * sd / math.sqrt(n)
+    return (mean, mean - half, mean + half)
+
+
 def side_means(scores):
     """Each side's mean GDI, for the asymmetry check."""
     return [entry["mean"] for entry in scores.get("gdi", {}).values()
             if isinstance(entry, dict) and "mean" in entry]
 
 
-def verdict(strides, sides=None, sound_floor=SOUND_FLOOR,
+def verdict(strides, sides=None, trials=None, sound_floor=SOUND_FLOOR,
             biased_ceiling=BIASED_CEILING, min_strides=MIN_STRIDES,
-            asymmetry_limit=ASYMMETRY_LIMIT):
-    """Which explanation the control subject's scores support.
+            asymmetry_limit=ASYMMETRY_LIMIT, min_trials=MIN_TRIALS):
+    """Where this session's level sits relative to the two bands.
 
-    Returns (status, mean, detail). `status` is one of "SOUND",
-    "ACTION REQUIRED", "INCONCLUSIVE". `sides` is the per-side means; when two
-    or more are given and they disagree by more than `asymmetry_limit`, no
-    verdict is reached whatever the pooled mean says.
+    Returns (status, mean, detail). `status` is "SOUND", "ACTION REQUIRED" or
+    "INCONCLUSIVE".
+
+    **The verdict is on an interval, not a point.** A session mean is an
+    estimate, and a point estimate one tenth of a point above a threshold is not
+    meaningfully different from one a tenth below. SOUND requires the whole
+    interval to clear `sound_floor`; ACTION REQUIRED requires it to fall
+    entirely below `biased_ceiling`; anything straddling a band is
+    INCONCLUSIVE, which is the honest answer for a session that cannot be
+    placed.
+
+    The interval is computed over `trials` (see `trial_means`), not over
+    strides. Strides within a trial are strongly correlated, so a standard
+    error over strides would be several times too tight and would turn "close
+    to the line" into a confident verdict. Without enough trials no verdict
+    beyond INCONCLUSIVE is reached.
     """
     n = len(strides)
     if n < min_strides:
@@ -149,19 +257,35 @@ def verdict(strides, sides=None, sound_floor=SOUND_FLOOR,
                     f"{asymmetry_limit:.0f}-point normative SD. A subject "
                     "that asymmetric is not a clean control, and the pooled "
                     f"mean of {mean:.1f} would hide it.")
-    if mean >= sound_floor:
+
+    if not trials or len(trials) < min_trials:
+        have = len(trials) if trials else 0
+        return ("INCONCLUSIVE", mean,
+                f"the session mean is {mean:.1f}, but only {have} trial(s) are "
+                f"available and {min_trials} are needed to put an interval "
+                "around it. A point estimate cannot be placed against a "
+                "threshold without one -- strides are too correlated to "
+                "substitute.")
+
+    _, lo, hi = mean_interval(trials)
+    span = f"{mean:.1f} (95% CI {lo:.1f}-{hi:.1f} over {len(trials)} trials)"
+
+    if lo >= sound_floor:
         return ("SOUND", mean,
-                f"{mean:.1f} is within one normative SD of {NORMATIVE_MEAN:.0f}, "
-                "which is where an uninjured subject belongs.")
-    if mean <= biased_ceiling:
+                f"{span} sits entirely at or above {sound_floor:.0f}. Note "
+                f"that {sound_floor:.0f} is about the "
+                f"{P_UNINJURED_BELOW_SOUND_FLOOR * 100:.0f}th percentile of the "
+                "normative distribution, so this says the session reads normal "
+                "-- not that the subject is uninjured.")
+    if hi <= biased_ceiling:
         return ("ACTION REQUIRED", mean,
-                f"{mean:.1f} is well below the cohort mean "
-                f"({COHORT_MEAN:.1f}); this session is worth investigating on "
-                "its own terms.")
+                f"{span} sits entirely at or below {biased_ceiling:.0f}, well "
+                f"under the cohort mean ({COHORT_MEAN:.1f}). Worth "
+                "investigating this session on its own terms.")
     return ("INCONCLUSIVE", mean,
-            f"{mean:.1f} falls between the two explanations "
-            f"({biased_ceiling:.0f}-{sound_floor:.0f}); neither is supported "
-            "over the other by this subject alone.")
+            f"{span} straddles a band edge "
+            f"({biased_ceiling:.0f}/{sound_floor:.0f}), so this session cannot "
+            "be placed on either side of it.")
 
 
 def _spread(strides):
@@ -208,6 +332,10 @@ def format_report(scores, status, mean, detail, strides):
     if status == "SOUND":
         lines.append("  Reading: this session reads normal. Nothing to "
                      "investigate on the score alone.")
+        lines.append("  It does NOT say the subject is uninjured: about "
+                     "1 uninjured limb in 6 falls")
+        lines.append("  below this floor, so a SOUND verdict is a statement "
+                     "about the score.")
     elif status == "ACTION REQUIRED":
         lines.append("  Reading: this session scores well below the cohort. "
                      "That is a finding about")
@@ -227,22 +355,53 @@ def format_report(scores, status, mean, detail, strides):
         lines.append("  the between-subject variation the score exists to "
                      "detect.")
     else:
-        lines.append("  Reading: not settled by the score alone. If the legs "
-                     "disagree, that asymmetry is")
-        lines.append("  the thing to look at -- it is a per-limb signal a "
-                     "pooled mean would hide.")
+        lines.append("  Reading: not settled by the score alone. INCONCLUSIVE "
+                     "is a no-call, not a pass --")
+        lines.append("  it says this session cannot be placed, which is a "
+                     "reason to look, not to move on.")
+        lines.append("")
+        lines.append("  Do next, in order:")
+        lines.append("    1. session_drift.py on this session. An interval "
+                     "straddling a band is often a")
+        lines.append("       session that moved during it, and a trend is "
+                     "visible where a mean is not.")
+        lines.append("    2. If the legs disagree, treat that as the finding. "
+                     "It is a per-limb signal a")
+        lines.append("       pooled mean hides.")
+        lines.append("    3. Check marker coverage, calibration frame and "
+                     "event detection for this session")
+        lines.append("       before reading the score as anything about the "
+                     "subject.")
 
     lines.append("")
     lines.append("  Relative comparison (trial to trial, leg to leg, session "
                  "to session) was never in")
     lines.append("  question and stays valid regardless of this verdict.")
+    lines.append("")
+    lines.append("  Scope: these bands were drawn against a normative "
+                 "reference, not validated on")
+    lines.append("  known-uninjured and known-impaired samples through this "
+                 "pipeline. Until that")
+    lines.append("  exists there is no measured sensitivity or specificity, "
+                 "and a verdict is a")
+    lines.append("  prompt to look rather than a classification. "
+                 "ACTION REQUIRED in particular does")
+    lines.append("  not separate impairment from data quality from "
+                 "calibration -- it says only")
+    lines.append("  that this session sits low.")
 
     if mean is not None and len(strides) >= MIN_STRIDES:
         lines.append("")
-        lines.append("  Caveat: one session against a normative SD of 10. "
-                     "Treat a single verdict as a")
-        lines.append("  prompt to look, not as a conclusion about the "
-                     "subject.")
+        lines.append("  Caveat: the interval covers trial-to-trial variation "
+                     "ONLY. It excludes uncertainty")
+        lines.append("  in the normative reference, pipeline-versus-reference "
+                     "mismatch, the score model,")
+        lines.append("  and bias from which trials were retained. A tight "
+                     "interval means the trials")
+        lines.append("  agreed, not that the number is right. It also assumes "
+                     "trials are exchangeable,")
+        lines.append("  which a drifting session violates -- run "
+                     "session_drift.py before trusting it.")
     return "\n".join(lines)
 
 
@@ -280,7 +439,8 @@ def check_session(session_dir, reference_dir, conversion="ik",
         raise ControlBaselineError(str(exc)) from None
 
     strides = pooled_strides(scores)
-    status, mean, detail = verdict(strides, side_means(scores))
+    status, mean, detail = verdict(strides, side_means(scores),
+                                   trial_means(scores))
     return scores, status, mean, detail, strides
 
 
