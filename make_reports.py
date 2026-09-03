@@ -76,8 +76,51 @@ def build_figures(gui, shaped):
     return figures
 
 
+def add_scores(shaped, result, session_dir, reference_dir, scores=None):
+    """Fold GDI and the synergy index into the metrics the report renders.
+
+    Injected into `shaped["metrics"]` rather than given their own page: the
+    metrics table already renders whatever it is handed, so this needs no
+    change to report_export and cannot drift from its formatting.
+
+    Failures are swallowed per score, not per report. A missing GDI reference
+    or an unavailable model should cost that row, not the whole PDF -- and an
+    absent row is honest, where a zero would be indistinguishable from a
+    computed result.
+    """
+    scores = scores or _load_scores()
+    metrics = shaped.setdefault("metrics", {})
+
+    gdi_scores = synergy = None
+    try:
+        gdi_scores = scores.gdi_for_curves(
+            {"right": result.get("curves_matrix_r_path"),
+             "left": result.get("curves_matrix_l_path")}, reference_dir)
+    except Exception:
+        gdi_scores = None
+    try:
+        right = result.get("curves_matrix_r_path")
+        if right:
+            synergy = scores.synergy_for_trial(right, result["model_file"])
+    except Exception:
+        synergy = None
+
+    metrics.update(scores.format_for_report(gdi_scores, synergy))
+    shaped["summary_scores"] = scores.summary_for_report(gdi_scores, synergy)
+    return shaped
+
+
+def _load_scores():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_trial_scores_for_reports", Path(__file__).resolve().parent / "trial_scores.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def make_report(gui, report_export, session_dir, mvnx_path, out_dir,
-                conversion="ik", overwrite=False):
+                conversion="ik", overwrite=False, reference_dir=None):
     """One trial -> one PDF. Returns the path, or None if skipped."""
     trial_name = Path(mvnx_path).stem
     destination = report_path(out_dir, session_dir, trial_name, conversion)
@@ -88,6 +131,8 @@ def make_report(gui, report_export, session_dir, mvnx_path, out_dir,
                               conversion=conversion,
                               combine_module=gui._NO_COMBINE)
     shaped = gui.shape_results_for_display(result)
+    if reference_dir:
+        add_scores(shaped, result, session_dir, reference_dir)
     figures = build_figures(gui, shaped)
     destination.parent.mkdir(parents=True, exist_ok=True)
     report_export.export_report_to_pdf(str(destination), shaped, figures)
@@ -107,6 +152,9 @@ def main(argv=None):
     parser.add_argument("--conversion", default="ik", choices=("ik", "xtoo"))
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--trial", action="append", dest="only")
+    parser.add_argument("--gdi-reference", default="context/gdi_reference_2026-08-27",
+                        help="Directory holding the GDI reference pair; the "
+                             "GDI and synergy rows are omitted without it.")
     args = parser.parse_args(argv)
 
     import clinician_gui as gui
@@ -121,7 +169,8 @@ def main(argv=None):
             continue
         try:
             destination = make_report(gui, report_export, args.session, path,
-                                      out_dir, args.conversion, args.overwrite)
+                                      out_dir, args.conversion, args.overwrite,
+                                      reference_dir=args.gdi_reference)
             (written if destination else skipped).append(path.stem)
             print(f"  {path.stem}: {'written' if destination else 'exists, skipped'}",
                   flush=True)

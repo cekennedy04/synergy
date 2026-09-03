@@ -255,21 +255,34 @@ def test_gdi_computes_for_every_methodology_once_reference_exists(mc, tmp_path):
 
 def test_synergy_status_never_returns_a_number(mc):
     """A placeholder 0 or NaN in a results table is indistinguishable from a
-    computed value. It must report unavailability instead."""
+    computed value. This function reports on availability; it does not carry a
+    score, and must not start doing so."""
     status = mc.synergy_status()
 
-    assert status["available"] is False
     assert "value" not in status and "score" not in status
-    assert "task variable" in status["reason"]
 
 
-def test_synergy_reason_records_the_com_asymmetry_between_methodologies(mc):
-    """The decisive constraint: a global-COM task variable is available to the
-    video methodology but not the IMU one."""
-    reason = mc.synergy_status()["reason"]
+def test_synergy_status_reflects_that_the_implementation_now_exists(mc):
+    """It previously stated no UCM implementation existed anywhere in the repo
+    or its history. That was true when written; ucm.py was built 2026-08-25
+    and trial_scores.py drives it per trial. A function asserting the absence
+    of working code is worse than no function."""
+    status = mc.synergy_status()
 
-    assert "pinned" in reason
-    assert "OpenCap" in reason and "relative to pelvis" in reason
+    assert status["available"] is True
+    assert "ucm.py" in status["reason"]
+
+
+def test_the_task_variable_caveat_survives_the_implementation_landing(mc):
+    """The decisive constraint outlives the missing code: a global-COM task
+    variable is available to the video methodology but not the IMU one, and
+    the ranking between methodologies reverses with the choice. Reporting an
+    index without naming its formulation would be worse than reporting none."""
+    caveat = mc.synergy_status()["caveat"]
+
+    assert "pinned" in caveat
+    assert "OpenCap" in caveat and "relative to pelvis" in caveat
+    assert "reverses" in caveat
 
 
 # -- end-to-end over a small synthetic curve directory -------------------

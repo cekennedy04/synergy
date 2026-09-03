@@ -155,16 +155,28 @@ def test_cycle_is_sampled_every_other_point(gdi):
     assert len(set(gdi.GDI_CYCLE_POINTS)) == 51
 
 
-def test_pelvis_tilt_offset_and_rotation_wrap_are_preserved(gdi):
-    """Two per-coordinate adjustments carried over verbatim; changing either
-    silently shifts every score."""
+def test_pelvis_tilt_is_no_longer_offset_and_the_rotation_wrap_remains(gdi):
+    """The `+20` on pelvis_tilt was removed 2026-09-02: it was a legacy
+    correction for an input pipeline whose raw tilt sat near 0, and applied to
+    this pipeline's 21.23 deg it produced 41.23 -- non-physiological against
+    published norms of 12 +/- 4, so wrong whichever frame turns out to be
+    authoritative.
+
+    Pinned in the negative so it cannot return as a "fix", and so that anyone
+    reinstating an offset has to justify the number. The rotation wrap stays:
+    it is a range fix (bring a near-360 value back inside +/-180), not a frame
+    correction, and it stands on its own."""
     curves = _mean_curves("r", value=0.0)
     curves["pelvis_tilt"] = [5.0] * 101
     curves["pelvis_rotation"] = [200.0] * 101
 
     vector = gdi.build_gdi_feature_vector(curves, "r", gdi.GDI9)
 
-    assert vector[0] == pytest.approx(25.0)                    # 5 + 20
+    assert vector[0] == pytest.approx(5.0), (
+        "pelvis_tilt must pass through unmodified. A fitted offset is not the "
+        "replacement -- see the _CURVE_ADJUSTMENTS note in gdi.py."
+    )
+    assert "pelvis_tilt" not in gdi._CURVE_ADJUSTMENTS
     assert vector[2 * 51] == pytest.approx(20.0)               # 200 - 180
 
 
@@ -591,17 +603,33 @@ def test_gdi_for_side_accepts_the_real_runtime_type(gdi, tmp_path, scoring_set):
     assert scored == pytest.approx(sum(expected) / 3)
 
 
-def test_gdi9_is_refused_by_name_because_its_pelvis_convention_is_unresolved(gdi):
+def test_gdi9_is_refused_by_name_because_the_frame_mismatch_is_unresolved(gdi):
     """`--feature-set gdi9` is a documented CLI flag, so the name path is how a
     user actually reaches the defect. Before it was disabled this ran clean and
-    returned 82.6 where reduced6 returned 88.4."""
+    returned 82.6 where reduced6 returned 88.4.
+
+    Named for the frame mismatch, not the pelvis convention. Section 11 of the
+    audit disabled gdi9 for a `pelvis_tilt` convention mismatch; section 12
+    found the mismatch is general -- `hip_flexion` is off by -13.47 deg
+    against the cohort, larger than any pelvis term -- and recorded the
+    pelvis-only framing as too narrow."""
     with pytest.raises(gdi.GdiFeatureSetDisabledError) as excinfo:
         gdi.get_feature_set("gdi9")
 
     message = str(excinfo.value)
-    assert "pelvis" in message and "reduced6" in message, (
+    assert "frame" in message and "reduced6" in message, (
         "the refusal must say what is wrong and what to use instead; an "
         "operator who only sees 'disabled' has nowhere to go."
+    )
+    assert "hip_flexion" in message, (
+        "the reason must name a variable outside the pelvis. That is the whole "
+        "difference between what section 11 recorded and what section 12 "
+        "found: a pelvis-only reason implies reduced6 is clean, and reduced6 "
+        "carries the largest offset in the set (hip_flexion, -13.47 deg) while "
+        "every number this project reports comes through it. Checking for the "
+        "word 'frame' alone does not catch a narrowing -- it survives in the "
+        "closing sentences even when the lead is rewritten back to pelvis. "
+        "Verified by mutation."
     )
 
 
@@ -619,7 +647,7 @@ def test_gdi9_is_refused_when_passed_as_an_object_not_just_by_name(gdi, tmp_path
 def test_the_disabled_set_is_defined_but_not_scoreable(gdi):
     """Disabled means out of service, not deleted: the recovered feature order,
     the regenerated constants and the digest are all still needed to read the
-    audit and to rebuild gdi9 once the pelvis convention is settled."""
+    audit and to rebuild gdi9 once the frame question is resolved."""
     assert gdi.GDI9.is_disabled
     assert gdi.GDI9.can_score, (
         "gdi9 still has attributed constants -- it is disabled for a "
@@ -628,15 +656,33 @@ def test_the_disabled_set_is_defined_but_not_scoreable(gdi):
     )
     assert gdi.FEATURE_SETS["gdi9"] is gdi.GDI9
 
-    # The sets that remain in service must stay clear of the adjustments that
-    # caused the mismatch; that is precisely why they are unaffected.
+    # An enabled set must not silently acquire a curve adjustment. This is a
+    # narrower claim than it used to make, and the difference matters.
+    #
+    # It once read "the sets that remain in service stay clear of the
+    # adjustments that caused the mismatch; that is precisely why they are
+    # unaffected." Both halves stopped being true on 2026-09-02:
+    #
+    #   - _CURVE_ADJUSTMENTS no longer holds a frame correction. The +20 on
+    #     pelvis_tilt is gone; what remains is the pelvis_rotation 180 wrap,
+    #     which is a range fix that stands on its own and causes no mismatch.
+    #   - reduced6 is NOT unaffected. Section 12 of the audit measures it at
+    #     80.20 +/- 8.09 against the cohort's 100.0 +/- 10.0 -- a 19.8-point
+    #     deficit with zero pelvis involvement, carrying the largest offset in
+    #     the set (hip_flexion, -13.47 deg). reduced6 is a smaller exposure to
+    #     the frame mismatch, not immunity from it, and every number this
+    #     project reports comes through it.
+    #
+    # So this loop pins bookkeeping -- an adjustment applies only where the
+    # set declares the variable -- and nothing about validity.
     adjusted = set(gdi._CURVE_ADJUSTMENTS)
     for name, feature_set in gdi.FEATURE_SETS.items():
         if feature_set.is_disabled:
             continue
         assert not (set(feature_set.features) & adjusted), (
-            f"{name} is enabled but gained a variable that _CURVE_ADJUSTMENTS "
-            "touches -- it would inherit the pelvis convention mismatch that "
+            f"{name} is enabled and gained a variable that _CURVE_ADJUSTMENTS "
+            "touches. Check what the adjustment is before assuming this is "
+            "fine: a range fix is harmless, a frame correction is the thing "
             "gdi9 is disabled for."
         )
     assert not gdi.DEFAULT_FEATURE_SET.is_disabled
