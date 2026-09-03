@@ -46,10 +46,34 @@ VENDORED_BASELINE_COMMIT = "cfcf7ad"
 
 
 def _shipped_python_files():
-    """Every .py file that is part of the deliverable."""
+    """Every .py file that is part of the deliverable.
+
+    Tracked by git, not merely present on disk. The distinction is the whole
+    meaning of these gates: what a user receives is the checkout, and a
+    working tree also holds things that are deliberately not in it.
+    `.gitignore` lists `context/` because those are local scratch copies of
+    upstream sources, and a half-written analysis script is not part of any
+    release either. Walking `rglob` reported both as undeclared dependencies
+    and as missing from PROVENANCE.md -- release gates failing on files no
+    user will ever see, which is how a gate becomes something people learn to
+    skip.
+
+    `check=True` on purpose: an unreadable index must fail loudly here rather
+    than return nothing and let every gate above pass by having nothing left
+    to judge. The vendored-baseline gate below already assumes git the same
+    way.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "*.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
     return sorted(
-        p for p in REPO_ROOT.rglob("*.py")
-        if not any(part in EXCLUDED_DIRS for part in p.relative_to(REPO_ROOT).parts)
+        (REPO_ROOT / name).resolve()
+        for name in tracked
+        if not any(part in EXCLUDED_DIRS for part in Path(name).parts)
     )
 
 
@@ -476,3 +500,66 @@ def test_the_test_suite_runs_in_continuous_integration():
         "CI workflows exist but none of them runs pytest: "
         + ", ".join(w.name for w in workflows)
     )
+
+
+# -- the gates' own definition of "shipped" --------------------------------
+
+
+def test_the_gates_judge_only_what_is_actually_shipped():
+    """"Shipped" means tracked by git, not merely present on disk.
+
+    Every gate above rests on `_shipped_python_files`, so its definition is
+    the definition of the deliverable. Walking the working tree made that
+    definition "whatever happens to be in this directory", which is a
+    different thing: `.gitignore` lists `context/` precisely because those are
+    local scratch copies of upstream sources, and an untracked analysis
+    script mid-write is not part of any release either. Both were being
+    reported as undeclared dependencies and as missing from PROVENANCE.md --
+    failures that named files no user will ever receive, on a machine whose
+    checkout is clean by definition.
+
+    The failure this replaces was not cosmetic. A gate that cries wolf on
+    local files is a gate people learn to ignore, and these are the gates
+    that stand between the repo and a release nobody can install.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "*.py"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    tracked_paths = {(REPO_ROOT / name).resolve() for name in tracked}
+
+    shipped = set(_shipped_python_files())
+
+    assert shipped, "the gates found nothing to judge, so they prove nothing"
+    untracked = sorted(str(p.relative_to(REPO_ROOT))
+                       for p in shipped - tracked_paths)
+    assert not untracked, (
+        "these files are not tracked by git but the deployment gates treat "
+        "them as part of the deliverable, so a local scratch file can fail a "
+        "release gate:\n  " + "\n  ".join(untracked)
+    )
+
+
+def test_the_gates_do_not_lose_files_that_are_shipped():
+    """The other half: narrowing the definition must not quietly empty it.
+
+    A `git ls-files` that returned nothing -- wrong cwd, a detached worktree,
+    git missing -- would make every gate above pass by having nothing to
+    check, which is the most dangerous way for a gate to fail.
+    """
+    shipped = {p.name for p in _shipped_python_files()}
+
+    for expected in ("gdi.py", "gait_event_picker.py",
+                     "gait_event_picker_ui.py", "clinician_gui.py"):
+        assert expected in shipped, (
+            expected + " is tracked, shipped, and imported by the pipeline, "
+            "but the deployment gates cannot see it.")
+
+
+def test_excluded_directories_are_still_excluded():
+    """Tracked-ness replaces the working-tree walk, not the exclusion list:
+    `tests/` and `docs/` are tracked but are not what gets deployed."""
+    shipped = _shipped_python_files()
+
+    assert not [p for p in shipped
+                if "tests" in p.relative_to(REPO_ROOT).parts]
