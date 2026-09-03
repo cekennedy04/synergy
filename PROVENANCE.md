@@ -135,7 +135,7 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 
 ### Tests and docs
 
-All 40 files in `tests/` are ours. So are `README.md`, `VENDORING.md`, `CLAUDE.md`, `DESIGN.md`,
+All 41 files in `tests/` are ours. So are `README.md`, `VENDORING.md`, `CLAUDE.md`, `DESIGN.md`,
 `environment.yml`, `.gitignore`, `docs/plans/`, and `docs/residual-review-findings/`.
 
 `CHANGELOG.md` is **not** ours despite being listed here previously: it is upstream
