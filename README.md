@@ -158,10 +158,13 @@ three subjects who turned out to be the low tail. Over all six processed session
 
 Cohort mean **93.45 +/- 7.44**, range 83.36-106.13 -- within one SD of the normative 100 +/- 10.
 
-**A uniform offset is refuted, and does not need a control capture to refute it.** If the pipeline
-subtracted ~20 points from everyone, no subject could reach 98, let alone 106: SB's right leg would
-need a true score of 126. Same pipeline, same reference, same feature set. This argument does not
-depend on knowing anyone's clinical status.
+**A uniform offset is strongly disfavoured.** If the pipeline subtracted ~20 points from everyone,
+the true values would run 103.36-126.13 -- all twelve limbs at or above the normative mean, the
+cohort sitting 1.35 SD *above* the healthy controls the reference was built from. For a group of
+unknown clinical status that is implausible. Note this is a distributional argument and it is
+probabilistic, not arithmetic: B is unlikely, not impossible. Section 14 of the audit states it
+precisely, including a category error section 13 made in leaning on per-session SOUND verdicts for
+subjects whose health is not recorded.
 
 **So low scores are subject-specific.** CK at 84.30 and AN at 86.64 are low for reasons particular
 to those subjects -- real impairment, or that subject's tracking quality -- not because the scale is
@@ -176,9 +179,11 @@ coordinates; GDI is a distance in a 15-dimensional projected space, so they do n
 into a score deficit -- and empirically they do not, since the cohort still centres near 100.
 
 **What this means in practice.** Relative comparison -- trial to trial, leg to leg, session to
-session -- was never in question. Absolute GDI can now be read against the published scale with
-ordinary care, treating a single low session as a finding about that subject rather than about the
-pipeline. What is *not* established is any individual subject's clinical status.
+session -- was never in question. A single low session is better read as a finding about that
+session than about the pipeline. What is *not* established is that the pipeline is free of any scale
+offset -- a smaller or subject-varying one remains consistent with everything measured -- nor any
+individual subject's clinical status. One subject known to be uninjured, run through
+`validate_control_baseline.py`, is still the clean settle and is cheap.
 
 **Do not fit a global offset to our participants.** Still true, and now for a second reason: there
 is no uniform offset to fit, and mean-matching a subject group onto a control reference removes
