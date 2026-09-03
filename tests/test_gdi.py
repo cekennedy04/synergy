@@ -610,9 +610,9 @@ def test_gdi9_is_refused_by_name_because_the_frame_mismatch_is_unresolved(gdi):
 
     Named for the frame mismatch, not the pelvis convention. Section 11 of the
     audit disabled gdi9 for a `pelvis_tilt` convention mismatch; section 12
-    found the mismatch is general -- `hip_flexion` is off by -13.47 deg
-    against the cohort, larger than any pelvis term -- and recorded the
-    pelvis-only framing as too narrow."""
+    found the mismatch is general, and section 13 remeasured it over all six
+    sessions -- `hip_flexion` runs -10.57 deg against the cohort, the largest
+    non-pelvis term -- so the pelvis-only framing stays too narrow."""
     with pytest.raises(gdi.GdiFeatureSetDisabledError) as excinfo:
         gdi.get_feature_set("gdi9")
 
@@ -623,9 +623,9 @@ def test_gdi9_is_refused_by_name_because_the_frame_mismatch_is_unresolved(gdi):
     )
     assert "hip_flexion" in message, (
         "the reason must name a variable outside the pelvis. That is the whole "
-        "difference between what section 11 recorded and what section 12 "
+        "difference between what section 11 recorded and what sections 12-13 "
         "found: a pelvis-only reason implies reduced6 is clean, and reduced6 "
-        "carries the largest offset in the set (hip_flexion, -13.47 deg) while "
+        "carries the largest non-pelvis offset (hip_flexion, -10.57 deg) while "
         "every number this project reports comes through it. Checking for the "
         "word 'frame' alone does not catch a narrowing -- it survives in the "
         "closing sentences even when the lead is rewritten back to pelvis. "
@@ -666,12 +666,17 @@ def test_the_disabled_set_is_defined_but_not_scoreable(gdi):
     #   - _CURVE_ADJUSTMENTS no longer holds a frame correction. The +20 on
     #     pelvis_tilt is gone; what remains is the pelvis_rotation 180 wrap,
     #     which is a range fix that stands on its own and causes no mismatch.
-    #   - reduced6 is NOT unaffected. Section 12 of the audit measures it at
-    #     80.20 +/- 8.09 against the cohort's 100.0 +/- 10.0 -- a 19.8-point
-    #     deficit with zero pelvis involvement, carrying the largest offset in
-    #     the set (hip_flexion, -13.47 deg). reduced6 is a smaller exposure to
-    #     the frame mismatch, not immunity from it, and every number this
-    #     project reports comes through it.
+    #   - reduced6 is NOT unaffected. It carries residual coordinate
+    #     differences against the cohort -- hip_flexion -10.57 deg, 20.0 deg
+    #     summed over the six non-pelvis variables (section 13, all six
+    #     sessions). It is a smaller exposure to the frame mismatch than gdi9,
+    #     not immunity from it, and every number this project reports comes
+    #     through it.
+    #
+    #     Those differences do NOT produce a score deficit. Section 12 read
+    #     80.20 +/- 8.09 as the pipeline's centre and inferred a 19.8-point
+    #     deficit; that was three subjects from the low tail, and section 13
+    #     retracts it. Over all six sessions reduced6 means 93.45 +/- 7.44.
     #
     # So this loop pins bookkeeping -- an adjustment applies only where the
     # set declares the variable -- and nothing about validity.
