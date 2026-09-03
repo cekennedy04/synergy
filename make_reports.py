@@ -106,7 +106,11 @@ def add_scores(shaped, result, session_dir, reference_dir, scores=None):
         synergy = None
 
     metrics.update(scores.format_for_report(gdi_scores, synergy))
-    shaped["summary_scores"] = scores.summary_for_report(gdi_scores, synergy)
+    # Right by construction: `synergy` above is computed from
+    # curves_matrix_r_path or not at all. Saying so keeps the report from
+    # inviting a pairing with the left GDI printed beside it.
+    shaped["summary_scores"] = scores.summary_for_report(
+        gdi_scores, synergy, side="right" if synergy else None)
     return shaped
 
 

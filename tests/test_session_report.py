@@ -174,3 +174,128 @@ def test_a_flat_series_does_not_print_r_equals_nan(mod, recwarn):
     labels = [t.get_text() for t in figure.axes[0].get_legend().get_texts()]
     assert not any("nan" in label for label in labels)
     assert any("flat" in label for label in labels)
+
+
+# -- the synergy index is per limb ------------------------------------------
+
+
+class _StubScoresModule:
+    """Stands in for trial_scores.py, whose synergy path needs OpenSim.
+
+    Records the matrix path it was handed for each call, which is the thing
+    worth asserting: not that a number came back, but that each side's number
+    was computed from that side's own matrix.
+    """
+
+    def __init__(self):
+        self.matrices = []
+
+    def synergy_for_trial(self, curve_matrix_path, model_path, **kwargs):
+        self.matrices.append(Path(curve_matrix_path).name)
+        return {"mean_delta_v": 0.5, "n_phases": 4, "phases_with_synergy": 3,
+                "task_variable": "stub", "n_dof": 6, "dim_ucm": 4,
+                "dim_ort": 2}
+
+
+class _StubGdi:
+    DEFAULT_FEATURE_SET = "reduced6"
+
+    class _Set:
+        name = "reduced6"
+
+    def get_feature_set(self, name):
+        return self._Set()
+
+    def load_gdi_reference(self, directory, feature_set, **kwargs):
+        return {"feature_set": feature_set}
+
+
+class _StubCurves:
+    def exported_row_order(self):
+        return []
+
+    def load_curve_matrix(self, path, row_order=None):
+        return np.ones((3838, 4))
+
+    def score_curves(self, matrix, side, reference, feature_set, gdi, row_order):
+        return np.array([90.0, 91.0, 92.0, 93.0])
+
+
+def _stub_collaborators(mod, monkeypatch, scores_stub):
+    """Route session_scores' three by-path loads to stubs.
+
+    GDI arithmetic and the UCM computation are covered by their own suites;
+    what is under test here is which matrix each side's synergy is built from,
+    and that is pure dispatch.
+    """
+    real_load = mod._load
+
+    def fake_load(name, filename):
+        if filename == "trial_scores.py":
+            return scores_stub
+        if filename == "gdi.py":
+            return _StubGdi()
+        if filename == "curve_features.py":
+            return _StubCurves()
+        return real_load(name, filename)
+
+    monkeypatch.setattr(mod, "_load", fake_load)
+
+
+def test_the_synergy_index_is_keyed_by_side_the_way_gdi_is(mod, tmp_path,
+                                                          monkeypatch):
+    """GDI is per limb by definition, so the synergy index has to be too.
+
+    While `synergy` was a single unkeyed value, a cohort-level correlation
+    could pair a left GDI against a right synergy index and nothing
+    downstream could tell. Same shape as `gdi` means the pairing is
+    structurally impossible rather than merely documented.
+    """
+    session = _session(tmp_path)
+    stub = _StubScoresModule()
+    _stub_collaborators(mod, monkeypatch, stub)
+
+    scores = mod.session_scores(session, reference_dir=tmp_path,
+                                model_path="model.osim")
+
+    assert set(scores["synergy"]) == {"right", "left"}
+    assert set(stub.matrices) == {
+        "XsensSession_ZZ_all-trials_ik_right.csv",
+        "XsensSession_ZZ_all-trials_ik_left.csv",
+    }, "each side's synergy must come from that side's own pooled matrix"
+
+
+def test_a_one_sided_session_does_not_borrow_the_other_limbs_matrix(
+        mod, tmp_path, monkeypatch):
+    """The replaced code read `paths.get("right") or next(iter(paths.values()))`
+    and stored the result under a bare `synergy` key. On a session with no
+    right side that silently scored whichever limb came first and labelled it
+    nothing. Absent is the honest answer; a mislabelled number is not.
+    """
+    session = _session(tmp_path)
+    for stale in (session / "GaitCurves").glob("*_right*"):
+        stale.unlink()
+    stub = _StubScoresModule()
+    _stub_collaborators(mod, monkeypatch, stub)
+
+    scores = mod.session_scores(session, reference_dir=tmp_path,
+                                model_path="model.osim")
+
+    assert set(scores["synergy"]) == {"left"}
+    assert "right" not in scores["synergy"]
+    assert stub.matrices == ["XsensSession_ZZ_all-trials_ik_left.csv"]
+
+
+def test_no_model_means_no_synergy_rather_than_an_empty_promise(mod, tmp_path,
+                                                               monkeypatch):
+    """Without an OpenSim model the index cannot be computed at all. The key
+    stays absent so a caller cannot iterate an empty dict and conclude the
+    session had no synergy."""
+    session = _session(tmp_path)
+    stub = _StubScoresModule()
+    _stub_collaborators(mod, monkeypatch, stub)
+
+    scores = mod.session_scores(session, reference_dir=tmp_path, model_path=None)
+
+    assert scores["synergy"] == {}
+    assert stub.matrices == []

@@ -9,11 +9,13 @@ worth quoting once.
 
 **What this adds over calling `session_report.session_scores` six times.**
 
-1. **The synergy index is computed per side.** `session_scores` runs UCM on the
-   right-side pooled matrix only (`session_report.py:135`) because its output is
-   a single-participant PDF where one figure is enough. GDI is a per-limb score
-   by definition, so a GDI-vs-synergy comparison that pairs a left GDI with a
-   right synergy index is comparing two different limbs. Both sides, always.
+1. **Both sides, paired correctly.** GDI is a per-limb score by definition, so a
+   GDI-vs-synergy comparison that pairs a left GDI with a right synergy index is
+   comparing two different limbs. `session_scores` used to return the index as a
+   single unkeyed value taken from the right-side matrix -- falling back to
+   whichever side came first when there was no right -- so this file computed
+   both sides itself. That was fixed upstream: the index is now keyed by side
+   the same way GDI is, and this file consumes it directly.
 2. **Nothing is recomputed twice.** GDI comes from the same pooled
    `*_all-trials_*` matrices and the same `curve_features.score_curves` call the
    per-session reports use, so this file cannot disagree with them.
@@ -75,22 +77,18 @@ def score_session(session_dir, reference_dir, conversion="ik", feature_set=None,
     measurement.
     """
     session_report = session_report or _load("_sr_for_cohort", "session_report.py")
-    scores_mod = _load("_scores_for_cohort", "trial_scores.py")
 
-    # GDI, the trial breakdown and the stride counts, from the same call the
-    # per-session PDFs use. Its own synergy result is discarded: it is
-    # right-side-only, and this function computes both sides below.
-    scores = session_report.session_scores(
-        session_dir, reference_dir, conversion, feature_set, model_path=None)
-
+    # One call, both metrics, both sides. `session_scores` keys its synergy
+    # index by side the same way it keys GDI, so this no longer has to pass
+    # model_path=None and recompute the index per side itself -- which it did
+    # because the index used to come back as a single unkeyed value taken from
+    # the right-side matrix.
     model_path = session_model(session_dir)
-    paths = session_report.pooled_paths(session_dir, conversion)
+    scores = session_report.session_scores(
+        session_dir, reference_dir, conversion, feature_set,
+        model_path=model_path)
+
     scores["model"] = model_path
-    scores["synergy"] = {}
-    if model_path:
-        for side, entry in paths.items():
-            scores["synergy"][side] = scores_mod.synergy_for_trial(
-                str(entry["matrix"]), model_path)
     scores["participant"] = Path(session_dir).name.replace("XsensSession_", "")
     return scores
 
