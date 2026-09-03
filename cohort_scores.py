@@ -64,7 +64,22 @@ def session_model(session_dir):
     model_dir = Path(session_dir) / "OpenSimData" / "Model"
     models = [p for p in sorted(model_dir.glob("*.osim"))
               if not p.stem.endswith("_calibrated")]
-    return str(models[0]) if models else None
+    if not models:
+        return None
+    if len(models) > 1:
+        # Every session in this study has exactly one. More than one means the
+        # naming assumption behind this function no longer holds, and taking
+        # the alphabetically-first would build a Jacobian about the wrong
+        # skeleton -- a plausible wrong synergy index that nothing downstream
+        # could detect. Refusing is the only safe answer.
+        raise ValueError(
+            f"{model_dir} holds {len(models)} non-calibrated .osim files "
+            f"({', '.join(p.name for p in models)}); this function assumes "
+            "exactly one scaled model and cannot tell which is the skeleton "
+            "the synergy index should be computed about. Name the intended "
+            "model explicitly rather than letting sort order choose."
+        )
+    return str(models[0])
 
 
 def score_session(session_dir, reference_dir, conversion="ik", feature_set=None,
@@ -144,9 +159,27 @@ def cohort_summary(sessions):
 
     paired = [r for r in rows if r["delta_v"] is not None]
     gdi_all = [r["gdi"] for r in rows]
+
+    # Total variance is only a scale to take a log of when it is positive. A
+    # limb with zero variance gives -inf and a nonfinite one gives nan, and
+    # _correlate drops nonfinite pairs silently -- which would return a
+    # plausible correlation over an undisclosed subset. Select first, then
+    # report how many were used.
+    scale = [r for r in paired
+             if r["v_ucm"] is not None and r["v_ort"] is not None
+             and (r["v_ucm"] + r["v_ort"]) > 0]
+
     return {
         "n_participants": len({r["participant"] for r in rows}),
         "n_legs": len(rows),
+        # Two denominators, because they differ. GDI is per limb by definition
+        # so every row has one; delta-V needs a model and a UCM decomposition,
+        # and a limb missing either is absent from every delta_v_* figure and
+        # from both correlations below. Reported rather than left implicit:
+        # n_legs beside a delta_v_mean computed over fewer limbs reads as one
+        # cohort and is two.
+        "n_legs_with_delta_v": len(paired),
+        "n_legs_in_variance_fit": len(scale),
         "n_strides": int(sum(r["n_strides"] for r in rows)),
         "gdi_mean": float(np.mean(gdi_all)) if gdi_all else None,
         "gdi_sd": float(np.std(gdi_all, ddof=1)) if len(gdi_all) > 1 else None,
@@ -173,8 +206,8 @@ def cohort_summary(sessions):
         # at all. Reported so a reader can check that it doesn't, rather than
         # assume it.
         "delta_v_vs_total_variance": _correlate(
-            [np.log10(r["v_ucm"] + r["v_ort"]) for r in paired],
-            [r["delta_v"] for r in paired]),
+            [float(np.log10(r["v_ucm"] + r["v_ort"])) for r in scale],
+            [r["delta_v"] for r in scale]),
         "asymmetry": _limb_asymmetry(rows),
         "rows": rows,
     }
