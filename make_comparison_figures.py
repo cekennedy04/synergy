@@ -116,8 +116,13 @@ def main(argv=None):
          "Three pipelines, 26 coordinates (mean +/- 1 SD across strides)"),
         ("jointcheck_com.png", jc.COM_CHANNELS, 3,
          "Centre of mass, pelvis-relative"),
+        # Title changed 2026-09-02 with the calibration-pose fix. It read "What
+        # direct remapping recovers that inverse kinematics cannot", which the
+        # arm panels in this same figure now contradict: IK tracks XtoO closely
+        # on arm_flex_l, arm_rot_l and pro_sup_r. Translation and the toe joint
+        # are what direct remapping still recovers alone.
         ("jointcheck_rescued.png", RESCUED_COORDINATES, 4,
-         "What direct remapping recovers that inverse kinematics cannot"),
+         "Where the three routes disagree: translation, toes, and the arms"),
     ):
         figure = jc.plot_comparison(datasets, coordinates, columns=columns)
         figure.suptitle(title, y=0.995)
