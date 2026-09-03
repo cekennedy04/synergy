@@ -1,42 +1,46 @@
-"""Settle whether this pipeline's GDI scale matches the normative cohort's.
+"""Score one processed session and say whether it reads normal, low, or unclear.
 
-Built 2026-09-03. This is the one-command form of the single open question left
-by the 2026-08-31 GDI audit, so that whoever captures the control session gets a
-verdict without having to interpret anything.
+Built 2026-09-03 to settle whether this pipeline's GDI scale was offset from the
+normative cohort's. **It settled it: the scale is fine.** The script is kept, and
+reframed, because the per-session check it performs turned out to be the useful
+part.
 
-THE QUESTION
+WHAT IT WAS FOR, AND WHAT HAPPENED
 ---------------------------------------------------------------------------
-Our three processed subjects score 80.20 +/- 8.09 on `reduced6`, against the
-control cohort's 100.0 +/- 10.0. `reduced6` carries no pelvis terms, so that
-20-point deficit has nothing to do with the pelvis convention that got `gdi9`
-disabled. Two explanations fit the same numbers:
+Three processed subjects scored 80.20 +/- 8.09 on `reduced6` against the control
+cohort's 100.0 +/- 10.0, and two explanations fit: our subjects are impaired, or
+the pipeline is systematically ~20 points low. The plan was to settle it by
+capturing a subject known to be uninjured.
 
-  A. Our subjects are genuinely impaired, and the pipeline is sound.
-  B. This pipeline's kinematics are systematically offset from the optical-
-     mocap cohort the reference was built on, and every score we report is
-     ~20 points low.
+It did not need a capture. Over all six processed sessions the cohort means
+93.45 +/- 7.44, range 83.36-106.13, and a uniform -20 offset cannot produce a
+maximum of 106 -- SB's right leg would need a true score of 126. The
+three-subject sample had been the low tail. Full retraction in section 13 of
+docs/2026-08-31-gdi-vs-ucm-audit.md.
 
-Nothing in the repo distinguishes them, because both predict exactly what we
-observe. Only a subject who is *known* to be uninjured separates them: under A
-they score ~100, under B they score ~80. That is a capture session, not an
-analysis, which is why this script takes a processed session rather than
-computing an answer from existing files.
+WHAT IT IS FOR NOW
+---------------------------------------------------------------------------
+A per-session diagnostic. A low pooled score is a finding about that subject --
+real impairment, or that session's tracking quality -- not about the pipeline.
+The asymmetry guard has proved the most useful part in practice: it flags MS,
+whose legs differ by 13.44 points (104.79 vs 91.35) behind an unremarkable
+pooled mean of 98.31.
 
 WHAT IT DOES NOT DO
 ---------------------------------------------------------------------------
-It does not correct anything. A frame offset fitted to our own participants
-would subtract exactly the impairment GDI exists to measure -- that proposal was
-measured and rejected (audit section 12). This only reports which explanation
-the evidence supports.
+It does not correct anything, and no global offset should be fitted to our
+participants: there is no uniform offset to fit, and mean-matching a subject
+group onto a control reference removes exactly the between-subject variation the
+score exists to detect.
 
 Usage:
-    python validate_control_baseline.py --session PATH/TO/SESSION \\
+    python validate_control_baseline.py --session PATH/TO/SESSION \
         --reference context/gdi_reference_2026-08-27
 
 Exit status is the verdict, so this can gate a script:
-    0  SOUND            the control scores normally; explanation A
-    1  ACTION REQUIRED  the control scores like our cohort; explanation B
-    2  INCONCLUSIVE     between the two, or not enough strides
+    0  SOUND            pooled >= 90; reads normal
+    1  ACTION REQUIRED  pooled <= 85; investigate that subject's data
+    2  INCONCLUSIVE     the 85-90 band, legs disagreeing, or too few strides
     3  could not run    (bad session, missing reference, wrong feature set)
 """
 import argparse
@@ -51,10 +55,10 @@ REPO_ROOT = Path(__file__).resolve().parent
 # SD of the control cohort), so this is "within one SD of the control mean".
 SOUND_FLOOR = 90.0
 
-# At or below this, the control is scoring like our existing cohort (80.20)
-# rather than like a healthy subject, which is explanation B. Set above 80
-# rather than at it so a control landing between the two hypotheses is called
-# inconclusive instead of being forced into the nearer one.
+# At or below this, the session is scoring well under the cohort and is worth
+# investigating on its own terms. Kept where it was when the bands were framed
+# as competing hypotheses about the pipeline, because it still separates the two
+# genuinely low sessions (CK 84.30, AN 86.64) from the rest.
 BIASED_CEILING = 85.0
 
 # Below this many strides the mean is too noisy to place against bands 20
@@ -68,10 +72,11 @@ MIN_STRIDES = 8
 # otherwise read as sound, on a session that plainly disagrees with itself.
 ASYMMETRY_LIMIT = 10.0
 
-# What our processed subjects score, for the comparison line in the report.
-# From audit section 12 (396 strides, 3 subjects, reduced6).
-COHORT_MEAN = 80.20
-COHORT_SD = 8.09
+# What our processed sessions score, for the comparison line in the report.
+# All six sessions on reduced6, audit section 13. The earlier 80.20 +/- 8.09
+# figure was three subjects who were the low tail, and is superseded.
+COHORT_MEAN = 93.45
+COHORT_SD = 7.44
 NORMATIVE_MEAN = 100.0
 NORMATIVE_SD = 10.0
 
@@ -143,8 +148,9 @@ def verdict(strides, sides=None, sound_floor=SOUND_FLOOR,
                 "which is where an uninjured subject belongs.")
     if mean <= biased_ceiling:
         return ("ACTION REQUIRED", mean,
-                f"{mean:.1f} is at the level our existing cohort scores "
-                f"({COHORT_MEAN:.1f}), not the level a healthy subject should.")
+                f"{mean:.1f} is well below the cohort mean "
+                f"({COHORT_MEAN:.1f}); this session is worth investigating on "
+                "its own terms.")
     return ("INCONCLUSIVE", mean,
             f"{mean:.1f} falls between the two explanations "
             f"({biased_ceiling:.0f}-{sound_floor:.0f}); neither is supported "
@@ -185,49 +191,51 @@ def format_report(scores, status, mean, detail, strides):
     lines.append("")
     lines.append(f"  for comparison   healthy cohort  {NORMATIVE_MEAN:6.2f} "
                  f"+/- {NORMATIVE_SD:.2f}   (by construction)")
-    lines.append(f"                   our 3 subjects  {COHORT_MEAN:6.2f} "
-                 f"+/- {COHORT_SD:.2f}   (audit section 12)")
+    lines.append(f"                   our 6 sessions  {COHORT_MEAN:6.2f} "
+                 f"+/- {COHORT_SD:.2f}   (audit section 13)")
     lines.append("")
     lines.append(f"VERDICT: {status}")
     lines.append(f"  {detail}")
     lines.append("")
 
     if status == "SOUND":
-        lines.append("  Reading: the coordinate frame is sound, and the lower "
-                     "scores from the existing")
-        lines.append("  cohort are real impairment rather than a pipeline "
-                     "artefact. GDI may be reported")
-        lines.append("  on the published normative scale.")
+        lines.append("  Reading: this session reads normal. Nothing to "
+                     "investigate on the score alone.")
     elif status == "ACTION REQUIRED":
-        lines.append("  Reading: the pipeline carries a systematic offset "
-                     "against the optical-mocap")
-        lines.append("  cohort, so absolute GDI is not on the published scale "
-                     "and every reported score")
-        lines.append("  needs rescaling. Do NOT fit a correction to the "
-                     "existing participants -- that")
-        lines.append("  subtracts the impairment GDI measures (audit section "
-                     "12). Rebuild the reference")
-        lines.append("  from healthy subjects captured through THIS pipeline, "
-                     "or derive a correction")
-        lines.append("  from a concurrent-capture study.")
+        lines.append("  Reading: this session scores well below the cohort. "
+                     "That is a finding about")
+        lines.append("  THIS SUBJECT -- real impairment, or this session's "
+                     "tracking quality -- not about")
+        lines.append("  the pipeline: a uniform pipeline offset was refuted "
+                     "over all six sessions, which")
+        lines.append("  span 83.36 to 106.13 (audit section 13). Look at this "
+                     "session's marker coverage,")
+        lines.append("  calibration frame and event detection before reading "
+                     "the score as clinical.")
+        lines.append("")
+        lines.append("  Do NOT fit a global offset to the participants. There "
+                     "is no uniform offset to")
+        lines.append("  fit, and mean-matching a subject group onto a control "
+                     "reference removes exactly")
+        lines.append("  the between-subject variation the score exists to "
+                     "detect.")
     else:
-        lines.append("  Reading: not settled. One more control subject is the "
-                     "cheapest way forward.")
+        lines.append("  Reading: not settled by the score alone. If the legs "
+                     "disagree, that asymmetry is")
+        lines.append("  the thing to look at -- it is a per-limb signal a "
+                     "pooled mean would hide.")
 
     lines.append("")
-    lines.append("  Either way, within-pipeline comparison (trial to trial, "
-                 "leg to leg, session to")
-    lines.append("  session) was never in question and stays valid -- the "
-                 "offset, if any, is common")
-    lines.append("  to every score and cancels.")
+    lines.append("  Relative comparison (trial to trial, leg to leg, session "
+                 "to session) was never in")
+    lines.append("  question and stays valid regardless of this verdict.")
 
     if mean is not None and len(strides) >= MIN_STRIDES:
         lines.append("")
-        lines.append("  Caveat: one subject. The two explanations sit 20 "
-                     "points apart against a")
-        lines.append("  normative SD of 10, so a single control is suggestive "
-                     "rather than conclusive;")
-        lines.append("  two or three make it solid.")
+        lines.append("  Caveat: one session against a normative SD of 10. "
+                     "Treat a single verdict as a")
+        lines.append("  prompt to look, not as a conclusion about the "
+                     "subject.")
     return "\n".join(lines)
 
 

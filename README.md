@@ -100,49 +100,74 @@ Two questions for whoever maintains the upstream code, both in the write-up: wha
 foot offsets encode (no derivation found anywhere), and whether anything downstream was tuned
 against the old near-zero heading.
 
-**Absolute GDI is not on the published normative scale — only relative comparison is safe.**
-Our three processed subjects score **80.20 +/- 8.09** on `reduced6` against the control cohort's
-**100.0 +/- 10.0**. `reduced6` carries no pelvis terms, so this has nothing to do with the pelvis
-convention below. Two explanations fit the same numbers, and nothing in this repo separates them:
+**GDI reads roughly normal across the cohort; two subjects sit low.** Corrected 2026-09-03 --
+an earlier version of this section claimed the pipeline carried a systematic ~20-point offset
+against the published scale. **That claim was wrong**, and it was wrong because it generalised from
+three subjects who turned out to be the low tail. Over all six processed sessions, scored on
+`reduced6` against `context/gdi_reference_2026-08-27`:
 
-- the subjects are genuinely impaired, and the pipeline is sound, or
-- this pipeline's kinematics are systematically offset from the optical-mocap cohort the reference
-  was built on, and every score we report is ~20 points low.
+| session | left | right | pooled | verdict |
+| --- | --- | --- | --- | --- |
+| SB | 98.96 | 106.13 | **102.35** | sound |
+| HH | 98.89 | 97.82 | **98.32** | sound |
+| MS | 104.79 | 91.35 | **98.31** | inconclusive -- legs disagree by 13.4 |
+| KM | 93.34 | 88.41 | **90.96** | sound |
+| AN | 87.60 | 85.56 | **86.64** | inconclusive |
+| CK | 85.22 | 83.36 | **84.30** | low |
 
-The offset is not confined to the pelvis: measured against the cohort, `hip_flexion` is off by
--13.47 deg and `fpa` by +10.90, summing to 33.1 deg across the six non-pelvis variables. Full
-analysis in `docs/2026-08-31-gdi-vs-ucm-audit.md` section 12.
+Cohort mean **93.45 +/- 7.44**, range 83.36-106.13 -- within one SD of the normative 100 +/- 10.
 
-**What this means in practice.** Trial-to-trial, leg-to-leg and session-to-session comparison was
-never in question and stays valid — a common offset cancels. Do **not** report an absolute GDI as
-though 100 means what it means in the literature.
+**A uniform offset is refuted, and does not need a control capture to refute it.** If the pipeline
+subtracted ~20 points from everyone, no subject could reach 98, let alone 106: SB's right leg would
+need a true score of 126. Same pipeline, same reference, same feature set. This argument does not
+depend on knowing anyone's clinical status.
 
-**Do not "fix" it by fitting an offset to our own participants.** That was measured and rejected: it
-subtracts precisely the impairment GDI exists to measure. The estimator is also three subjects whose
-between-subject spread (6.5 deg) is 70% of the offset itself.
+**So low scores are subject-specific.** CK at 84.30 and AN at 86.64 are low for reasons particular
+to those subjects -- real impairment, or that subject's tracking quality -- not because the scale is
+shifted. The pipeline is stable across routes: CK measures 84.62 through `context/gait_curves` and
+84.30 through the session route.
 
-**How to settle it — one control subject, one command.** The question is a capture, not a
-computation: a subject *known* to be uninjured scores ~100 under the first explanation and ~80 under
-the second.
+**Residual coordinate differences exist and do not explain the scores.** Measured over all six
+sessions (180 curve files) against the cohort, `hip_flexion` runs -10.57 deg and `fpa` +4.78,
+summing to 20.0 deg across the six non-pelvis variables. (An earlier 33.1 deg figure came from the
+same three-subject sample and is superseded.) Those are mean-level differences in individual
+coordinates; GDI is a distance in a 15-dimensional projected space, so they do not simply add up
+into a score deficit -- and empirically they do not, since the cohort still centres near 100.
+
+**What this means in practice.** Relative comparison -- trial to trial, leg to leg, session to
+session -- was never in question. Absolute GDI can now be read against the published scale with
+ordinary care, treating a single low session as a finding about that subject rather than about the
+pipeline. What is *not* established is any individual subject's clinical status.
+
+**Do not fit a global offset to our participants.** Still true, and now for a second reason: there
+is no uniform offset to fit, and mean-matching a subject group onto a control reference removes
+exactly the between-subject differences the score exists to detect.
+
+**Checking one session — `validate_control_baseline.py`.** Originally written to settle the
+pipeline-offset question; that question is answered, so it now serves as a per-session diagnostic
+for outliers and asymmetry.
 
 ```bash
-python validate_control_baseline.py     --session PATH/TO/CONTROL_SESSION     --reference context/gdi_reference_2026-08-27
+python validate_control_baseline.py     --session PATH/TO/SESSION     --reference context/gdi_reference_2026-08-27
 ```
-
-Exit status is the verdict, so it drops into a post-capture script:
 
 | code | verdict | meaning |
 | --- | --- | --- |
-| 0 | SOUND | scores >= 90; the frame is fine, the cohort is impaired |
-| 1 | ACTION REQUIRED | scores <= 85; the pipeline is offset, rescaling needed |
-| 2 | INCONCLUSIVE | the 85-90 band, legs disagreeing by more than one normative SD, or too few strides |
+| 0 | SOUND | pooled >= 90 |
+| 1 | ACTION REQUIRED | pooled <= 85; investigate that subject's data quality |
+| 2 | INCONCLUSIVE | the 85-90 band, **legs disagreeing by more than one normative SD**, or fewer than 8 strides |
 | 3 | UNABLE TO RUN | missing reference, invalid session, or a pelvis-bearing feature set |
 
+The asymmetry guard is the most useful of these in practice: it is what flags MS, whose legs differ
+by 13.4 points (104.79 vs 91.35) while the pooled mean of 98.31 looks unremarkable. A pooled mean
+alone would have hidden that.
+
 **`gdi9` is disabled** and raises `GdiFeatureSetDisabledError` from both `get_feature_set` (by name,
-the CLI path) and `compute_gdi` (as an object). It adds three frame-mismatched pelvis terms on top
-of six already-mismatched ones with no offsetting benefit. `reduced6` is the default and the only
-set the project reports through. This is not waivable, unlike `check_digest` — a disabled set's
-output is wrong in a known direction, and there is no honest reason to want that number.
+the CLI path) and `compute_gdi` (as an object). Its pelvis terms carry a convention mismatch against
+the reference cohort -- `pelvis_tilt` runs +10.27 deg -- with no offsetting benefit. `reduced6` is
+the default and the only set the project reports through. This is not waivable, unlike
+`check_digest`: a disabled set's output is wrong in a known direction, and there is no honest reason
+to want that number.
 
 ## Known issues / open problems
 
