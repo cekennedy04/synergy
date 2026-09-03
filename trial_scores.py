@@ -31,8 +31,24 @@ REPO_ROOT = Path(__file__).resolve().parent
 # the toe joints (frozen in both methodologies) and the upper limb. The arm
 # exclusion originally rested on IMU-route bound saturation, fixed 2026-09-02;
 # see ucm.py for why the set is unchanged anyway.
+#
+# The three pelvis ORIENTATION coordinates were dropped on 2026-09-03, taking
+# this from 18 DOF to 15. Not a trim: once the task variable is genuinely
+# pelvis-relative (task_functions._to_pelvis_frame, fixed the same day), a
+# rigid whole-body rotation cannot move it, so pelvis_tilt, pelvis_list and
+# pelvis_rotation have EXACTLY zero Jacobian columns. Measured on the real
+# model: 8.7e-16, 8.2e-15 and 4.2e-15 against 1.4e-3 before the fix.
+#
+# A zero column is not free. It puts the whole of that coordinate's variance
+# in the nullspace by construction, and per-DOF normalisation then divides by
+# a dimension those coordinates inflated. Keeping all 18 with the corrected
+# task drives Delta-V against its own structural ceiling of n_dof/dim_ucm =
+# 18/15 = 1.2: MS reads 1.116 and SB 1.195, i.e. saturated. At 15 DOF the
+# ceiling is 1.25 and the cohort lands at 0.26 to 0.85.
+#
+# So the two changes are one change. Correcting the task without dropping
+# these three replaces a contaminated answer with a saturated one.
 UCM_COORDINATES = (
-    "pelvis_tilt", "pelvis_list", "pelvis_rotation",
     "hip_flexion_r", "hip_adduction_r", "hip_rotation_r",
     "knee_angle_r", "ankle_angle_r", "subtalar_angle_r",
     "hip_flexion_l", "hip_adduction_l", "hip_rotation_l",

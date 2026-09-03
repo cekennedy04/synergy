@@ -249,8 +249,21 @@ def map_error_to_message(exc):
             "Automatic gait-event (heel-strike/toe-off) detection failed for "
             "this trial, so gait-cycle metrics could not be computed. This "
             "can happen with a very short recording, non-walking motion, or "
-            "noisy/incomplete tracking data. Try a longer or cleaner "
-            "recording of the same activity."
+            "noisy/incomplete tracking data.\n\n"
+            # A recording that genuinely is walking is usually recoverable by
+            # hand, and until 2026-09-03 this message was a dead end that sent
+            # the clinician back to re-record a perfectly good trial. The
+            # picker cannot open here -- this runs on a background thread,
+            # where a matplotlib window deadlocks -- so it is named rather
+            # than offered.
+            "If this is a walking trial, you can pick the gait events by "
+            "hand instead of re-recording. The conversion this run already "
+            "produced is kept, so recovery re-analyses it rather than "
+            "starting over. From the repo folder, run:\n\n"
+            "    python rescue_trial.py --session <session folder> "
+            "--trial <trial name>\n\n"
+            "Otherwise, try a longer or cleaner recording of the same "
+            "activity."
         )
     elif isinstance(exc, FootProgressionAnalysisError):
         message = (
@@ -446,10 +459,23 @@ def _run_ik_conversion(xsens, paths, mvnx_path, _progress):
 
 def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
                      conversion, gait_fixed_module, foot_progression_module,
-                     combine_module, _progress):
+                     combine_module, _progress, manual_event_provider=None):
     """Everything downstream of the .mot: foot progression, gait analysis for
     both legs, and the stride-normalised curve matrix. Shared by both
-    conversion routes -- only the way the .mot was produced differs."""
+    conversion routes -- only the way the .mot was produced differs.
+
+    manual_event_provider is None for every GUI run, which is what keeps
+    allow_manual_entry=False and the pipeline unattended. It is not a switch
+    the GUI should ever flip: this function runs on start_pipeline_thread's
+    background daemon thread, and opening a matplotlib window from there
+    deadlocks -- measured 2026-09-03, the worker never returns and matplotlib
+    warns about it on the way in.
+
+    The one caller that passes a provider is rescue_trial.py, which runs this
+    on its own main thread in its own process, after a GUI run has already
+    failed at detection. It re-enters here rather than re-implementing the
+    stages, so a recovered trial produces the same artefacts as a normal one.
+    """
     _progress("Computing foot progression angles...")
     foot_progression = (
         foot_progression_module if foot_progression_module is not None
@@ -469,15 +495,22 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
     model_name = Path(paths["model_file"]).name
 
     try:
+        # allow_manual_entry follows the provider rather than being set
+        # independently: True with nothing to answer the prompt is how a run
+        # blocks forever on stdin, which is what this flag exists to prevent.
+        # A GUI run passes no provider, so both stay off exactly as before.
+        allow_manual_entry = manual_event_provider is not None
         _progress("Analyzing gait (right leg)...")
         gait_r = gait_fixed.gait_analysis(
             session_dir, trial_name, fpa_r, fpa_l, leg="r",
-            allow_manual_entry=False, modelName=model_name,
+            allow_manual_entry=allow_manual_entry, modelName=model_name,
+            manual_event_provider=manual_event_provider,
         )
         _progress("Analyzing gait (left leg)...")
         gait_l = gait_fixed.gait_analysis(
             session_dir, trial_name, fpa_r, fpa_l, leg="l",
-            allow_manual_entry=False, modelName=model_name,
+            allow_manual_entry=allow_manual_entry, modelName=model_name,
+            manual_event_provider=manual_event_provider,
         )
     except Exception as exc:
         raise GaitAnalysisFailedError(str(exc)) from exc

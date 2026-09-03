@@ -50,7 +50,40 @@ class _PelvisRelativeTask:
             self.model.set_coordinate(name, np.deg2rad(value))
         for name in PELVIS_TRANSLATIONS:
             self.model.set_coordinate(name, 0.0)
-        return np.asarray(self._read(), dtype=float)
+        return self._to_pelvis_frame(np.asarray(self._read(), dtype=float))
+
+    def _to_pelvis_frame(self, position):
+        """Express a ground-frame position in the pelvis's own frame.
+
+        Zeroing pelvis_tx/ty/tz removes the root TRANSLATION but not its
+        ORIENTATION, and until 2026-09-03 that was the whole of "pelvis
+        relative": the task read the global centre of mass and called it done.
+        So rotating the root moved the task variable. Measured on the real
+        model, sweeping pelvis_rotation from 0 to 180 degrees with every
+        relative joint held fixed moved x by 0.166 m, and pelvis_rotation
+        carried the 4th-largest Jacobian column of the 18 coordinates.
+
+        For a pelvis-relative task that dependence must be exactly zero: a
+        rigid whole-body rotation cannot change where the centre of mass sits
+        relative to the pelvis. It is an invariance, not an approximation, so
+        it has to hold at every configuration rather than near a mean.
+
+        What it cost: absolute lab-frame heading became a real input to the
+        task variable, so pooling strides across trials that pointed in
+        slightly different directions injected heading differences into the
+        UCM decomposition. See VENDORING.md, "The synergy index was measuring
+        where the subject was pointed".
+
+        A model that does not expose its pelvis pose is left alone rather than
+        guessed at -- the fake models in the test suite that only implement
+        center_of_mass() still work, and only the assertion about root
+        invariance needs the fuller protocol.
+        """
+        rotation = getattr(self.model, "pelvis_rotation_matrix", None)
+        origin = getattr(self.model, "pelvis_origin", None)
+        if rotation is None or origin is None:
+            return position
+        return np.asarray(rotation()).T @ (position - np.asarray(origin()))
 
     def _read(self):
         raise NotImplementedError
@@ -151,4 +184,26 @@ class OpenSimModel:
     def center_of_mass(self):
         self.model.realizePosition(self.state)
         position = self.model.calcMassCenterPosition(self.state)
+        return np.array([position.get(0), position.get(1), position.get(2)])
+
+    def pelvis_rotation_matrix(self):
+        """The pelvis's orientation in ground, as a 3x3.
+
+        Together with pelvis_origin this is what makes a task genuinely
+        pelvis-relative rather than merely pelvis-centred -- see
+        _PelvisRelativeTask._to_pelvis_frame for what went wrong without it.
+        """
+        self.model.realizePosition(self.state)
+        rotation = self.model.getBodySet().get("pelvis").getTransformInGround(self.state).R()
+        return np.array([[rotation.get(i, j) for j in range(3)] for i in range(3)])
+
+    def pelvis_origin(self):
+        """The pelvis body's origin in ground.
+
+        Not always the zero vector even with pelvis_tx/ty/tz zeroed: the
+        ground-pelvis joint can carry a fixed offset, and the model's own
+        answer is cheaper to read than to reason about.
+        """
+        self.model.realizePosition(self.state)
+        position = self.model.getBodySet().get("pelvis").getPositionInGround(self.state)
         return np.array([position.get(0), position.get(1), position.get(2)])

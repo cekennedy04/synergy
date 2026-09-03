@@ -129,6 +129,7 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `trial_scores.py` | 281 | Computes GDI and the synergy index for one trial, so the clinician report can carry both. |
 | `session_report.py` | 287 | Per-session report, with the headline scores at the front. |
 | `gait_event_picker_ui.py` | 531 | matplotlib UI for `gait_event_picker.GaitEventPicker`, asked for only after auto-trim fails to find a gait cycle. |
+| `rescue_trial.py` | 216 | Recovers one trial whose automatic gait-event detection failed, by hand-picking events against the conversion the clinician GUI already produced. |
 | `verify_calibration_fix.py` | 262 | Cohort-wide gate on the 2026-09-02 IMUPlacer calibration-pose fix: arms back in range, pelvis and legs provably untouched, nothing pinned against a model bound. |
 
 ### Tests and docs
