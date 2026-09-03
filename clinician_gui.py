@@ -349,9 +349,12 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
     if conversion == "xtoo":
         # Direct remapping: Xsens's own joint angles relabelled into OpenSim
         # coordinates. No orientations file, no IMUPlacer, no IK -- which is
-        # what preserves real pelvis translation, live toe joints and
-        # unsaturated arms. Roughly 40 s/trial faster too, since the IK solve
-        # is the expensive stage.
+        # what preserves real pelvis translation and live toe joints. Roughly
+        # 40 s/trial faster too, since the IK solve is the expensive stage.
+        # Arms used to be a third item on that list; the IK route's arm
+        # saturation was a calibration-pose bug, fixed 2026-09-02 (see
+        # xsens_to_opensim.CALIBRATION_POSES), so the routes now differ on
+        # translation and toes only.
         xtoo = xtoo_module if xtoo_module is not None else _load_xtoo()
         _progress("Converting Xsens joint angles to OpenSim coordinates...")
         try:
@@ -384,9 +387,15 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
 def _run_ik_conversion(xsens, paths, mvnx_path, _progress):
     """The OpenSense route: orientations -> IMUPlacer -> IK."""
     _progress("Converting Xsens orientations to OpenSim format...")
+    # Which static frame became row 0 of the .sto decides the pose the model
+    # has to be in for IMUPlacer (see xsens_to_opensim.CALIBRATION_POSES).
+    # Read back from the conversion rather than assumed -- assuming it is how
+    # the arm defect fixed on 2026-09-02 survived.
+    calibration_info = {}
     try:
         xsens.build_orientations_sto(
-            mvnx_path, paths["sto_path"], xsens.SEGMENT_TO_IMU_FRAME, source="segment"
+            mvnx_path, paths["sto_path"], xsens.SEGMENT_TO_IMU_FRAME,
+            source="segment", calibration_info=calibration_info,
         )
     # ValueError/ET.ParseError: parse_mvnx's own malformed-structure and
     # invalid-XML cases. OSError (covers FileNotFoundError, PermissionError,
@@ -397,6 +406,21 @@ def _run_ik_conversion(xsens, paths, mvnx_path, _progress):
     except (ValueError, ET.ParseError, OSError) as exc:
         raise MvnxParsingError(str(exc)) from exc
 
+    # A MISSING key is not the same as a key holding None. None means "this
+    # .mvnx had no static calibration frame", which is a real answer and means
+    # leave the model unposed. Missing means the conversion did not report,
+    # and quietly treating that as None would put the model back in its
+    # arms-down default against a T-pose calibration frame -- the whole defect
+    # again, and invisible in the output.
+    if "frame_type" not in calibration_info:
+        raise MvnxParsingError(
+            "build_orientations_sto did not report which calibration frame it "
+            "wrote as row 0, so the model cannot be posed to match it. "
+            "IMUPlacer calibrates against the model's default pose, and a "
+            "T-pose frame calibrated against an arms-down default is the "
+            "2026-09-02 arm defect. Refusing to guess."
+        )
+
     # Unlike every other stage below, calibrate_model/run_imu_ik previously
     # had no dedicated wrapping, so a failure here fell through to
     # map_error_to_message's generic fallback instead of a specific message
@@ -406,6 +430,7 @@ def _run_ik_conversion(xsens, paths, mvnx_path, _progress):
         calibrated_model = xsens.calibrate_model(
             paths["model_file"], paths["sto_path"],
             DEFAULT_BASE_IMU_LABEL, DEFAULT_BASE_HEADING_AXIS,
+            calibration_pose=calibration_info["frame_type"],
         )
 
         _progress("Running IMU inverse kinematics...")
@@ -1705,11 +1730,12 @@ class ClinicianGUI:
         )
 
         # Conversion route (2026-08-25). The two are not interchangeable:
-        # inverse kinematics pins root translation, freezes the toe joints and
-        # saturates the arms, while direct remapping carries Xsens's own joint
-        # angles and real segment positions. The choice changes what the
-        # report can legitimately claim, so it is explicit rather than a
-        # hidden default.
+        # inverse kinematics pins root translation and freezes the toe joints,
+        # while direct remapping carries Xsens's own joint angles and real
+        # segment positions. The choice changes what the report can
+        # legitimately claim, so it is explicit rather than a hidden default.
+        # (It also used to saturate the arms; that was a calibration-pose bug,
+        # fixed 2026-09-02, not a property of the route.)
         ttk.Label(frame, text="Conversion route:").grid(
             row=4, column=0, sticky="w", pady=(10, 0)
         )

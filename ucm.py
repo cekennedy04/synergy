@@ -24,8 +24,17 @@ Intended default formulation:
 
   * q -- the 18 clean DOFs: pelvis orientation, lumbar, and both legs.
     Excludes the pinned root translations, the toe joints (frozen in BOTH
-    methodologies), and the upper limb (saturated against its joint bounds in
-    the IMU pipeline). See VENDORING.md's batch-inspection section.
+    methodologies), and the upper limb. See VENDORING.md's batch-inspection
+    section.
+
+    The upper-limb exclusion was originally made because the IMU route drove
+    those coordinates to their joint bounds. That defect was a calibration
+    pose bug and was fixed on 2026-09-02, so the original reason no longer
+    holds -- but the CHOICE does, on its own merits: a gait synergy analysis
+    with a pelvis-relative-COM or foot-placement task variable has no reason
+    to include arm swing, and every result recorded here was computed on
+    these 18. Revisiting the set is a modelling decision to make deliberately,
+    not a leftover to tidy up.
   * x -- centre of mass relative to the pelvis. Chosen over global COM
     precisely so the two methodologies stay comparable: global COM exists for
     the OpenCap pipeline but NOT for the IMU one, whose root translation is

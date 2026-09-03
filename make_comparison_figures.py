@@ -38,8 +38,11 @@ PIPELINES = (
     ("OpenCap video", "OC-Trial{trial}", [str(n) for n in range(1, 16)]),
 )
 
-# Coordinates the 26-panel grid omits but which carry the whole argument for
-# the direct-remapping route: translation, toes, and the saturated arms.
+# Coordinates the 26-panel grid omits. Translation and toes still carry the
+# argument for the direct-remapping route. The arm panels were here for a
+# third reason -- IK saturation -- which was a calibration-pose bug fixed on
+# 2026-09-02; they are kept because the three routes are now worth comparing
+# on the arms rather than because one of them is broken.
 RESCUED_COORDINATES = (
     "pelvis_tx", "pelvis_ty", "pelvis_tz",
     "mtp_angle_r", "mtp_angle_l",
