@@ -289,3 +289,81 @@ def test_the_report_states_the_thresholds_are_unvalidated(baseline):
 
     assert "sensitivity or specificity" in text
     assert "prompt to look rather than a classification" in text
+
+
+def test_the_t_multiplier_follows_the_sample_size(baseline):
+    """It was hardcoded at 2.145 (df=14, the 15-trial protocol), which is wrong
+    at every other count and wrong in the dangerous direction below it: at n=5
+    the correct multiplier is 2.776, so a fixed 2.145 gave an interval 23% too
+    narrow -- reintroducing the overconfidence the interval exists to remove."""
+    assert baseline.t_multiplier(5) == pytest.approx(2.776, abs=0.001)
+    assert baseline.t_multiplier(10) == pytest.approx(2.262, abs=0.001)
+    assert baseline.t_multiplier(15) == pytest.approx(2.145, abs=0.001)
+    assert baseline.t_multiplier(20) == pytest.approx(2.093, abs=0.001)
+    assert baseline.t_multiplier(400) == pytest.approx(1.960, abs=0.001)
+
+    # Monotone decreasing in n: a smaller sample must never buy a tighter bound.
+    widths = [baseline.t_multiplier(n) for n in range(2, 40)]
+    assert widths == sorted(widths, reverse=True)
+
+
+def test_a_small_sample_widens_the_interval_rather_than_the_reverse(baseline):
+    """The regression the hardcoded multiplier caused, pinned end to end."""
+    spread = [88.0, 92.0, 90.0, 94.0, 86.0]
+    _, lo5, hi5 = baseline.mean_interval(spread)
+    _, lo15, hi15 = baseline.mean_interval(spread * 3)
+
+    assert (hi5 - lo5) > (hi15 - lo15), (
+        "five trials must give a wider interval than fifteen of the same "
+        "spread; a fixed multiplier broke that."
+    )
+
+
+def test_inconclusive_tells_the_operator_what_to_do_next(baseline):
+    """INCONCLUSIVE is a no-call, and a no-call with no follow-up is a quiet
+    pass. The report has to name the next step, because 'cannot be placed' is a
+    reason to look rather than to move on."""
+    scores = {"session": "CTRL-04", "feature_set": "reduced6",
+              "conversion": "ik",
+              "gdi": {"left": {"mean": 87.0, "sd": 3.0, "n_strides": 20,
+                               "per_stride": _strides(87.0, n=20)}}}
+    strides = baseline.pooled_strides(scores)
+    status, mean, detail = baseline.verdict(strides, trials=_trials(87.0))
+
+    text = baseline.format_report(scores, status, mean, detail, strides)
+
+    assert status == "INCONCLUSIVE"
+    assert "no-call, not a pass" in text
+    assert "session_drift.py" in text
+
+
+def test_the_caveat_names_what_the_interval_excludes(baseline):
+    """A tight interval means the trials agreed, not that the number is right.
+    Without saying so the CI invites being read as total uncertainty."""
+    scores = {"session": "CTRL-05", "feature_set": "reduced6",
+              "conversion": "ik",
+              "gdi": {"left": {"mean": 100.0, "sd": 2.0, "n_strides": 20,
+                               "per_stride": _strides(100.0, n=20)}}}
+    strides = baseline.pooled_strides(scores)
+    status, mean, detail = baseline.verdict(strides, trials=_trials(100.0))
+
+    text = baseline.format_report(scores, status, mean, detail, strides)
+
+    assert "trial-to-trial variation ONLY" in text
+    assert "exchangeable" in text
+
+
+def test_the_two_legs_of_one_trial_are_one_observation(baseline):
+    """Two levels of clustering, and missing either narrows the interval
+    dishonestly. Left and right of the same walk are not two independent
+    observations of the session: pooling 15 left and 15 right trial means as 30
+    units understates the interval by about 1.4x."""
+    scores = {"by_trial": {
+        "left":  {"s-001": 90.0, "s-002": 94.0, "s-003": 92.0},
+        "right": {"s-001": 80.0, "s-002": 84.0, "s-003": 82.0},
+    }}
+
+    trials = baseline.trial_means(scores)
+
+    assert len(trials) == 3, "three walks, not six observations"
+    assert trials == pytest.approx([85.0, 89.0, 87.0]), "legs averaged per trial"

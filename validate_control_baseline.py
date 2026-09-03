@@ -132,39 +132,83 @@ def pooled_strides(scores):
 
 
 def trial_means(scores):
-    """Per-trial mean GDI, both sides pooled -- the clustering unit.
+    """One mean per TRIAL -- the clustering unit -- with the legs averaged.
 
-    `session_scores` reports `by_trial` per side. Using trial means rather than
-    raw strides respects the clustering: 100 strides from 15 trials carry
-    roughly 15 units of information about this session's level, not 100.
+    Two levels of clustering have to be collapsed, and missing either one
+    narrows the interval dishonestly:
+
+      strides within a trial   the same person on the same walk
+      legs within a trial      also the same walk, so left and right are not
+                               two independent observations of this session
+
+    Collapsing only the first (pooling 15 left and 15 right trial means as 30
+    units) understates the interval by about 1.4x. So a trial contributes one
+    value: the mean of whichever sides reported it.
     """
-    out = []
+    by_trial = {}
     for side, entry in (scores.get("by_trial") or {}).items():
         if not isinstance(entry, dict):
             continue
-        for key in sorted(entry):
-            value = entry[key]
+        for key, value in entry.items():
             mean = value.get("mean") if isinstance(value, dict) else value
             if isinstance(mean, (int, float)):
-                out.append(float(mean))
-    return out
+                # Strip the side so the same walk's legs land on one key.
+                trial = str(key).replace("_left", "").replace("_right", "")
+                trial = trial.replace("-left", "").replace("-right", "")
+                by_trial.setdefault(trial, []).append(float(mean))
+    return [sum(v) / len(v) for _, v in sorted(by_trial.items())]
 
 
-def mean_interval(values, coverage_t=2.145):
+# Two-sided 95% t multipliers by degrees of freedom (n - 1). Table rather than
+# scipy because the suite runs on an interpreter without it. Anything past the
+# table uses the normal limit; anything between entries takes the LOWER df,
+# which widens the interval -- the safe direction for a gate.
+_T_95 = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+    8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160,
+    14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
+    20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
+    26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
+}
+_T_95_LARGE = 1.960
+
+
+def t_multiplier(n):
+    """Two-sided 95% t multiplier for a sample of `n`.
+
+    Was hardcoded at 2.145 (df=14, the 15-trial protocol), which is wrong at
+    every other count and wrong in the dangerous direction below it: at n=5 the
+    correct multiplier is 2.776, so a fixed 2.145 produced an interval 23%
+    too narrow -- reintroducing exactly the overconfidence the interval exists
+    to remove.
+    """
+    df = max(1, n - 1)
+    if df in _T_95:
+        return _T_95[df]
+    if df > 30:
+        return _T_95_LARGE
+    return max(_T_95.values())
+
+
+def mean_interval(values):
     """(mean, lo, hi) for the session's level, over the clustering unit.
 
-    `coverage_t` defaults to the two-sided 95% t multiplier at 14 degrees of
-    freedom, which is the 15-trial protocol these sessions use. It is
-    deliberately a plain constant rather than a scipy lookup: the suite runs on
-    an interpreter without scipy, and being slightly conservative at other trial
-    counts is the safe direction for a gate.
+    A two-sided 95% interval, so each one-sided bound the verdict gates on
+    carries 97.5% coverage. That is deliberately conservative and is named here
+    because "95%" alone would misdescribe the decision rule.
+
+    **What this interval does not cover.** Between-trial sampling variation
+    only. It says nothing about uncertainty in the normative reference itself,
+    about pipeline-versus-reference mismatch, about the score model, or about
+    bias from which trials were retained. A tight interval here means the trials
+    agreed, not that the number is right.
     """
     n = len(values)
     mean = sum(values) / n
     if n < 2:
         return (mean, None, None)
     sd = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
-    half = coverage_t * sd / math.sqrt(n)
+    half = t_multiplier(n) * sd / math.sqrt(n)
     return (mean, mean - half, mean + half)
 
 
@@ -311,10 +355,23 @@ def format_report(scores, status, mean, detail, strides):
         lines.append("  the between-subject variation the score exists to "
                      "detect.")
     else:
-        lines.append("  Reading: not settled by the score alone. If the legs "
-                     "disagree, that asymmetry is")
-        lines.append("  the thing to look at -- it is a per-limb signal a "
-                     "pooled mean would hide.")
+        lines.append("  Reading: not settled by the score alone. INCONCLUSIVE "
+                     "is a no-call, not a pass --")
+        lines.append("  it says this session cannot be placed, which is a "
+                     "reason to look, not to move on.")
+        lines.append("")
+        lines.append("  Do next, in order:")
+        lines.append("    1. session_drift.py on this session. An interval "
+                     "straddling a band is often a")
+        lines.append("       session that moved during it, and a trend is "
+                     "visible where a mean is not.")
+        lines.append("    2. If the legs disagree, treat that as the finding. "
+                     "It is a per-limb signal a")
+        lines.append("       pooled mean hides.")
+        lines.append("    3. Check marker coverage, calibration frame and "
+                     "event detection for this session")
+        lines.append("       before reading the score as anything about the "
+                     "subject.")
 
     lines.append("")
     lines.append("  Relative comparison (trial to trial, leg to leg, session "
@@ -335,10 +392,16 @@ def format_report(scores, status, mean, detail, strides):
 
     if mean is not None and len(strides) >= MIN_STRIDES:
         lines.append("")
-        lines.append("  Caveat: one session. The interval above covers "
-                     "trial-to-trial variation only,")
-        lines.append("  not between-session or between-day repeatability, "
-                     "which is unmeasured here.")
+        lines.append("  Caveat: the interval covers trial-to-trial variation "
+                     "ONLY. It excludes uncertainty")
+        lines.append("  in the normative reference, pipeline-versus-reference "
+                     "mismatch, the score model,")
+        lines.append("  and bias from which trials were retained. A tight "
+                     "interval means the trials")
+        lines.append("  agreed, not that the number is right. It also assumes "
+                     "trials are exchangeable,")
+        lines.append("  which a drifting session violates -- run "
+                     "session_drift.py before trusting it.")
     return "\n".join(lines)
 
 
