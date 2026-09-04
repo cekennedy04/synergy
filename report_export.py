@@ -434,17 +434,43 @@ def _build_confidence_page(confidence):
         )
         return figure
 
-    lines = []
+    # One row per segment: a tier chip, the segment, its RMS, then the
+    # accessibility sentence. Until 2026-09-04 this page rendered every tier
+    # as identical black text, so the one thing a tier is for -- letting a
+    # clinician find the doubtful segment without reading -- did not survive
+    # the export. The GUI showed chips; the PDF a wall of prose.
+    y = 0.88
     for segment_name, row in segments.items():
         row = row or {}
-        rms = row.get("rms_deg")
-        rms_display = f"{rms:.1f} deg RMS" if isinstance(rms, (int, float)) else "not scored"
-        label_text = row.get("label_text") or "not scored"
-        lines.append(f"{segment_name}: {label_text} ({rms_display})")
+        tier = row.get("display_tier") or row.get("tier") or "not_scored"
+        colours = theme.TIER.get(tier, theme.TIER["not_scored"])
 
-    axis.text(
-        0.05, 0.85, "\n".join(lines), fontsize=11, va="top", ha="left", transform=axis.transAxes,
-    )
+        # Uppercase short tag, per DESIGN.md: the sentence-case treatment is
+        # for the GUI's long in-panel labels, a standalone tag is uppercase.
+        # The tag is also what keeps this readable in greyscale and to a
+        # colourblind reader -- the colour is never the only carrier.
+        axis.text(0.05, y, tier.replace("_", " ").upper(), fontsize=8,
+                  family="monospace", va="center", ha="left", color=colours["fg"],
+                  transform=axis.transAxes,
+                  bbox={"facecolor": colours["bg"], "edgecolor": colours["fg"],
+                        "linewidth": 0.6, "boxstyle": "round,pad=0.35"})
+
+        axis.text(0.26, y, str(segment_name), fontsize=10, va="center",
+                  ha="left", transform=axis.transAxes)
+
+        rms = row.get("rms_deg")
+        rms_display = (f"{rms:.1f} deg RMS" if isinstance(rms, (int, float))
+                       else "not scored")
+        axis.text(0.60, y, rms_display, fontsize=10, family="monospace",
+                  va="center", ha="left", color=theme.INK_2,
+                  transform=axis.transAxes)
+        y -= 0.035
+
+        label_text = row.get("label_text")
+        if label_text:
+            y = _wrapped_note(axis, 0.26, y + 0.008, label_text, width=74,
+                              fontsize=8, line_height=0.016)
+        y -= 0.022
     return figure
 
 

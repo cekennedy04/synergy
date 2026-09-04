@@ -565,3 +565,74 @@ def test_the_metadata_caveat_keeps_a_right_margin(mod):
 
     assert "stance-phase foot velocity" in " ".join(lines)
     assert max(len(line) for line in lines) <= 95
+
+
+def _tier_chips(figure):
+    """Every text artist drawn with a filled bbox -- i.e. the tier chips."""
+    return [t for t in figure.axes[0].texts if t.get_bbox_patch() is not None]
+
+
+def test_each_confidence_tier_is_drawn_in_its_own_design_md_colours(mod):
+    """This page rendered every tier as identical black text, so the one
+    thing a tier is for -- letting a clinician find the doubtful segment
+    without reading every line -- did not survive the export. The GUI showed
+    chips; the PDF a wall of prose."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {
+            "pelvis": {"display_tier": "high", "rms_deg": 2.0},
+            "femur_r": {"display_tier": "medium", "rms_deg": 6.8},
+            "tibia_l": {"display_tier": "low", "rms_deg": 14.3},
+            "calcn_l": {"display_tier": "not_scored", "rms_deg": None},
+        },
+    })
+    chips = _tier_chips(figure)
+    assert len(chips) == 4
+
+    backgrounds = [chip.get_bbox_patch().get_facecolor() for chip in chips]
+    assert len(set(backgrounds)) == 4, (
+        "tiers are not visually distinguishable from one another")
+
+    # And they are DESIGN.md's values, not four colours invented here.
+    from matplotlib.colors import to_rgba
+    expected = {to_rgba(mod.theme.TIER[t]["bg"])
+                for t in ("high", "medium", "low", "not_scored")}
+    assert set(backgrounds) == expected
+
+
+def test_the_tier_is_readable_without_colour(mod):
+    """Colour is never the only carrier -- the same rule figure_theme applies
+    to limbs. A greyscale print, or a colourblind reader, must still get the
+    tier."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {"tibia_l": {"display_tier": "low", "rms_deg": 14.3}},
+    })
+    assert [chip.get_text() for chip in _tier_chips(figure)] == ["LOW"]
+
+
+def test_a_segment_with_no_tier_falls_back_rather_than_raising(mod):
+    """A partially-shaped row must not take the whole page down."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {"calcn_l": {"rms_deg": None, "label_text": "no mapping"}},
+    })
+    assert [chip.get_text() for chip in _tier_chips(figure)] == ["NOT SCORED"]
+
+
+def test_the_accessibility_sentence_survives_and_is_wrapped(mod):
+    """KTD5's full sentence is the accessible form of the tier. It must be on
+    the page, and inside the margins."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {"tibia_l": {
+            "display_tier": "low", "rms_deg": 14.3,
+            "label_text": ("Low agreement with the suit's own onboard "
+                           "estimate. Treat this segment's angles as "
+                           "unreliable for this trial.")}},
+    })
+    lines = [line for t in figure.axes[0].texts
+             for line in t.get_text().split("\n")]
+
+    assert "unreliable for this trial" in " ".join(lines)
+    assert max(len(line) for line in lines) <= 95

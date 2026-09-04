@@ -226,12 +226,29 @@ def render_all(out_dir):
                           "symmetry": None},
     }), "report_5_metrics")
 
+    # All four tiers, because a page showing only one cannot show whether the
+    # tiers are distinguishable -- which is the entire job of this page. The
+    # label_text values are the real accessibility sentences (KTD5), long
+    # enough to test their own wrapping. calcn_l deliberately carries no
+    # display_tier, exercising the fallback a partially-shaped row would hit.
     save(export._build_confidence_page({
         "available": True,
-        "segments": {"pelvis": {"label_text": "High agreement", "rms_deg": 2.1},
-                     "femur_r": {"label_text": "Medium agreement", "rms_deg": 6.8},
-                     "tibia_l": {"label_text": "Low agreement", "rms_deg": 14.3},
-                     "calcn_l": {"label_text": "Not scored", "rms_deg": None}},
+        "segments": {
+            "pelvis": {"display_tier": "high", "rms_deg": 2.1,
+                       "label_text": "High agreement with the suit's own "
+                                     "onboard estimate."},
+            "femur_r": {"display_tier": "medium", "rms_deg": 6.8,
+                        "label_text": "Medium agreement with the suit's own "
+                                      "onboard estimate; interpret this "
+                                      "segment with care."},
+            "tibia_l": {"display_tier": "low", "rms_deg": 14.3,
+                        "label_text": "Low agreement with the suit's own "
+                                      "onboard estimate. Treat this segment's "
+                                      "angles as unreliable for this trial."},
+            "calcn_l": {"rms_deg": None,
+                        "label_text": "Not scored: no mapping is defined "
+                                      "between this segment and a suit joint."},
+        },
     }), "report_6_confidence")
     save(export._build_not_available_page(
         "Joint-angle curve: knee_angle_l",
