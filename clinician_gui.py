@@ -94,8 +94,9 @@ def _load_xsens_to_opensim():
 def _load_gait_analysis_ucm_fixed():
     """KTD3: the bug-fixed copy, not the original gait_analysis_UCM.py --
     see that file's own module docstring for the full list of fixes,
-    including allow_manual_entry=False turning a blocking input() prompt
-    into a catchable exception. Loaded lazily, only when a real pipeline
+    including the allow_manual_entry seam: without a provider it turns a
+    blocking input() prompt into a catchable exception, and with one it
+    routes to a picker instead. Loaded lazily, only when a real pipeline
     run needs it -- this module transitively imports opensim and utils.py
     (via utilsKinematics.py), so importing clinician_gui.py itself never
     requires either to be installed/configured.
@@ -176,11 +177,16 @@ class MvnxParsingError(Exception):
 
 
 class GaitAnalysisFailedError(Exception):
-    """Wraps gait_analysis_UCM_fixed.gait_analysis raising while
-    allow_manual_entry=False -- automatic gait-event (heel-strike/toe-off)
-    detection failed and, since this GUI always disables manual entry
-    (KTD3), the class raises a catchable exception instead of blocking on
-    stdin (R5)."""
+    """Wraps gait_analysis_UCM_fixed.gait_analysis raising because no gait
+    cycle could be obtained: prominence escalation failed, auto-trim failed,
+    and the operator picked nothing when the picker opened (or, on a batch
+    run, was never asked).
+
+    Since 2026-09-03 a single-trial GUI run does reach manual entry -- see
+    start_pipeline_thread's ManualEventRequest handshake -- so this no longer
+    means "manual entry was disabled". It still never blocks on stdin: the
+    provider satisfies gait_analysis's prompt, and run_batch's isolated
+    trials pass no provider and keep allow_manual_entry False (R5)."""
 
 
 class FootProgressionAnalysisError(Exception):
@@ -245,21 +251,21 @@ def map_error_to_message(exc):
             "different .mvnx file."
         )
     elif isinstance(exc, GaitAnalysisFailedError):
+        # Reached only after the picker has already been offered and declined
+        # (or closed): the run opens it automatically once prominence
+        # escalation and auto-trim have both failed. Before 2026-09-03 the GUI
+        # never asked, and this message was a dead end that sent a clinician
+        # back to re-record a perfectly good trial.
         message = (
-            "Automatic gait-event (heel-strike/toe-off) detection failed for "
-            "this trial, so gait-cycle metrics could not be computed. This "
-            "can happen with a very short recording, non-walking motion, or "
+            "Gait-cycle metrics could not be computed for this trial.\n\n"
+            "Automatic gait-event (heel-strike/toe-off) detection failed, and "
+            "no events were picked by hand when the picker opened. This can "
+            "happen with a very short recording, non-walking motion, or "
             "noisy/incomplete tracking data.\n\n"
-            # A recording that genuinely is walking is usually recoverable by
-            # hand, and until 2026-09-03 this message was a dead end that sent
-            # the clinician back to re-record a perfectly good trial. The
-            # picker cannot open here -- this runs on a background thread,
-            # where a matplotlib window deadlocks -- so it is named rather
-            # than offered.
-            "If this is a walking trial, you can pick the gait events by "
-            "hand instead of re-recording. The conversion this run already "
-            "produced is kept, so recovery re-analyses it rather than "
-            "starting over. From the repo folder, run:\n\n"
+            "If this is a walking trial, run it again and pick the events in "
+            "the picker window rather than closing it. The conversion this "
+            "run produced is kept, so you can also recover it without "
+            "re-running the conversion -- from the repo folder:\n\n"
             "    python rescue_trial.py --session <session folder> "
             "--trial <trial name>\n\n"
             "Otherwise, try a longer or cleaner recording of the same "
@@ -318,13 +324,16 @@ def _resolve_trial_name(mvnx_path):
 def run_pipeline(session_dir, mvnx_path, progress_callback=None,
                   xsens_module=None, gait_fixed_module=None,
                   foot_progression_module=None, xtoo_module=None,
-                  combine_module=None, conversion=None):
+                  combine_module=None, conversion=None,
+                  manual_event_provider=None):
     """Runs the full conversion + gait-analysis pipeline for one trial
     (KTD3, KTD4's Approach step 1): build_orientations_sto -> calibrate_model
     -> run_imu_ik (xsens_to_opensim.py), then compute_foot_progression_angles,
     then two gait_analysis_UCM_fixed.gait_analysis instantiations (leg='r'
     and leg='l', both fed the same foot-progression-angle output), each with
-    allow_manual_entry=False and modelName=Path(model_file).name.
+    modelName=Path(model_file).name and whatever manual_event_provider the
+    caller supplied -- allow_manual_entry follows that provider rather than
+    being set independently (see _run_gait_stages).
 
     Pure w.r.t. Tk: takes/returns plain data, reports progress via a plain
     callback(str) rather than touching any widget, and raises one of this
@@ -394,6 +403,7 @@ def run_pipeline(session_dir, mvnx_path, progress_callback=None,
     return _run_gait_stages(
         session_dir, mvnx_path, trial_name, paths, mot_path, conversion,
         gait_fixed_module, foot_progression_module, combine_module, _progress,
+        manual_event_provider=manual_event_provider,
     )
 
 
@@ -896,19 +906,97 @@ def run_batch(session_dir, mvnx_dir, progress_callback=None, conversion=None,
     }
 
 
+class ManualEventRequest:
+    """One trial's picker, handed from the pipeline thread to the main thread.
+
+    The pipeline runs on a background daemon thread. A matplotlib window
+    created there deadlocks -- measured 2026-09-03, the worker never returns
+    and matplotlib warns about it on the way in -- so the worker cannot open
+    the picker itself. It posts one of these and waits; the main thread opens
+    the window in its `root.after` poll, marks this same picker, and releases
+    the worker.
+
+    Three ways out, and all of them must release the worker, because a thread
+    parked on an Event nobody sets is the failure this whole class exists to
+    avoid:
+
+      answer()    the operator finished -- picked events, or declined
+      fail(exc)   the picker could not be shown; the worker re-raises
+      abandon()   nobody is going to answer (GUI closing, no handler wired),
+                  which segmentation reads as a decline and reports auto-trim's
+                  own reason for the failure
+    """
+
+    def __init__(self, picker, trial_name=""):
+        self.picker = picker
+        self.trial_name = trial_name
+        self.error = None
+        self.abandoned = False
+        self._done = threading.Event()
+
+    def answer(self):
+        self._done.set()
+
+    def fail(self, exc):
+        self.error = exc
+        self._done.set()
+
+    def abandon(self):
+        # Deliberately not an error. The picker is left empty, which
+        # segment_walking reads as the operator declining, so the trial fails
+        # with auto-trim's reason rather than a message blaming a person who
+        # was never asked.
+        self.abandoned = True
+        self._done.set()
+
+    def wait(self, timeout=None):
+        return self._done.wait(timeout)
+
+
+def queue_manual_event_provider(result_queue):
+    """A `manual_event_provider` that asks the main thread to show the picker.
+
+    Satisfies gait_analysis's contract exactly: called synchronously from
+    inside `segment_walking`, marks the picker it was handed, returns None.
+    What it does in between is block, which is the whole point -- returning
+    early would let segmentation read an untouched picker as a decline.
+    """
+    def provider(picker):
+        request = ManualEventRequest(
+            picker, trial_name=getattr(picker.motion, "name", "") or "")
+        result_queue.put(("manual_events", request))
+        request.wait()
+        if request.error is not None:
+            raise request.error
+        return None
+    return provider
+
+
 def start_pipeline_thread(session_dir, mvnx_path, result_queue, **pipeline_kwargs):
     """Starts (and returns) a background threading.Thread running
     run_pipeline(), posting progress/result/error messages onto
     result_queue as (kind, payload) tuples: ("progress", str),
-    ("result", dict), or ("error", str) -- the error string is always
-    already routed through map_error_to_message (KTD4, KTD10).
+    ("result", dict), ("error", str) -- the error string is always already
+    routed through map_error_to_message (KTD4, KTD10) -- or
+    ("manual_events", ManualEventRequest) when a trial needs a human.
 
     Factored out of ClinicianGUI so tests can drive it directly against a
     real queue.Queue with injected fake pipeline_kwargs (xsens_module=...,
     etc.), without instantiating any Tk widgets.
+
+    The provider is wrapped in `reuse_across_legs`: `_run_gait_stages` builds
+    gait_analysis twice, and a trial auto-trim could not segment failed for
+    both legs, so an unwrapped provider would open two windows for one trial
+    and take two answers that need not agree. A caller can pass
+    manual_event_provider=None explicitly to keep a run unattended.
     """
     def progress_callback(message):
         result_queue.put(("progress", message))
+
+    if "manual_event_provider" not in pipeline_kwargs:
+        from gait_event_picker_ui import reuse_across_legs
+        pipeline_kwargs["manual_event_provider"] = reuse_across_legs(
+            queue_manual_event_provider(result_queue))
 
     def _target():
         try:
@@ -925,7 +1013,8 @@ def start_pipeline_thread(session_dir, mvnx_path, result_queue, **pipeline_kwarg
     return thread
 
 
-def drain_queue(result_queue, on_progress, on_result, on_error, on_batch=None):
+def drain_queue(result_queue, on_progress, on_result, on_error, on_batch=None,
+                on_manual_events=None):
     """Synchronously drains result_queue, dispatching each message to the
     matching callback. No Tk dependency -- ClinicianGUI's
     _poll_pipeline_queue schedules this via root.after(...) and wires
@@ -954,6 +1043,18 @@ def drain_queue(result_queue, on_progress, on_result, on_error, on_batch=None):
             if on_batch is not None:
                 on_batch(payload)
             terminal = True
+        elif kind == "manual_events":
+            # NOT terminal: the pipeline is mid-run and blocked on this
+            # answer. Ending the poll here would collect the answer and then
+            # never collect the result the run goes on to produce.
+            if on_manual_events is not None:
+                on_manual_events(payload)
+            else:
+                # No handler wired -- an older three-callback caller, or a
+                # headless one. Release the pipeline thread as a decline
+                # rather than leaving it parked on an Event forever; the
+                # trial then fails with auto-trim's own reason.
+                payload.abandon()
         elif kind == "error":
             on_error(payload)
             terminal = True
@@ -2029,9 +2130,43 @@ class ClinicianGUI:
             on_result=self._on_pipeline_result,
             on_error=self._on_pipeline_error,
             on_batch=self._on_batch_result,
+            on_manual_events=self._on_manual_events,
         )
         if not terminal:
             self.root.after(100, self._poll_pipeline_queue)
+
+    def _on_manual_events(self, request):
+        """Open the picker for a trial the automatic rungs could not segment.
+
+        Runs on the main thread -- this is a root.after callback -- which is
+        the whole reason the pipeline thread posts a request instead of
+        opening the window itself.
+
+        Safe to block here. `show_picker_in_tk` uses `wait_window`, a nested
+        Tk event loop, so the GUI stays responsive while the operator picks.
+        The poll is not rescheduled until this returns, which is what we want:
+        progress messages queue up behind the answer and are drained straight
+        after, and nothing re-enters this method while a picker is open.
+        """
+        self.progress_var.set(
+            "Automatic detection failed for %s - pick the gait events."
+            % (request.trial_name or "this trial"))
+        try:
+            from gait_event_picker_tk import show_picker_in_tk
+            from gait_event_picker_ui import EventPickerModel
+
+            show_picker_in_tk(EventPickerModel(request.picker), self.root)
+        except Exception as exc:  # noqa: BLE001 -- the worker re-raises it
+            # Handed to the pipeline thread rather than shown here: it is
+            # mid-run and blocked, and its own failure path routes through
+            # map_error_to_message like every other stage.
+            request.fail(exc)
+            return
+        picked = sum(request.picker.counts().values())
+        self.progress_var.set(
+            "Using %d hand-picked gait event(s)..." % picked if picked
+            else "No events picked; falling back to automatic trimming...")
+        request.answer()
 
     def _on_pipeline_result(self, result):
         self.last_result = result

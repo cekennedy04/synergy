@@ -242,13 +242,36 @@ def test_the_gui_failure_message_names_the_recovery_tool():
         "the clinician that the trial can be recovered by hand-picking.")
 
 
-def test_the_gui_still_runs_unattended_by_default():
-    """Naming the tool must not have wired a window into the GUI's own
-    pipeline thread, where it deadlocks."""
+def test_the_gui_never_opens_a_picker_on_its_pipeline_thread():
+    """The GUI does ask a human now -- but through the ManualEventRequest
+    handshake, which opens the window on the main thread. Calling a picker
+    directly from clinician_gui would put it back on the worker thread, where
+    it deadlocks.
+
+    So the module must reach the picker only via the queue provider, never via
+    the pyplot window `Examples/gaitAnalysis-UCM.py` and `rescue_trial.py` use.
+    """
     source = (REPO_ROOT / "clinician_gui.py").read_text(encoding="utf-8")
 
-    assert "make_manual_event_provider" not in source
-    assert source.count("allow_manual_entry=False") >= 1
+    assert "make_manual_event_provider" not in source, (
+        "clinician_gui reaches the standalone pyplot picker, which calls "
+        "plt.show() -- a second Tk mainloop, from the pipeline thread.")
+    assert "queue_manual_event_provider" in source
+    assert "show_picker_in_tk" in source, (
+        "the GUI must open the Tk-embedded picker, not a pyplot window.")
+
+
+def test_the_tk_picker_is_only_opened_from_the_main_thread():
+    """`_on_manual_events` is a root.after callback -- the main thread -- and
+    is the only place the window is built. A pipeline-thread call site would
+    reintroduce the deadlock this whole handshake exists to remove."""
+    source = (REPO_ROOT / "clinician_gui.py").read_text(encoding="utf-8")
+    opener = source.index("show_picker_in_tk")
+    handler = source.index("def _on_manual_events")
+
+    assert opener > handler, (
+        "show_picker_in_tk is reached outside _on_manual_events; only the "
+        "main thread may build the window.")
 
 
 # -- the whole recovery, on a trial that genuinely fails -------------------

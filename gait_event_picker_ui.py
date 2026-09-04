@@ -375,16 +375,23 @@ def assert_interactive_backend():
             "import time.")
 
 
-def show_picker_window(model):  # pragma: no cover - needs a display
-    """The matplotlib window. Thin on purpose: every decision is in the model.
+def build_picker_view(model, figure):
+    """Draw the whole picker onto `figure` and wire it up. Returns a
+    PickerWindow holding every part a caller (or a test) needs to reach.
 
-    Blocks until the operator closes it, which is what `segment_walking`
-    wants -- it calls this synchronously and reads the picker straight after.
+    Split out of `show_picker_window` on 2026-09-03 so the standalone pyplot
+    window and the Tk-embedded one in `gait_event_picker_tk` are the same
+    picker rather than two that drift apart. Everything here is
+    backend-agnostic: it touches `figure` and matplotlib's own widgets, never
+    pyplot and never tkinter, so it draws on whichever canvas the caller has
+    already attached. Showing and blocking is the only part the two callers
+    genuinely differ on, and that is what each keeps for itself.
+
+    `figure.canvas` must already exist -- the click and motion handlers are
+    connected here.
     """
-    import matplotlib.pyplot as plt
     from matplotlib.widgets import Button, RadioButtons
 
-    assert_interactive_backend()
     motion = model.picker.motion
     if not motion.signals:
         raise ValueError(
@@ -394,10 +401,7 @@ def show_picker_window(model):  # pragma: no cover - needs a display
             "supply them on the timeline.")
 
     frames = range(motion.n_rows)
-    figure, axes = plt.subplots(
-        len(LEG_PANELS), 1, sharex=True, figsize=(13, 7.5))
-    figure.canvas.manager.set_window_title(
-        f"Pick gait events - {motion.name or 'trial'}")
+    axes = figure.subplots(len(LEG_PANELS), 1, sharex=True)
     # top leaves room for a three-line wrapped verdict above the first panel's
     # title. At 0.92 a two-line verdict sat on top of "Right leg".
     figure.subplots_adjust(left=0.22, right=0.98, top=0.88, bottom=0.10)
@@ -488,14 +492,23 @@ def show_picker_window(model):  # pragma: no cover - needs a display
             figure.canvas.draw_idle()
     figure.canvas.mpl_connect('motion_notify_event', on_move)
 
+    # The widgets are carried on the returned object rather than dropped:
+    # matplotlib discards callbacks belonging to garbage-collected widgets, and
+    # the handlers are returned so the click wiring -- the toolbar guard and
+    # the panel-to-leg mapping, neither of which the model can see -- is
+    # reachable by a test instead of being untestable closure.
+    window = PickerWindow(figure=figure, axes=list(axes),
+                          widgets=(radio,), on_click=on_click,
+                          on_move=on_move, redraw=redraw)
+
     done = Button(figure.add_axes([0.02, 0.50, 0.16, 0.06]), 'Use these events')
-    done.on_clicked(lambda _event: plt.close(figure))
+    done.on_clicked(lambda _event: window.close())
 
     def on_cancel(_event):
         # Empties the picker: segment_walking reads an empty set as a decline
         # and falls back to the auto-trim rung rather than failing the trial.
         model.cancel()
-        plt.close(figure)
+        window.close()
     cancel = Button(figure.add_axes([0.02, 0.42, 0.16, 0.06]),
                     'Cancel (use auto-trim)')
     cancel.on_clicked(on_cancel)
@@ -503,16 +516,34 @@ def show_picker_window(model):  # pragma: no cover - needs a display
     clear = Button(figure.add_axes([0.02, 0.34, 0.16, 0.06]), 'Clear all')
     clear.on_clicked(lambda _event: (model.clear(), redraw()))
 
+    window.buttons = (done, cancel, clear)
     redraw()
-    window = PickerWindow(figure=figure, axes=list(axes),
-                          widgets=(radio, done, cancel, clear),
-                          on_click=on_click, on_move=on_move, redraw=redraw)
+    return window
+
+
+def show_picker_window(model):  # pragma: no cover - needs a display
+    """The standalone matplotlib window, for a process with no Tk app of its
+    own: `Examples/gaitAnalysis-UCM.py`'s interactive run, and
+    `rescue_trial.py`.
+
+    Blocks until the operator closes it, which is what `segment_walking`
+    wants -- it calls this synchronously and reads the picker straight after.
+
+    Inside the clinician GUI use `gait_event_picker_tk.show_picker_in_tk`
+    instead. `plt.show()` starts a second Tk mainloop next to the one the GUI
+    is already running, and the GUI would be calling this from its pipeline
+    worker thread, where a matplotlib window deadlocks outright (measured
+    2026-09-03).
+    """
+    import matplotlib.pyplot as plt
+
+    assert_interactive_backend()
+    figure = plt.figure(figsize=(13, 7.5))
+    figure.canvas.manager.set_window_title(
+        "Pick gait events - %s" % (model.picker.motion.name or 'trial'))
+    window = build_picker_view(model, figure)
+    window.close = lambda: plt.close(figure)
     plt.show()
-    # The widgets are carried on the returned object rather than dropped:
-    # matplotlib discards callbacks belonging to garbage-collected widgets, and
-    # the handlers are returned so the click wiring -- the toolbar guard and
-    # the panel-to-leg mapping, neither of which the model can see -- is
-    # reachable by a test instead of being untestable closure.
     return window
 
 
@@ -526,6 +557,12 @@ class PickerWindow:
         self.on_click = on_click
         self.on_move = on_move
         self.redraw = redraw
+        self.buttons = ()
+        # Replaced by whoever shows the window -- plt.close for the standalone
+        # figure, destroy() for an embedded Tk toplevel. The default keeps
+        # "Use these events" a no-op rather than an AttributeError if a new
+        # caller forgets to set it.
+        self.close = lambda: None
 
     def __len__(self):
-        return len(self.widgets)
+        return len(self.widgets) + len(self.buttons)
