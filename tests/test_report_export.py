@@ -452,3 +452,56 @@ def test_synergy_figure_handles_a_single_phase_sample(mod):
         {"task_variable": "t", "per_phase": {"delta_v": [0.3], "v_ucm": [1.0],
                                              "v_ort": [0.5]}})
     assert figure is not None
+
+
+def test_long_notes_are_wrapped_rather_than_running_off_the_page(mod):
+    """The GDI basis line ran straight off the right edge of the page, taking
+    with it the sentence saying the score covers the whole session rather
+    than this trial -- the caveat on that page that most needed reading.
+    matplotlib's own wrap=True measures against the figure, not the axes, and
+    did not catch it."""
+    summary = _make_summary_scores()
+    summary["gdi"]["basis"] = (
+        "reduced6 feature set. 100 is the control mean; each 10 points is one "
+        "standard deviation below it. Scored over all 42 strides pooled across "
+        "this session so far, not this trial alone -- it moves as further "
+        "trials are processed.")
+
+    figure = mod._build_summary_page(summary)
+    lines = [t.get_text() for t in figure.axes[0].texts]
+
+    # Joined, because wrapping legitimately splits the phrase across two
+    # lines -- what must not happen is the tail being dropped entirely.
+    assert "not this trial alone" in " ".join(lines), (
+        "the session-vs-trial caveat is not on the page at all")
+    # And every rendered line is short enough to fit the page. A single
+    # 200-character artist is the shape the truncation took.
+    assert max(len(line) for line in lines) <= 95
+
+
+def test_an_unavailable_summary_states_the_reason_rather_than_vanishing(mod):
+    """A report that silently omits the scores looks exactly like one whose
+    scores were fine. The reader cannot tell which they are holding."""
+    figure = mod._build_summary_page(
+        {"unavailable": "No normative GDI reference at context/gdi_reference."})
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "Not available" in rendered
+    assert "normative GDI reference" in rendered
+
+
+def test_a_summary_with_gdi_but_no_synergy_says_why_synergy_is_missing(mod):
+    """The GUI reports GDI and deliberately does not report the synergy
+    index. A page headed 'Summary scores' carrying one of the two reads as
+    though the other failed."""
+    summary = _make_summary_scores()
+    del summary["synergy"]
+    del summary["synergy_detail"]
+    summary["synergy_note"] = ("The synergy index is not reported here -- run "
+                               "session_report.py for that number.")
+
+    figure = mod._build_summary_page(summary)
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "Synergy index" in rendered
+    assert "session_report.py" in rendered

@@ -56,6 +56,14 @@ _REPORT_FORMATTING_PATH = os.path.join(REPO_ROOT, "report_formatting.py")
 _MODULE_LOADING_PATH = os.path.join(REPO_ROOT, "module_loading.py")
 _GAIT_EVENT_PICKER_UI_PATH = os.path.join(REPO_ROOT, "gait_event_picker_ui.py")
 _GAIT_EVENT_PICKER_TK_PATH = os.path.join(REPO_ROOT, "gait_event_picker_tk.py")
+_GDI_SCORING_PATH = os.path.join(REPO_ROOT, "gdi_scoring.py")
+_TRIAL_SCORES_PATH = os.path.join(REPO_ROOT, "trial_scores.py")
+
+# The normative reference GDI is scored against. Lives under context/, which
+# is gitignored -- so a fresh clone has no reference and scoring degrades to a
+# stated reason rather than an error. See compute_summary_scores.
+DEFAULT_GDI_REFERENCE_DIR = os.path.join(
+    REPO_ROOT, "context", "gdi_reference_2026-08-27")
 
 
 def _bootstrap_load_module_loading():
@@ -178,6 +186,93 @@ def _load_gait_event_picker_tk():
     _ensure_repo_root_importable()
     return _load_module_by_path("gait_event_picker_tk_for_clinician_gui",
                                 _GAIT_EVENT_PICKER_TK_PATH)
+
+
+def _load_gdi_scoring():
+    """Lazy, path-based load matching the other pipeline modules.
+
+    Deliberately gdi_scoring and NOT session_report, which computes the same
+    GDI. session_report calls matplotlib.use("Agg") at import, process-wide
+    and irreversibly for this process -- and this process is a GUI that opens
+    a matplotlib picker window. Importing it here would leave every
+    unsegmentable trial silently falling back to auto-trim with the operator
+    never seeing the window. gdi_scoring exists so this import is safe.
+    """
+    return _load_module_by_path("gdi_scoring_for_clinician_gui",
+                                _GDI_SCORING_PATH)
+
+
+def _load_trial_scores():
+    """Lazy, path-based load matching the other pipeline modules."""
+    return _load_module_by_path("trial_scores_for_clinician_gui",
+                                _TRIAL_SCORES_PATH)
+
+
+def compute_summary_scores(session_dir, conversion="ik", reference_dir=None,
+                           gdi_scoring=None, trial_scores=None):
+    """The headline GDI block for the report's summary page, or a reason.
+
+    Returns the `summary_scores` shape `report_export` already consumes, so
+    the summary page and the GDI figure it has been able to draw since
+    2026-09-01 finally receive something to draw. Until 2026-09-04
+    `shape_results_for_display` never produced this key, so a clinician who
+    clicked Export got joint angles and a metrics table and neither of the
+    two numbers the analysis exists to produce.
+
+    **Scored over the session, and it says so.** The GUI processes one trial
+    at a time and pools every trial done so far into the session's own
+    GaitCurves folder, which is what `pooled_paths` reads. So this is the
+    participant's GDI over every stride captured so far, not this trial's --
+    and it moves as more trials are added. Labelling it as the trial's would
+    be wrong in a way a reader could not detect, so the basis line says which
+    it is and how many strides are behind it.
+
+    **No synergy index.** It needs OpenSim, and more to the point UCM
+    decomposes variance across strides -- four to six in a trial is far too
+    thin to split a 15-dimensional nullspace from its complement. That is
+    session_report.py's own argument and this defers to it rather than
+    quoting a number the project says not to quote.
+
+    Never raises. A missing reference (context/ is gitignored, so a fresh
+    clone has none), an unpooled session, or a malformed matrix all come back
+    as {"unavailable": <reason>} -- the export writes a page saying so, which
+    is the same contract every other section here follows.
+    """
+    gdi_scoring = gdi_scoring or _load_gdi_scoring()
+    trial_scores = trial_scores or _load_trial_scores()
+    reference_dir = reference_dir or DEFAULT_GDI_REFERENCE_DIR
+
+    if not os.path.isdir(reference_dir):
+        return {"unavailable":
+                f"No normative GDI reference at {reference_dir}. GDI is scored "
+                "against a control cohort, so without it there is no scale to "
+                "report a number on."}
+    try:
+        scored = gdi_scoring.score_pooled_gdi(session_dir, reference_dir,
+                                              conversion)
+    except FileNotFoundError as exc:
+        return {"unavailable": str(exc)}
+    except Exception as exc:                              # noqa: BLE001
+        # Non-fatal by design: a scoring failure must not cost the operator
+        # the joint angles, metrics and confidence that did compute.
+        return {"unavailable":
+                f"GDI could not be scored ({type(exc).__name__}): {exc}"}
+
+    summary = trial_scores.summary_for_report(scored["gdi"], synergy=None)
+    if not summary:
+        return {"unavailable": "No pooled strides scored for either side."}
+
+    strides = sum(entry["n_strides"] for entry in scored["gdi"].values()
+                  if isinstance(entry, dict))
+    summary["gdi"]["basis"] = (
+        summary["gdi"]["basis"] + " Scored over all "
+        f"{strides} strides pooled across this session so far, not this trial "
+        "alone -- it moves as further trials are processed.")
+    summary["synergy_note"] = (
+        "The synergy index is not reported here. It decomposes variance "
+        "across strides, and a session is the smallest defensible basis for "
+        "it -- run session_report.py for that number.")
+    return summary
 
 
 def _load_xtoo():
@@ -638,8 +733,21 @@ def _run_gait_stages(session_dir, mvnx_path, trial_name, paths, mot_path,
         _progress(f"Combining across trials failed ({type(exc).__name__}): "
                   f"{exc}. This trial's own results are unaffected.")
 
+    # Stage 7: score the pooled matrix stage 6 just rebuilt. Runs here, on
+    # the pipeline worker thread, so the Export button never blocks the UI on
+    # a computation -- KTD4's freeze risk applies to anything heavier than
+    # rendering, and this reads every stride in the session.
+    #
+    # Non-fatal like the two stages above it: a session with no reference
+    # data, or no pooled matrix yet, still has valid joint angles, metrics and
+    # confidence to report. compute_summary_scores returns the reason instead
+    # of raising, and the export writes a page carrying it.
+    _progress("Scoring GDI across the session...")
+    summary_scores = compute_summary_scores(session_dir, conversion)
+
     _progress("Finalizing results...")
     return {
+        "summary_scores": summary_scores,
         "session_dir": session_dir,
         "mvnx_path": mvnx_path,
         "trial_name": trial_name,
@@ -1782,6 +1890,12 @@ def shape_results_for_display(result, xsens_module=None, joint_confidence_module
         "curves": curves,
         "metrics": metrics,
         "confidence": confidence,
+        # Passed through from run_pipeline's stage 7 rather than computed
+        # here: this function is called on the main thread to build widgets,
+        # and scoring every stride in the session is not main-thread work.
+        # A result dict without the key (an older run, or a caller that
+        # builds its own) yields no summary page rather than an error.
+        "summary_scores": result.get("summary_scores") or {},
         "outputs": shape_output_files_for_display(result),
         "output_folder": str(result.get("session_dir", "")),
     }

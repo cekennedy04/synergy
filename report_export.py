@@ -28,6 +28,7 @@ export.
 import importlib.util
 import os
 import sys
+import textwrap
 
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
@@ -69,6 +70,24 @@ _report_formatting = _module_loading.load_module_by_path(
 theme = _module_loading.load_module_by_path(
     "figure_theme_for_report_export", _FIGURE_THEME_PATH
 )
+
+
+def _wrapped_note(axis, x, y, text, width=88, fontsize=9, line_height=0.018):
+    """Draw an italic note, wrapped explicitly, and return the new y.
+
+    matplotlib's own `wrap=True` measures against the *figure* width and is
+    unreliable on a text placed in axes coordinates: the GDI basis line ran
+    straight off the right edge of the page, taking with it the sentence
+    saying the score covers the session rather than this trial -- which is
+    the caveat that most needed reading. textwrap is deterministic, and it is
+    what gait_event_picker_ui already uses for the same reason.
+    """
+    lines = textwrap.wrap(text, width) or [""]
+    for line in lines:
+        axis.text(x, y, line, fontsize=fontsize, style="italic", va="top",
+                  transform=axis.transAxes)
+        y -= line_height
+    return y
 
 
 def _new_text_page():
@@ -131,12 +150,23 @@ def _build_summary_page(summary):
     summary = summary or {}
     gdi = summary.get("gdi") or {}
     synergy = summary.get("synergy") or {}
-    if not gdi and not synergy:
+    unavailable = summary.get("unavailable")
+    if not gdi and not synergy and not unavailable:
         return None
 
     figure, axis = _new_text_page()
     axis.text(0.05, 0.95, "Summary scores", fontsize=18, fontweight="bold",
               va="top", ha="left", transform=axis.transAxes)
+
+    # A stated reason, not a missing page. A report that simply omits the
+    # scores looks the same as one whose scores were fine, and the reader
+    # cannot tell which they are holding.
+    if unavailable:
+        axis.text(0.05, 0.85, "Not available", fontsize=13,
+                  fontweight="bold", va="top", transform=axis.transAxes)
+        _wrapped_note(axis, 0.05, 0.79, unavailable, fontsize=10,
+                      line_height=0.020)
+        return figure
 
     y = 0.82
     if gdi:
@@ -152,9 +182,8 @@ def _build_summary_page(summary):
                   fontsize=22, va="top", family="monospace",
                   transform=axis.transAxes)
         y -= 0.055
-        axis.text(0.08, y, gdi.get("basis", ""), fontsize=9, style="italic",
-                  va="top", transform=axis.transAxes)
-        y -= 0.09
+        y = _wrapped_note(axis, 0.08, y, gdi.get("basis", ""))
+        y -= 0.07
 
     if synergy:
         axis.text(0.05, y, "Synergy index", fontsize=13, fontweight="bold",
@@ -168,9 +197,19 @@ def _build_summary_page(summary):
         # methodologies reverses with it, so a dV without it is not
         # interpretable.
         for line in synergy.get("notes", []):
-            axis.text(0.08, y, line, fontsize=9, style="italic", va="top",
-                      wrap=True, transform=axis.transAxes)
-            y -= 0.035
+            y = _wrapped_note(axis, 0.08, y, line)
+            y -= 0.017
+
+    # Said out loud when there is no synergy block at all. A page headed
+    # "Summary scores" that carries one score reads as though the other was
+    # not computed, or worse as though this analysis has only one; the note
+    # says it is a deliberate omission and where the number lives.
+    note = summary.get("synergy_note")
+    if note and not synergy:
+        axis.text(0.05, y, "Synergy index", fontsize=13, fontweight="bold",
+                  va="top", transform=axis.transAxes)
+        y -= 0.06
+        _wrapped_note(axis, 0.08, y, note)
     return figure
 
 
