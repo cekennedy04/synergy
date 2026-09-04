@@ -14,6 +14,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -232,3 +234,40 @@ def test_root_orientation_has_no_jacobian_column(tasks):
     assert np.linalg.norm(jacobian[:, 0]) < 1e-9, (
         "pelvis_rotation must have a zero Jacobian column for a pelvis-relative "
         f"task; got norm {np.linalg.norm(jacobian[:, 0]):.3e}")
+
+
+def test_a_model_without_the_pelvis_protocol_says_so_rather_than_going_quiet(
+        tasks, caplog):
+    """The fallback returns the GROUND-frame reading, which is the 2026-09-03
+    defect itself. It is kept so the suite's minimal fakes work, but a real
+    backend reaching it would compute a task variable that absolute heading
+    feeds into, with nothing downstream able to tell. It has to be audible."""
+    class NoPelvisProtocol(FakeModel):
+        """Implements only what the original task needed -- no
+        pelvis_rotation_matrix, no pelvis_origin."""
+
+    task = tasks.PelvisRelativeComTask(NoPelvisProtocol(), ["knee_angle_r"])
+
+    with caplog.at_level(logging.WARNING):
+        task.evaluate([10.0])
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("not pelvis-relative" in m for m in messages), (
+        "a degraded frame must be announced, not inferred from a wrong number")
+    assert any("GROUND frame" in m for m in messages)
+
+
+def test_the_warning_is_issued_once_not_per_evaluation(tasks, caplog):
+    """A Jacobian finite-differences the task many times per stride. A warning
+    per call would bury the run's real output."""
+    class NoPelvisProtocol(FakeModel):
+        """As above."""
+
+    task = tasks.PelvisRelativeComTask(NoPelvisProtocol(), ["knee_angle_r"])
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            task.evaluate([10.0])
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, f"expected one warning, got {len(warnings)}"
