@@ -131,13 +131,21 @@ def session_scores(session_dir, reference_dir, conversion="ik",
             result["by_trial"][side] = gdi_by_trial(per_stride, trials)
     result["gdi"]["feature_set"] = feature_set.name
 
-    result["synergy"] = None
+    result["synergy"] = {}
     if model_path:
         # Over every pooled stride: this is the whole point of doing it at
         # session level rather than per trial.
-        right = paths.get("right") or next(iter(paths.values()))
-        result["synergy"] = scores_mod.synergy_for_trial(
-            str(right["matrix"]), model_path)
+        #
+        # Keyed by side, matching `gdi` above. GDI is a per-limb score by
+        # definition, and while this was a single unkeyed value a cohort-level
+        # GDI-vs-synergy comparison could pair a left GDI with a right synergy
+        # index with nothing downstream able to tell. The previous code read
+        # `paths.get("right") or next(iter(paths.values()))`, so a session
+        # without a right side scored whichever limb happened to come first
+        # and labelled it nothing.
+        for side, entry in paths.items():
+            result["synergy"][side] = scores_mod.synergy_for_trial(
+                str(entry["matrix"]), model_path)
     return result
 
 
@@ -230,7 +238,17 @@ def _gdi_trend_figure(scores):
 def build_report(scores, pdf_path, export=None):
     export = export or _load("_export_for_session", "report_export.py")
     scores_mod = _load("_scores_fmt_for_session", "trial_scores.py")
-    summary = scores_mod.summary_for_report(scores["gdi"], scores.get("synergy"))
+    # The summary page shows one synergy figure, so the report has to choose a
+    # limb -- but it must say which. Preferring right keeps the existing
+    # reports comparable; naming it is what stops a reader pairing it with the
+    # other limb's GDI, which is the whole reason this is keyed by side.
+    synergy_by_side = scores.get("synergy") or {}
+    synergy_side = "right" if "right" in synergy_by_side else next(
+        iter(sorted(synergy_by_side)), None)
+    synergy = synergy_by_side.get(synergy_side)
+
+    summary = scores_mod.summary_for_report(scores["gdi"], synergy,
+                                            side=synergy_side)
 
     pdf_path = Path(pdf_path)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,8 +259,7 @@ def build_report(scores, pdf_path, export=None):
             pdf.savefig(page)
         for builder, payload in ((export._build_gdi_figure, scores["gdi"]),
                                  (_gdi_trend_figure, scores),
-                                 (export._build_synergy_figure,
-                                  scores.get("synergy"))):
+                                 (export._build_synergy_figure, synergy)):
             page = builder(payload)
             if page is not None:
                 pdf.savefig(page)

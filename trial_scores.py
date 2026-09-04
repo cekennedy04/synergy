@@ -234,7 +234,7 @@ GDI_NORMATIVE_MEAN = 100.0
 GDI_NORMATIVE_SD = 10.0
 
 
-def summary_for_report(gdi_scores=None, synergy=None):
+def summary_for_report(gdi_scores=None, synergy=None, side=None):
     """The headline block for the report's second page.
 
     Display strings are built here rather than in report_export, so the
@@ -271,6 +271,13 @@ def summary_for_report(gdi_scores=None, synergy=None):
                               f"(synergy in {synergy['phases_with_synergy']} of "
                               f"{synergy['n_phases']} phases)"),
             "notes": [
+                # Named, not implied. GDI is reported per limb directly above
+                # this block; an unlabelled synergy figure invites the reader
+                # to pair it with whichever GDI is nearer on the page.
+                (f"Limb: {side}. GDI above is reported per limb -- read this "
+                 f"against the {side} GDI, not the other one."
+                 if side else
+                 "Limb: not recorded. Do not pair this with either GDI."),
                 f"Task variable: {synergy['task_variable']}.",
                 f"{synergy['n_dof']} degrees of freedom; "
                 f"{synergy['dim_ucm']} uncontrolled, {synergy['dim_ort']} orthogonal.",
