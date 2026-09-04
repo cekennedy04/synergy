@@ -8,6 +8,8 @@ The model is injected rather than constructed here, so the maths is testable
 without OpenSim (which lives in the opencap-processing env and has no pytest)
 and so a different backend can be substituted.
 """
+import logging
+
 import numpy as np
 
 # Zeroed on every evaluation so the COM is expressed relative to the pelvis
@@ -82,8 +84,28 @@ class _PelvisRelativeTask:
         rotation = getattr(self.model, "pelvis_rotation_matrix", None)
         origin = getattr(self.model, "pelvis_origin", None)
         if rotation is None or origin is None:
+            # Falling back returns the GROUND-frame reading -- which is
+            # precisely the defect this method exists to fix. Kept so the
+            # suite's minimal fakes still work, but never silently: a real
+            # backend that reaches this line is producing a task variable that
+            # absolute heading feeds into, and nothing downstream can tell.
+            self._warn_not_pelvis_relative()
             return position
         return np.asarray(rotation()).T @ (position - np.asarray(origin()))
+
+    def _warn_not_pelvis_relative(self):
+        """Say once per task that the frame correction is not being applied."""
+        if getattr(self, "_frame_warning_issued", False):
+            return
+        self._frame_warning_issued = True
+        logging.getLogger(__name__).warning(
+            "%s does not implement pelvis_rotation_matrix()/pelvis_origin(), "
+            "so the task variable is being read in the GROUND frame. It is "
+            "not pelvis-relative: a rigid whole-body rotation will move it, "
+            "and absolute lab heading becomes an input to the UCM "
+            "decomposition. This is the 2026-09-03 defect. Any synergy index "
+            "computed this way is not comparable with one that is.",
+            type(self.model).__name__)
 
     def _read(self):
         raise NotImplementedError
@@ -174,8 +196,15 @@ class OpenSimModel:
         coordinate.setValue(self.state, float(value_radians), False)
 
     def body_position(self, body_name):
-        """Origin of a body in ground. With the pelvis translation zeroed by
-        the task, this is the body's position relative to the pelvis."""
+        """Origin of a body in ground.
+
+        In GROUND, not relative to the pelvis. This docstring used to claim
+        that zeroing pelvis_tx/ty/tz made it pelvis-relative, which is the
+        belief that produced the 2026-09-03 defect: zeroing the translations
+        removes the root's position and leaves its ORIENTATION, so a rigid
+        whole-body rotation still moved the reading. Anything wanting a
+        pelvis-relative position must go through
+        `_PelvisRelativeTask._to_pelvis_frame`."""
         self.model.realizePosition(self.state)
         body = self.model.getBodySet().get(body_name)
         position = body.getPositionInGround(self.state)
