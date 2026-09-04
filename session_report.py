@@ -55,6 +55,13 @@ def _load(name, filename):
     return module
 
 
+# The shared palette. Loaded eagerly and by path, matching how this file
+# reaches every other sibling. Until 2026-09-04 the four colours below were
+# copied here from report_export.py rather than shared, so the two reports
+# that quote the same GDI drew its normative band in two different greens.
+theme = _load("_theme_for_session", "figure_theme.py")
+
+
 def pooled_paths(session_dir, conversion="ik"):
     """The session's pooled matrix per side, and its index sidecar."""
     curves = Path(session_dir) / "GaitCurves"
@@ -198,15 +205,22 @@ def _gdi_trend_figure(scores):
         return None
     figure = Figure(figsize=PAGE_SIZE, dpi=100)
     axis = figure.add_subplot(211)
-    axis.axhspan(90, 110, color="#cfe6cf", alpha=0.6, zorder=0)
-    axis.axhline(100, color="#4a7c4a", linewidth=1.1, zorder=1)
+    band = theme.NORMATIVE_BAND[0]
+    axis.axhspan(band["low"], band["high"], color=band["color"], alpha=0.6,
+                 zorder=0)
+    axis.axhline(100, color=theme.NORMATIVE_MEAN_LINE, linewidth=1.1, zorder=1)
 
-    for side, colour in (("right", "#1f6fb4"), ("left", "#d95f02")):
+    for side in ("right", "left"):
         series = by_trial.get(side)
         if not series:
             continue
+        # Colour, linestyle and marker all carry the limb -- see figure_theme
+        # on why hue alone is not allowed to.
+        style = theme.limb_style(side)
+        colour = style["color"]
         values = list(series.values())
-        axis.plot(range(1, len(values) + 1), values, "o-", color=colour,
+        axis.plot(range(1, len(values) + 1), values, color=colour,
+                  linestyle=style["linestyle"], marker=style["marker"],
                   label=side, markersize=5)
         # A perfectly flat series has zero variance, so corrcoef divides by
         # zero and returns nan -- which would print "r=nan" on a clinical
@@ -224,7 +238,7 @@ def _gdi_trend_figure(scores):
     axis.set_ylabel("GDI", fontsize=10)
     axis.set_title("GDI across the session", fontsize=13, pad=12)
     axis.legend(fontsize=8)
-    axis.grid(alpha=0.25)
+    theme.style_axis(axis)
     axis.text(0.01, -0.42,
               "Trial order should not predict a score: trials are processed "
               "independently, so a monotonic trend here indicates drift in the "

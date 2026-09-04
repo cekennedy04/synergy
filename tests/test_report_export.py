@@ -316,3 +316,139 @@ def test_metadata_page_omits_the_caveat_when_displacement_is_validated(mod):
     rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
 
     assert "stance-phase foot velocity" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# The headline-scores pages (added 2026-09-01, covered 2026-09-04).
+#
+# These three builders -- summary, GDI, synergy -- shipped with no test of
+# any kind, and the page counter that shipped with them was wrong: all three
+# pages were written under a single `page_count += 1` that already belonged
+# to the metadata page, so a six-page report reported three. Nothing caught
+# it because no fixture in this file had ever set "summary_scores".
+#
+# The count is therefore cross-checked against pypdf here rather than against
+# arithmetic repeated from the implementation. Repeating the implementation's
+# own sum is what let the original defect through: the assertion and the code
+# were wrong in the same direction.
+# ---------------------------------------------------------------------------
+
+def _make_summary_scores():
+    return {
+        "gdi": {"right_display": "88.0", "left_display": "91.2",
+                "basis": "100 = control mean, 10 points = 1 SD"},
+        "synergy": {"value_display": "0.42",
+                    "notes": ["task variable: pelvis-relative CoM"]},
+        "gdi_detail": {
+            "right": {"mean": 88.0, "per_stride": [86.4, 88.1, 89.5]},
+            "left": {"mean": 91.2, "per_stride": [90.0, 91.4, 92.2]},
+        },
+        "synergy_detail": {
+            "task_variable": "pelvis-relative CoM",
+            "per_phase": {"delta_v": [0.4, 0.1, -0.2, 0.3],
+                          "v_ucm": [1.2, 1.1, 0.9, 1.3],
+                          "v_ort": [0.8, 1.0, 1.1, 1.0]},
+        },
+    }
+
+
+def _actual_pdf_pages(pdf_path):
+    """The real page count, read back off the file rather than recomputed."""
+    pypdf = pytest.importorskip("pypdf")
+    return len(pypdf.PdfReader(str(pdf_path)).pages)
+
+
+def test_page_count_matches_the_file_when_score_pages_are_present(mod, tmp_path):
+    """The regression the counter actually had: three extra pages written,
+    none of them counted."""
+    shaped_results, curves = _make_full_shaped_results()
+    shaped_results["summary_scores"] = _make_summary_scores()
+    figures = _make_full_figures(curves)
+    pdf_path = tmp_path / "with_scores.pdf"
+
+    result = mod.export_report_to_pdf(str(pdf_path), shaped_results, figures)
+
+    assert result["page_count"] == _actual_pdf_pages(pdf_path)
+    # And the three score pages are genuinely additional, not a relabelling
+    # of pages that were already being written.
+    assert result["page_count"] == len(curves) + 6
+
+
+def test_page_count_matches_the_file_when_scores_are_absent(mod, tmp_path):
+    """The GUI export path, which supplies no summary_scores at all: the
+    count must still agree with the file rather than only agreeing in the
+    case the new pages happen to fire."""
+    shaped_results, curves = _make_full_shaped_results()
+    figures = _make_full_figures(curves)
+    pdf_path = tmp_path / "no_scores.pdf"
+
+    result = mod.export_report_to_pdf(str(pdf_path), shaped_results, figures)
+
+    assert result["page_count"] == _actual_pdf_pages(pdf_path)
+    assert result["page_count"] == len(curves) + 3
+
+
+def test_partial_scores_only_add_the_pages_they_can_fill(mod, tmp_path):
+    """A summary with no per-phase detail must skip the synergy figure rather
+    than emit an empty one -- and the count must follow what was written."""
+    shaped_results, curves = _make_full_shaped_results()
+    summary = _make_summary_scores()
+    del summary["synergy_detail"]
+    shaped_results["summary_scores"] = summary
+    figures = _make_full_figures(curves)
+    pdf_path = tmp_path / "partial_scores.pdf"
+
+    result = mod.export_report_to_pdf(str(pdf_path), shaped_results, figures)
+
+    assert result["page_count"] == _actual_pdf_pages(pdf_path)
+    assert result["page_count"] == len(curves) + 5
+
+
+def test_summary_page_is_skipped_entirely_when_there_is_nothing_to_show(mod):
+    """An empty summary must produce no page rather than a blank one."""
+    assert mod._build_summary_page({}) is None
+    assert mod._build_summary_page(None) is None
+    assert mod._build_summary_page({"gdi": {}, "synergy": {}}) is None
+
+
+def test_summary_page_carries_both_scores_and_the_task_variable(mod):
+    """The task variable is not a footnote: the ranking between
+    methodologies reverses with it, so a dV without it is not interpretable."""
+    figure = mod._build_summary_page(_make_summary_scores())
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "88.0" in rendered and "91.2" in rendered
+    assert "0.42" in rendered
+    assert "pelvis-relative CoM" in rendered
+
+
+def test_gdi_figure_draws_every_stride_not_just_the_mean(mod):
+    """A mean over three scattered strides is much weaker evidence than one
+    over three tight ones, and the mean alone hides which you have."""
+    scores = _make_summary_scores()["gdi_detail"]
+    figure = mod._build_gdi_figure(scores)
+    axis = figure.axes[0]
+
+    plotted = [len(line.get_ydata()) for line in axis.lines]
+    assert 3 in plotted, "per-stride points are missing from the GDI figure"
+
+
+def test_gdi_figure_is_skipped_when_no_side_has_a_score(mod):
+    assert mod._build_gdi_figure(None) is None
+    assert mod._build_gdi_figure({}) is None
+    assert mod._build_gdi_figure({"right": None, "left": None}) is None
+
+
+def test_synergy_figure_is_skipped_without_per_phase_data(mod):
+    assert mod._build_synergy_figure(None) is None
+    assert mod._build_synergy_figure({}) is None
+    assert mod._build_synergy_figure({"per_phase": {"delta_v": []}}) is None
+
+
+def test_synergy_figure_handles_a_single_phase_sample(mod):
+    """len(delta_v) == 1 divides by zero in the percent-of-cycle axis unless
+    it is special-cased; a one-stride trial must not crash the export."""
+    figure = mod._build_synergy_figure(
+        {"task_variable": "t", "per_phase": {"delta_v": [0.3], "v_ucm": [1.0],
+                                             "v_ort": [0.5]}})
+    assert figure is not None

@@ -37,30 +37,46 @@ matplotlib.use("Agg")           # no display on a batch run
 import matplotlib.pyplot as plt
 import numpy as np
 
-# The dataviz reference palette, in its fixed order. Assigned to participants by
-# cohort rank and never cycled -- a seventh participant would need the palette
-# extended deliberately, not a hue generated on the fly.
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
-# Slots 1 and 2 of the same palette: the widest-separated pair it contains
-# (CVD dE 24.7), which is what a two-level distinction should spend.
-SIDE_COLOUR = {"right": "#2a78d6", "left": "#eb6834"}
-SIDE_MARKER = {"right": "o", "left": "s"}
-# Figure 6 encodes subspace, not side. Slots 3 and 7 of the same palette, kept
-# clear of the two that mean right/left everywhere else -- a hue that means
-# "right limb" in five figures must not mean "uncontrolled manifold" in the
-# sixth. Validated as a pair: CVD dE 31.1, normal 35.8.
-V_UCM_COLOUR = "#1baf7a"
-V_ORT_COLOUR = "#4a3aa7"
 
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_2 = "#52514e"
-MUTED = "#898781"
-GRID = "#e1e0d9"
-BASELINE = "#c3c2b7"
+def _load_theme():
+    """figure_theme by path, matching how this file reaches its siblings."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_theme_for_cohort_figures",
+        Path(__file__).resolve().parent / "figure_theme.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The palette moved to figure_theme.py on 2026-09-04. It was reasoned out and
+# CVD-validated here first, and figure_theme adopted this file's choices
+# wholesale rather than the reverse -- the names below are kept as aliases so
+# this file's own prose and its ~50 use sites still read the way they did.
+#
+# What changed in the move: the neutrals. This file carried near-misses of
+# DESIGN.md's ramp (#fcfcfb against #FFFFFF, #0b0b0b against #1F2421,
+# #e1e0d9 against #D8DBD7), which was drift rather than a decision, so they
+# now come from the one place that defines them. The figures regenerate into
+# the gitignored context/ folder, so nothing tracked changes shape.
+_theme = _load_theme()
+
+SERIES = list(_theme.SERIES)
+SIDE_COLOUR = dict(_theme.LIMB)
+SIDE_MARKER = {side: style["marker"]
+               for side, style in _theme.LIMB_STYLE.items()}
+V_UCM_COLOUR = _theme.V_UCM
+V_ORT_COLOUR = _theme.V_ORT
+
+SURFACE = _theme.SURFACE
+INK = _theme.INK
+INK_2 = _theme.INK_2
+MUTED = _theme.BASELINE
+GRID = _theme.GRID
+BASELINE = _theme.BORDER
 # DESIGN.md's normative-agreement green, used only for the GDI reference band.
-BAND = "#E3F3E8"
-BAND_LINE = "#1F6B3B"
+BAND = _theme.NORMATIVE_BAND[0]["color"]
+BAND_LINE = _theme.NORMATIVE_MEAN_LINE
 
 PROSE = ["Times New Roman", "DejaVu Serif", "serif"]
 DATA = ["Cascadia Code", "Consolas", "DejaVu Sans Mono", "monospace"]

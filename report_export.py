@@ -37,6 +37,7 @@ PAGE_SIZE = (8.5, 11)  # inches -- US Letter, matches PdfPages' own default assu
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _MODULE_LOADING_PATH = os.path.join(_REPO_ROOT, "module_loading.py")
 _REPORT_FORMATTING_PATH = os.path.join(_REPO_ROOT, "report_formatting.py")
+_FIGURE_THEME_PATH = os.path.join(_REPO_ROOT, "figure_theme.py")
 
 
 def _bootstrap_load_module_loading():
@@ -58,8 +59,15 @@ def _bootstrap_load_module_loading():
     return module
 
 
-_report_formatting = _bootstrap_load_module_loading().load_module_by_path(
+_module_loading = _bootstrap_load_module_loading()
+_report_formatting = _module_loading.load_module_by_path(
     "report_formatting_for_report_export", _REPORT_FORMATTING_PATH
+)
+# Loaded by path like its sibling above rather than imported by name: this
+# module is itself loaded by path from clinician_gui.py, where the repo root
+# is not guaranteed to be on sys.path.
+theme = _module_loading.load_module_by_path(
+    "figure_theme_for_report_export", _FIGURE_THEME_PATH
 )
 
 
@@ -184,34 +192,63 @@ def _build_gdi_figure(gdi_scores):
     figure = Figure(figsize=PAGE_SIZE, dpi=100)
     axis = figure.add_subplot(111)
 
-    axis.axhspan(90, 110, color="#cfe6cf", alpha=0.7, zorder=0,
-                 label="within 1 SD of control mean")
-    axis.axhspan(80, 90, color="#f2e3c2", alpha=0.7, zorder=0,
-                 label="1-2 SD below")
-    axis.axhline(100, color="#4a7c4a", linewidth=1.2, zorder=1)
+    # The band is a confidence statement in the same language as the
+    # per-segment tiers, so it is drawn in the semantic tokens rather than in
+    # a green and an amber invented for this one figure.
+    for band in theme.NORMATIVE_BAND:
+        axis.axhspan(band["low"], band["high"], color=band["color"], alpha=0.7,
+                     zorder=0, label=band["label"])
+    axis.axhline(100, color=theme.NORMATIVE_MEAN_LINE, linewidth=1.2, zorder=1)
 
     for position, (name, entry) in enumerate(sides):
         if not entry:
             continue
+        style = theme.limb_style(name)
         strides = entry.get("per_stride") or []
         if strides:
-            axis.plot([position] * len(strides), strides, "o", color="#666666",
-                      markersize=5, alpha=0.65, zorder=2,
-                      label="individual strides" if position == 0 else None)
-        axis.plot([position], [entry["mean"]], "D", color="#1f6fb4",
-                  markersize=11, zorder=3,
-                  label="trial mean" if position == 0 else None)
+            axis.plot([position] * len(strides), strides,
+                      linestyle="none", marker=style["marker"],
+                      color=theme.LIMB_TINT[name], markersize=6, alpha=0.9,
+                      markeredgecolor=style["color"], markeredgewidth=0.6,
+                      zorder=2)
+        # Marker shape carries the limb alongside hue, per figure_theme's rule
+        # that no figure here distinguishes limbs by colour alone.
+        axis.plot([position], [entry["mean"]], linestyle="none",
+                  marker=style["marker"], color=style["color"],
+                  markersize=11, markeredgecolor=theme.SURFACE, zorder=3)
         axis.annotate(f"{entry['mean']:.1f}", (position, entry["mean"]),
                       textcoords="offset points", xytext=(16, -4), fontsize=12,
-                      fontweight="bold", color="#1f6fb4")
+                      fontweight="bold", color=style["color"])
 
     axis.set_xticks([0, 1])
     axis.set_xticklabels(["Right", "Left"], fontsize=12)
     axis.set_xlim(-0.5, 1.5)
     axis.set_ylabel("Gait Deviation Index", fontsize=11)
     axis.set_title("GDI against the normative range", fontsize=14, pad=14)
-    axis.grid(axis="y", alpha=0.25)
-    axis.legend(loc="lower right", fontsize=8, framealpha=0.9)
+    theme.style_axis(axis, grid_axis="y")
+
+    # The mean/stride entries are drawn as neutral proxies rather than as
+    # whichever limb happened to be plotted first. While both limbs shared one
+    # colour a "trial mean" swatch was accurate for both; now that colour
+    # carries the limb, a blue swatch labelled "trial mean" would be a
+    # statement about the right leg standing in for a key to the whole figure,
+    # and the left leg would have no entry at all. Colour is explained by the
+    # x axis; the legend explains size and shape.
+    from matplotlib.lines import Line2D
+    proxies = [
+        Line2D([], [], linestyle="none", marker="o", markersize=11,
+               color=theme.INK_2, label="trial mean"),
+        Line2D([], [], linestyle="none", marker="o", markersize=6,
+               color=theme.BASELINE, label="individual strides"),
+    ]
+    handles, labels = axis.get_legend_handles_labels()
+    # 'best', not 'lower right'. A poor GDI is a low GDI, so the bottom of
+    # this axis is exactly where an impaired limb's strides land -- the fixed
+    # corner was covering the worst limb in the trial, which is the one a
+    # clinician opened the report to look at. Same argument as the picker's
+    # legend placement.
+    axis.legend(handles + proxies, labels + [p.get_label() for p in proxies],
+                loc="best", fontsize=8, framealpha=0.9)
     figure.tight_layout()
     return figure
 
@@ -232,28 +269,28 @@ def _build_synergy_figure(synergy):
 
     figure = Figure(figsize=PAGE_SIZE, dpi=100)
     top = figure.add_subplot(211)
-    top.axhline(0, color="#888888", linewidth=1)
-    top.plot(x, delta_v, color="#1f6fb4", linewidth=1.8)
+    top.axhline(0, color=theme.ZERO_LINE, linewidth=1)
+    top.plot(x, delta_v, color=theme.V_UCM, linewidth=1.8)
     top.fill_between(x, 0, delta_v, where=[v > 0 for v in delta_v],
-                     color="#1f6fb4", alpha=0.20, interpolate=True)
+                     color=theme.V_UCM, alpha=0.20, interpolate=True)
     top.fill_between(x, 0, delta_v, where=[v <= 0 for v in delta_v],
-                     color="#d95f02", alpha=0.20, interpolate=True)
+                     color=theme.V_ORT, alpha=0.20, interpolate=True)
     top.set_ylabel("dV", fontsize=10)
     top.set_title(f"Synergy across the gait cycle -- {synergy.get('task_variable', '')}",
                   fontsize=13, pad=12)
-    top.grid(alpha=0.25)
+    theme.style_axis(top)
     top.text(0.01, 0.95, "above zero: joints co-vary to stabilise the task",
              transform=top.transAxes, fontsize=8, va="top", style="italic")
 
     bottom = figure.add_subplot(212)
-    bottom.plot(x, per_phase.get("v_ucm") or [], color="#2e8b57",
+    bottom.plot(x, per_phase.get("v_ucm") or [], color=theme.V_UCM,
                 linewidth=1.5, label="V_UCM (task-irrelevant)")
-    bottom.plot(x, per_phase.get("v_ort") or [], color="#d95f02",
-                linewidth=1.5, label="V_ORT (task-relevant)")
+    bottom.plot(x, per_phase.get("v_ort") or [], color=theme.V_ORT,
+                linestyle="--", linewidth=1.5, label="V_ORT (task-relevant)")
     bottom.set_xlabel("Gait cycle (%)", fontsize=10)
     bottom.set_ylabel("Variance per DOF", fontsize=10)
     bottom.legend(fontsize=8)
-    bottom.grid(alpha=0.25)
+    theme.style_axis(bottom)
     figure.tight_layout()
     return figure
 
@@ -373,38 +410,43 @@ def export_report_to_pdf(pdf_path, shaped_results, figures=None):
     """
     figures = figures or {}
     shaped_results = shaped_results or {}
-    page_count = 0
+    pages = []
 
     with PdfPages(pdf_path) as pdf:
-        pdf.savefig(_build_metadata_page(shaped_results.get("metadata")))
+        # Counted at the point of writing rather than by a `+= 1` beside each
+        # call site. The three optional score pages below were added
+        # 2026-09-01 under a single increment that already belonged to the
+        # metadata page, so a six-page report reported three -- the count and
+        # the writing had drifted apart because they were two separate
+        # statements that had to be kept in step by hand.
+        def save(figure):
+            pdf.savefig(figure)
+            pages.append(figure)
+
+        save(_build_metadata_page(shaped_results.get("metadata")))
 
         # Second, so the headline numbers are found without paging through
         # every joint-angle curve to reach the metrics table.
         summary = shaped_results.get("summary_scores")
         summary_page = _build_summary_page(summary)
         if summary_page is not None:
-            pdf.savefig(summary_page)
+            save(summary_page)
         for builder, payload in ((_build_gdi_figure, (summary or {}).get("gdi_detail")),
                                  (_build_synergy_figure, (summary or {}).get("synergy_detail"))):
             page = builder(payload)
             if page is not None:
-                pdf.savefig(page)
-        page_count += 1
+                save(page)
 
         curves = shaped_results.get("curves") or {}
         for label, curve in curves.items():
             curve = curve or {}
             figure = figures.get(label)
             if curve.get("available") and figure is not None:
-                pdf.savefig(figure)
+                save(figure)
             else:
-                pdf.savefig(_build_not_available_page(f"Joint-angle curve: {label}", curve.get("reason")))
-            page_count += 1
+                save(_build_not_available_page(f"Joint-angle curve: {label}", curve.get("reason")))
 
-        pdf.savefig(_build_metrics_page(shaped_results.get("metrics")))
-        page_count += 1
+        save(_build_metrics_page(shaped_results.get("metrics")))
+        save(_build_confidence_page(shaped_results.get("confidence")))
 
-        pdf.savefig(_build_confidence_page(shaped_results.get("confidence")))
-        page_count += 1
-
-    return {"pdf_path": str(pdf_path), "page_count": page_count}
+    return {"pdf_path": str(pdf_path), "page_count": len(pages)}

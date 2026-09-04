@@ -102,6 +102,7 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `clinician_gui.py` | 2124 | The GUI. Built across U1–U5: shell and session/trial input, background pipeline execution with error mapping, per-segment confidence, results review display, one-action PDF export. Later gained a scrollable results panel, raw `.mot`/`.trc` surfacing, curve-matrix export, and whole-session batch processing (`run_batch()`). |
 | `report_export.py` | 248 | PDF report generation. |
 | `report_formatting.py` | 38 | Report formatting helpers. |
+| `figure_theme.py` | 175 | The one palette every matplotlib surface here draws from, derived from `DESIGN.md`. Replaced four private palettes that had drifted into contradiction — blue meant "left" in the gait-event picker and "right" in the cohort figures. |
 | `joint_confidence.py` | 361 | Per-segment confidence: compares pipeline `.mot` joint angles against the Xsens suit's own. |
 | `launch_gui.py` | 144 | Launches the GUI in the environment it actually needs. Run with any python; it finds the `opencap-processing` environment and re-executes under it. |
 | `make_reports.py` | 140 | Writes a clinical PDF report for every trial in a processed session. |

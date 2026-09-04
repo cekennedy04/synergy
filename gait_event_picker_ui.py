@@ -49,16 +49,33 @@ before that nothing passed `manual_event_provider` and the window never opened
 in production, however complete it was. What each caller does now:
 
   Examples/gaitAnalysis-UCM.py  run_interactive   -- opens this window
-  Examples/gaitAnalysis-UCM.py  run_batch         -- allow_manual_entry=False
-  clinician_gui.py:449,454                        -- allow_manual_entry=False
-  rerun_survey.py:112                             -- allow_manual_entry=False
+  Examples/gaitAnalysis-UCM.py  run_batch         -- no provider
+  clinician_gui.py              interactive run   -- opens it, via Tk
+  rerun_survey.py                                 -- no provider
 
-`run_interactive` is the right and only place. It was already interactive and
-already stopped to ask: a trial auto-trim could not segment fell through to a
-stdin prompt for four lists of raw frame indices, typed against no picture of
-the trial. The window replaces that prompt rather than adding an interruption.
-Everything unattended keeps `allow_manual_entry=False`, so no batch run can
-acquire a window by any route.
+`run_interactive` was the first and for a day the only place. It was already
+interactive and already stopped to ask: a trial auto-trim could not segment
+fell through to a stdin prompt for four lists of raw frame indices, typed
+against no picture of the trial. The window replaces that prompt rather than
+adding an interruption.
+
+Note what the switch actually is. `allow_manual_entry` is not set by hand at
+these call sites any more -- it follows the provider
+(`allow_manual_entry = manual_event_provider is not None`, clinician_gui.py),
+so a caller that passes no provider cannot acquire a window, and one that
+passes a provider cannot forget to enable the seam. The two used to be set
+independently, which is two ways to say one thing and one of them wrong.
+
+**The clinician GUI opens it too, on the main thread only.** This module's
+docstring said until 2026-09-04 that clinician_gui.py was deliberately not
+wired, on the grounds that the question was a product decision and that its
+worker thread must not block on a window. The first half was answered -- a
+trial reported unsegmentable when a human could see the events is a worse
+outcome than asking -- and the second was solved rather than accepted: the
+worker posts a `ManualEventRequest` onto the pipeline queue and waits, and
+`clinician_gui.answer_manual_event_request` shows the picker from the
+`root.after` poll, which is the main thread. See `gait_event_picker_tk` for
+why an embedded Toplevel and not `plt.show()`.
 
 Wire another caller with one keyword at the construction site:
 
@@ -72,15 +89,10 @@ Wire another caller with one keyword at the construction site:
 `gait_analysis` construction runs `segment_walking`, so the two legs of one
 trial would otherwise open two windows asking one operator the same question
 about the same curves -- and could come back with two different answers.
-
-Still deliberately not wired: clinician_gui.py. Whether a clinician-facing
-GUI should stop and ask for hand-picked events -- rather than reporting the
-trial as unsegmentable -- is a product decision, not a wiring one, and that
-GUI runs trials in a batch loop on a worker thread, where blocking on a window
-per failed trial is exactly what allow_manual_entry=False exists to prevent.
 """
 import textwrap
 
+import figure_theme
 from gait_event_picker import EVENT_TYPES, GaitEventPicker
 
 # Drawn per leg: which signals belong to which axis, and which event types are
@@ -95,12 +107,15 @@ LEG_PANELS = (
 # Heel strikes and toe-offs want telling apart at a glance, and left from
 # right. Deliberately not the default matplotlib cycle, which would give two
 # events the same colour across panels.
-EVENT_STYLE = {
-    'rHS': {'color': '#c1121f', 'marker': 'v', 'label': 'right heel strike'},
-    'rTO': {'color': '#f08c00', 'marker': '^', 'label': 'right toe off'},
-    'lHS': {'color': '#0353a4', 'marker': 'v', 'label': 'left heel strike'},
-    'lTO': {'color': '#2a9d8f', 'marker': '^', 'label': 'left toe off'},
-}
+#
+# From figure_theme since 2026-09-04, not defined here. These used to be four
+# unrelated hues -- right warm (red, orange), left cool (blue, teal) -- while
+# cohort_figures.py drew the right side blue and the left side orange. Blue
+# meant *left* in this window and *right* in the figures the events it
+# produces end up in, which is a misreading a clinician has no way to catch.
+# The shared palette also encodes the relationship the old set did not: hue is
+# the limb, marker and tint are the event kind.
+EVENT_STYLE = figure_theme.EVENT_STYLE
 
 SIGNAL_LABEL = {
     'r_calc': 'right heel (calc)', 'r_toe': 'right toe',
@@ -408,10 +423,18 @@ def build_picker_view(model, figure):
 
     marker_artists = {}
     for axis, panel in zip(axes, LEG_PANELS):
-        for name in panel['signals']:
+        for index, name in enumerate(panel['signals']):
             values = motion.signals.get(name)
             if values is not None:
-                axis.plot(frames, values, linewidth=1.0,
+                # Neutral, and never the limb hues: these are what the
+                # operator picks *against*, so the only colour on the panel
+                # should be the marks being placed. The default cycle put a
+                # blue and an orange curve on both panels, which under the
+                # shared palette read as "right" and "left" -- on the left
+                # leg's own panel.
+                trace = figure_theme.TRACE[index % len(figure_theme.TRACE)]
+                axis.plot(frames, values, linewidth=1.1,
+                          color=trace['color'], linestyle=trace['linestyle'],
                           label=SIGNAL_LABEL.get(name, name))
         for event_type in panel['events']:
             style = EVENT_STYLE[event_type]
@@ -423,7 +446,7 @@ def build_picker_view(model, figure):
         # trial the subject started moving, and a fixed corner put the legend
         # squarely on top of the peaks an operator is trying to click.
         axis.legend(loc='best', fontsize=8, framealpha=0.85)
-        axis.grid(alpha=0.25)
+        figure_theme.style_axis(axis)
     axes[-1].set_xlabel('frame index (not time)')
 
     status = figure.text(0.22, 0.975, '', fontsize=9, family='monospace',
