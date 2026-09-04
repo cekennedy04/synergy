@@ -237,3 +237,83 @@ def test_the_saved_record_carries_times_for_a_human_reader(mod, motion):
 
     assert entry["row"] == 0
     assert entry["time"] == motion.time_at(0)
+
+
+# -- two events on one frame -----------------------------------------------
+#
+# Double support puts one foot's toe-off and the other's heel-strike within a
+# few frames of each other, and at 60Hz they land on the SAME frame often
+# enough to matter. The timeline sorted (row, time, name), so a tie fell to
+# alphabetical order -- which for rHS/lTO is the reverse of the gait cycle,
+# and reported a correctly-picked trial as out of order. Ordering is never
+# enforced, so this corrupted no data; it told an operator their good pick set
+# was wrong, which invites them to "fix" it into a bad one.
+
+
+def test_two_events_on_one_frame_are_read_in_gait_order(mod, motion):
+    """rHS and lTO on the same frame. Alphabetically lTO sorts first, but the
+    cycle runs rHS -> lTO, and the cycle is what the verdict is about."""
+    picker = mod.GaitEventPicker(motion)
+    for event, row in (("rHS", 4), ("lTO", 4), ("lHS", 10), ("rTO", 16),
+                       ("rHS", 24)):
+        picker.mark(event, row)
+
+    names = [name for _row, _time, name in picker.timeline()]
+
+    assert names[:2] == ["rHS", "lTO"]
+    assert picker.ordering_report() == (
+        True, "5 events in correct gait order.")
+
+
+def test_a_same_frame_pair_that_is_alphabetical_still_reads_in_gait_order(
+        mod, motion):
+    """The mirror case -- lHS before rTO is both alphabetical and correct --
+    so this pins that the fix did not simply invert the tie-break."""
+    picker = mod.GaitEventPicker(motion)
+    for event, row in (("rHS", 0), ("lTO", 4), ("lHS", 10), ("rTO", 10),
+                       ("rHS", 24)):
+        picker.mark(event, row)
+
+    names = [name for _row, _time, name in picker.timeline()]
+
+    assert names[2:4] == ["lHS", "rTO"]
+    assert picker.ordering_report()[0] is True
+
+
+def test_a_same_frame_pair_opening_the_trial_is_read_in_gait_order(mod, motion):
+    """No preceding event to chain from: the pair itself has to decide, and
+    only one of the two possible orders is a gait cycle."""
+    picker = mod.GaitEventPicker(motion)
+    for event, row in (("lTO", 2), ("rHS", 2), ("lHS", 9), ("rTO", 15),
+                       ("rHS", 22)):
+        picker.mark(event, row)
+
+    assert [name for _row, _time, name in picker.timeline()][:2] == \
+        ["rHS", "lTO"]
+    assert picker.ordering_report()[0] is True
+
+
+def test_a_same_frame_pair_that_no_order_rescues_is_still_reported(mod, motion):
+    """rHS and lHS on one frame is not a gait cycle in either order. The
+    verdict must still say so rather than silently reordering into a pass."""
+    picker = mod.GaitEventPicker(motion)
+    picker.mark("rHS", 5)
+    picker.mark("lHS", 5)
+    picker.mark("lTO", 12)
+
+    assert picker.ordering_report()[0] is False
+
+
+def test_a_same_frame_group_keeps_every_event_it_was_given(mod, motion):
+    """Reordering must not drop or duplicate. Three on one frame is
+    pathological, and the picker reports rather than refuses."""
+    picker = mod.GaitEventPicker(motion)
+    for event in ("rHS", "lTO", "lHS"):
+        picker.mark(event, 7)
+
+    entries = picker.timeline()
+
+    assert len(entries) == 3
+    assert sorted(name for _row, _time, name in entries) == \
+        ["lHS", "lTO", "rHS"]
+    assert all(row == 7 for row, _time, _name in entries)

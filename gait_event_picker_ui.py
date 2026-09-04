@@ -44,29 +44,40 @@ is -- and touches no matplotlib. That is the only reason any of this is
 testable on a machine with no display, which is also every machine that runs
 the test suite here.
 
-**How to wire this in, and what is NOT wired today.** Nothing in this repo
-passes `manual_event_provider` yet, so as things stand the picker never opens
-in production. What each caller does today:
+**Who opens this window, and who deliberately does not.** Wired 2026-09-03;
+before that nothing passed `manual_event_provider` and the window never opened
+in production, however complete it was. What each caller does now:
 
-  clinician_gui.py:449,454   allow_manual_entry=False   -- batch, correct as is
-  rerun_survey.py:112        allow_manual_entry=False   -- a survey, correct
-  Examples/gaitAnalysis-UCM.py:409,601
-                             allow_manual_entry=True, no provider
-                             -- reaches the STDIN fallback, not this window
+  Examples/gaitAnalysis-UCM.py  run_interactive   -- opens this window
+  Examples/gaitAnalysis-UCM.py  run_batch         -- allow_manual_entry=False
+  clinician_gui.py:449,454                        -- allow_manual_entry=False
+  rerun_survey.py:112                             -- allow_manual_entry=False
 
-So manual entry is reachable in production, but only as the frame-index
-prompt. To get the window instead, one keyword at the construction site:
+`run_interactive` is the right and only place. It was already interactive and
+already stopped to ask: a trial auto-trim could not segment fell through to a
+stdin prompt for four lists of raw frame indices, typed against no picture of
+the trial. The window replaces that prompt rather than adding an interruption.
+Everything unattended keeps `allow_manual_entry=False`, so no batch run can
+acquire a window by any route.
 
-    from gait_event_picker_ui import make_manual_event_provider
+Wire another caller with one keyword at the construction site:
+
+    from gait_event_picker_ui import (make_manual_event_provider,
+                                      reuse_across_legs)
+    provider = reuse_across_legs(make_manual_event_provider())
     gait_analysis(..., allow_manual_entry=True,
-                  manual_event_provider=make_manual_event_provider())
+                  manual_event_provider=provider)
 
-Deliberately not done here: clinician_gui.py and Examples/gaitAnalysis-UCM.py
-are outside this work's scope, and whether a clinician-facing GUI should stop
-and ask for hand-picked events -- rather than reporting the trial as
-unsegmentable -- is a product decision, not a wiring one. Note also that
-clinician_gui runs trials in a batch loop, where blocking on a window per
-failed trial is exactly what allow_manual_entry=False exists to prevent.
+`reuse_across_legs` is not optional wherever a trial is analysed twice. Each
+`gait_analysis` construction runs `segment_walking`, so the two legs of one
+trial would otherwise open two windows asking one operator the same question
+about the same curves -- and could come back with two different answers.
+
+Still deliberately not wired: clinician_gui.py. Whether a clinician-facing
+GUI should stop and ask for hand-picked events -- rather than reporting the
+trial as unsegmentable -- is a product decision, not a wiring one, and that
+GUI runs trials in a batch loop on a worker thread, where blocking on a window
+per failed trial is exactly what allow_manual_entry=False exists to prevent.
 """
 import textwrap
 
@@ -260,6 +271,64 @@ def make_manual_event_provider(show=None, model_factory=EventPickerModel):
     return provider
 
 
+def reuse_across_legs(provider):
+    """Wrap a provider so one trial asks the operator exactly once.
+
+    `run_gait_analysis` builds `gait_analysis` twice per trial -- `leg='r'`
+    then `leg='l'`, because the symmetry metric is only defined by comparing
+    both -- and each constructor runs `segment_walking` over the same trial.
+    So a trial auto-trim cannot segment fails for both legs, and an unwrapped
+    provider opens the picker window twice for one trial: the same operator,
+    the same curves, the same question. The second answer can also differ from
+    the first, which would put the two legs of one trial on different events.
+
+    The remembered answer includes a decline. Cancel means "use auto-trim",
+    and re-opening on the other leg the window the operator just dismissed is
+    the same failure in the other direction.
+
+    **Nothing is remembered for an unnamed trial.** Frame count is not
+    identity -- fixed-duration walk captures from one participant routinely
+    share one -- so with no name to tell two trials apart the safe answer is
+    to ask again. `collect_manual_events` refuses a cross-trial replay for
+    exactly this reason; this declines to manufacture one.
+    """
+    remembered = {}
+
+    def wrapper(picker):
+        motion = picker.motion
+        name = getattr(motion, 'name', '') or ''
+        # n_rows is in the key as well as the name: trimming changes the frame
+        # count, and rows from one index space do not mean anything in
+        # another. A name match with a length mismatch is a different trial
+        # state, not the same trial.
+        key = (name, motion.n_rows) if name else None
+
+        if key is not None and key in remembered:
+            for event_type, rows in remembered[key].items():
+                for row in rows:
+                    picker.mark(event_type, row)
+            # None, not the remembered picker: the contract is to mark the
+            # picker `collect_manual_events` built over THIS analysis, which
+            # is the one whose frame space and trial name it will check.
+            return None
+
+        returned = provider(picker)
+        source = picker if returned is None else returned
+        # Read through as_segment_walking_events, which is the only shape
+        # collect_manual_events actually requires of a returned picker. A
+        # provider handing back something else is a wiring mistake, and
+        # collect_manual_events has the diagnostic for it -- so pass it along
+        # unremembered rather than dying here on a missing attribute and
+        # burying that message.
+        if key is not None and hasattr(source, 'as_segment_walking_events'):
+            rHS, lHS, rTO, lTO = source.as_segment_walking_events()
+            remembered[key] = {'rHS': list(rHS), 'lHS': list(lHS),
+                               'rTO': list(rTO), 'lTO': list(lTO)}
+        return returned
+
+    return wrapper
+
+
 def _picked_panel_text(model, max_rows=18):
     """The picked set for the side panel, newest kept when it overflows.
 
@@ -306,16 +375,23 @@ def assert_interactive_backend():
             "import time.")
 
 
-def show_picker_window(model):  # pragma: no cover - needs a display
-    """The matplotlib window. Thin on purpose: every decision is in the model.
+def build_picker_view(model, figure):
+    """Draw the whole picker onto `figure` and wire it up. Returns a
+    PickerWindow holding every part a caller (or a test) needs to reach.
 
-    Blocks until the operator closes it, which is what `segment_walking`
-    wants -- it calls this synchronously and reads the picker straight after.
+    Split out of `show_picker_window` on 2026-09-03 so the standalone pyplot
+    window and the Tk-embedded one in `gait_event_picker_tk` are the same
+    picker rather than two that drift apart. Everything here is
+    backend-agnostic: it touches `figure` and matplotlib's own widgets, never
+    pyplot and never tkinter, so it draws on whichever canvas the caller has
+    already attached. Showing and blocking is the only part the two callers
+    genuinely differ on, and that is what each keeps for itself.
+
+    `figure.canvas` must already exist -- the click and motion handlers are
+    connected here.
     """
-    import matplotlib.pyplot as plt
     from matplotlib.widgets import Button, RadioButtons
 
-    assert_interactive_backend()
     motion = model.picker.motion
     if not motion.signals:
         raise ValueError(
@@ -325,10 +401,7 @@ def show_picker_window(model):  # pragma: no cover - needs a display
             "supply them on the timeline.")
 
     frames = range(motion.n_rows)
-    figure, axes = plt.subplots(
-        len(LEG_PANELS), 1, sharex=True, figsize=(13, 7.5))
-    figure.canvas.manager.set_window_title(
-        f"Pick gait events - {motion.name or 'trial'}")
+    axes = figure.subplots(len(LEG_PANELS), 1, sharex=True)
     # top leaves room for a three-line wrapped verdict above the first panel's
     # title. At 0.92 a two-line verdict sat on top of "Right leg".
     figure.subplots_adjust(left=0.22, right=0.98, top=0.88, bottom=0.10)
@@ -419,14 +492,23 @@ def show_picker_window(model):  # pragma: no cover - needs a display
             figure.canvas.draw_idle()
     figure.canvas.mpl_connect('motion_notify_event', on_move)
 
+    # The widgets are carried on the returned object rather than dropped:
+    # matplotlib discards callbacks belonging to garbage-collected widgets, and
+    # the handlers are returned so the click wiring -- the toolbar guard and
+    # the panel-to-leg mapping, neither of which the model can see -- is
+    # reachable by a test instead of being untestable closure.
+    window = PickerWindow(figure=figure, axes=list(axes),
+                          widgets=(radio,), on_click=on_click,
+                          on_move=on_move, redraw=redraw)
+
     done = Button(figure.add_axes([0.02, 0.50, 0.16, 0.06]), 'Use these events')
-    done.on_clicked(lambda _event: plt.close(figure))
+    done.on_clicked(lambda _event: window.close())
 
     def on_cancel(_event):
         # Empties the picker: segment_walking reads an empty set as a decline
         # and falls back to the auto-trim rung rather than failing the trial.
         model.cancel()
-        plt.close(figure)
+        window.close()
     cancel = Button(figure.add_axes([0.02, 0.42, 0.16, 0.06]),
                     'Cancel (use auto-trim)')
     cancel.on_clicked(on_cancel)
@@ -434,16 +516,34 @@ def show_picker_window(model):  # pragma: no cover - needs a display
     clear = Button(figure.add_axes([0.02, 0.34, 0.16, 0.06]), 'Clear all')
     clear.on_clicked(lambda _event: (model.clear(), redraw()))
 
+    window.buttons = (done, cancel, clear)
     redraw()
-    window = PickerWindow(figure=figure, axes=list(axes),
-                          widgets=(radio, done, cancel, clear),
-                          on_click=on_click, on_move=on_move, redraw=redraw)
+    return window
+
+
+def show_picker_window(model):  # pragma: no cover - needs a display
+    """The standalone matplotlib window, for a process with no Tk app of its
+    own: `Examples/gaitAnalysis-UCM.py`'s interactive run, and
+    `rescue_trial.py`.
+
+    Blocks until the operator closes it, which is what `segment_walking`
+    wants -- it calls this synchronously and reads the picker straight after.
+
+    Inside the clinician GUI use `gait_event_picker_tk.show_picker_in_tk`
+    instead. `plt.show()` starts a second Tk mainloop next to the one the GUI
+    is already running, and the GUI would be calling this from its pipeline
+    worker thread, where a matplotlib window deadlocks outright (measured
+    2026-09-03).
+    """
+    import matplotlib.pyplot as plt
+
+    assert_interactive_backend()
+    figure = plt.figure(figsize=(13, 7.5))
+    figure.canvas.manager.set_window_title(
+        "Pick gait events - %s" % (model.picker.motion.name or 'trial'))
+    window = build_picker_view(model, figure)
+    window.close = lambda: plt.close(figure)
     plt.show()
-    # The widgets are carried on the returned object rather than dropped:
-    # matplotlib discards callbacks belonging to garbage-collected widgets, and
-    # the handlers are returned so the click wiring -- the toolbar guard and
-    # the panel-to-leg mapping, neither of which the model can see -- is
-    # reachable by a test instead of being untestable closure.
     return window
 
 
@@ -457,6 +557,12 @@ class PickerWindow:
         self.on_click = on_click
         self.on_move = on_move
         self.redraw = redraw
+        self.buttons = ()
+        # Replaced by whoever shows the window -- plt.close for the standalone
+        # figure, destroy() for an embedded Tk toplevel. The default keeps
+        # "Use these events" a no-op rather than an AttributeError if a new
+        # caller forgets to set it.
+        self.close = lambda: None
 
     def __len__(self):
-        return len(self.widgets)
+        return len(self.widgets) + len(self.buttons)

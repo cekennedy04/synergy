@@ -144,6 +144,7 @@ def _make_fake_gait_fixed_module(raise_exc=None):
                 "trial_name": trial_name,
                 "leg": leg,
                 "allow_manual_entry": allow_manual_entry,
+                "manual_event_provider": kwargs.get("manual_event_provider"),
                 "modelName": modelName,
             })
             if raise_exc is not None:
@@ -213,7 +214,15 @@ def test_valid_run_completes_both_legs_and_result_reaches_queue(mod, tmp_path):
     legs = {call["leg"] for call in fake_gait._calls}
     assert legs == {"r", "l"}
     for call in fake_gait._calls:
-        assert call["allow_manual_entry"] is False
+        # True since 2026-09-03, where it was False for two years. The GUI now
+        # reaches the pipeline's third rung: prominence escalation, auto-trim
+        # retries, then a person. What made allow_manual_entry dangerous was
+        # having nothing to answer the prompt -- an unattended run blocking
+        # forever on stdin. A provider now comes with it, and it is the
+        # provider, not the flag, that this has to keep checking: the flag
+        # alone is the old hang.
+        assert call["allow_manual_entry"] is True
+        assert call["manual_event_provider"] is not None
         assert call["modelName"] == "model.osim"
         assert call["trial_name"] == "trial1"
 

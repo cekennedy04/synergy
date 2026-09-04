@@ -406,7 +406,8 @@ def compute_foot_progression_angles(model_filename, coordinates_file_name):
 
 
 def run_gait_analysis(base_folder, trial_name, filter_frequency=6, n_gait_cycles=-1,
-                       trimming_start=-1, trimming_end=-1, allow_manual_entry=True):
+                       trimming_start=-1, trimming_end=-1, allow_manual_entry=True,
+                       manual_event_provider=None):
     """Run FPA computation + left/right gait_analysis_UCM for one trial.
 
     Deferred import: everything else in this module (path parsing, trial
@@ -425,6 +426,15 @@ def run_gait_analysis(base_folder, trial_name, filter_frequency=6, n_gait_cycles
     --all-trials can pass False (see run_batch) -- gait_analysis_UCM_fixed.py's
     interactive fallback would otherwise still block a batch run on stdin
     even with everything else in this driver already non-interactive.
+
+    manual_event_provider is what turns that fallback from a stdin prompt for
+    four lists of frame indices into the picker window. It reaches BOTH legs,
+    or the second one drops back to the prompt the window was supposed to
+    replace. It defaults to None because run_batch reaches this function too,
+    and it must be wrapped in gait_event_picker_ui.reuse_across_legs before it
+    gets here: the two constructions below each run segment_walking over the
+    same trial, so an unwrapped provider opens two windows for one trial. See
+    run_interactive, the only caller that supplies one.
     """
     from gait_analysis_UCM_fixed import gait_analysis
 
@@ -434,12 +444,14 @@ def run_gait_analysis(base_folder, trial_name, filter_frequency=6, n_gait_cycles
         base_folder, trial_name, fpa_r, fpa_l, leg='r',
         lowpass_cutoff_frequency_for_coordinate_values=filter_frequency,
         n_gait_cycles=n_gait_cycles, trimming_start=trimming_start, trimming_end=trimming_end,
-        allow_manual_entry=allow_manual_entry)
+        allow_manual_entry=allow_manual_entry,
+        manual_event_provider=manual_event_provider)
     gait_l = gait_analysis(
         base_folder, trial_name, fpa_r, fpa_l, leg='l',
         lowpass_cutoff_frequency_for_coordinate_values=filter_frequency,
         n_gait_cycles=n_gait_cycles, trimming_start=trimming_start, trimming_end=trimming_end,
-        allow_manual_entry=allow_manual_entry)
+        allow_manual_entry=allow_manual_entry,
+        manual_event_provider=manual_event_provider)
 
     center_of_mass = {trial_name: gait_r.get_center_of_mass_values(lowpass_cutoff_frequency=10)}
 
@@ -598,11 +610,12 @@ def _select_extracted_folder_interactively(data_folder):
 
 
 def process_trial(base_folder, trial_name, session_id, subject_id, save_path,
-                   allow_manual_entry=True):
+                   allow_manual_entry=True, manual_event_provider=None):
     """Run the gait pipeline for one trial and export its CSVs. Shared by
     both the interactive menu and non-interactive batch mode -- the two
     call sites pass different allow_manual_entry values (see run_batch and
-    run_interactive)."""
+    run_interactive), and only run_interactive supplies a
+    manual_event_provider."""
     from utils import download_trial, get_trial_id
 
     trial_id = get_trial_id(session_id, trial_name)
@@ -611,7 +624,8 @@ def process_trial(base_folder, trial_name, session_id, subject_id, save_path,
     downloaded_trial_name = download_trial(trial_id, str(session_dir), session_id=session_id)
 
     results = run_gait_analysis(base_folder, downloaded_trial_name,
-                                 allow_manual_entry=allow_manual_entry)
+                                 allow_manual_entry=allow_manual_entry,
+                                 manual_event_provider=manual_event_provider)
     print_scalar_results(results)
     right_path, left_path = export_individual_curves_csv(
         results, save_path, subject_id, trial_name)
@@ -687,8 +701,29 @@ def run_batch(zip_path=None, data_dir=None, trial_names=None, all_trials=False):
 def run_interactive():
     """The original P/Z/E menu loop, preserved behaviorally: pull sessions
     from OpenCap, select a pre-extracted folder, or select+extract a zip;
-    then pick and run one trial at a time until the user says no."""
+    then pick and run one trial at a time until the user says no.
+
+    This is the one caller that supplies a manual_event_provider. It is
+    already interactive and already stopped to ask -- before the picker
+    existed, a trial auto-trim could not segment fell through to a stdin
+    prompt for four lists of raw frame indices, typed against no picture of
+    the trial at all. Supplying the window replaces that prompt; it does not
+    introduce a new interruption. The batch paths (run_batch, and every other
+    caller of process_trial) pass no provider and keep allow_manual_entry
+    False, so nothing unattended can acquire a window.
+
+    Deferred import for the same reason gait_analysis_UCM_fixed is deferred in
+    run_gait_analysis: the module has to stay importable, and its pure path
+    testable, without pulling matplotlib in.
+    """
+    from gait_event_picker_ui import (make_manual_event_provider,
+                                      reuse_across_legs)
+
     data_folder = resolve_data_folder()
+    # Built once for the whole session, not once per trial: reuse_across_legs
+    # keys its memory on the trial name, so one provider serves every trial
+    # and still asks once per trial rather than once per leg.
+    manual_event_provider = reuse_across_legs(make_manual_event_provider())
     response = ''
 
     while True:
@@ -735,7 +770,8 @@ def run_interactive():
 
         trial_names = discover_trials(base_folder)
         trial_name = _select_trial_interactively(trial_names)
-        process_trial(base_folder, trial_name, session_id, subject_id, save_path)
+        process_trial(base_folder, trial_name, session_id, subject_id, save_path,
+                       manual_event_provider=manual_event_provider)
 
         response = input('Do you want to run another trial? [Y/N]: ').lower()
         if response != 'y':

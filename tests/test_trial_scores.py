@@ -54,15 +54,24 @@ def _matrix_file(tmp_path, row_order, name="t_right.csv", n_strides=4):
 # -- the UCM configuration -------------------------------------------------
 
 
-def test_the_configuration_is_the_eighteen_documented_dofs(mod):
+def test_the_configuration_is_the_fifteen_articulated_dofs(mod):
     """ucm.py's intended formulation: pelvis orientation, lumbar, both legs.
     Excludes the pinned root translations, the toe joints (frozen in both
-    methodologies) and the upper limb (saturated on the IMU route)."""
-    assert len(mod.UCM_COORDINATES) == 18
+    methodologies) and the upper limb.
+
+    Fifteen since 2026-09-03, not eighteen. The three pelvis ORIENTATION
+    coordinates went with the task-function fix: a genuinely pelvis-relative
+    task cannot depend on a rigid whole-body rotation, so their Jacobian
+    columns are exactly zero, and a zero column contributes nothing but
+    nullspace padding that drives Delta-V against its structural ceiling."""
+    assert len(mod.UCM_COORDINATES) == 15
     assert not any("_tx" in c or "_ty" in c or "_tz" in c
                    for c in mod.UCM_COORDINATES)
     assert not any("mtp" in c or "arm" in c or "elbow" in c
                    for c in mod.UCM_COORDINATES)
+    assert not any(c.startswith("pelvis_") for c in mod.UCM_COORDINATES), (
+        "pelvis orientation has a zero Jacobian for a pelvis-relative task; "
+        "keeping it saturates Delta-V")
     assert "lumbar_extension" in mod.UCM_COORDINATES
 
 
@@ -73,7 +82,7 @@ def test_joint_cycles_come_back_phase_stride_dof(mod, tmp_path, row_order):
 
     cycles = mod.joint_cycles_from_curves(path)
 
-    assert cycles.shape == (101, 6, 18)
+    assert cycles.shape == (101, 6, 15)
 
 
 def test_each_dof_carries_its_own_coordinate(mod, tmp_path, row_order):

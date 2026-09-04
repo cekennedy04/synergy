@@ -161,3 +161,74 @@ def test_foot_placement_is_sensitive_to_the_distal_joint(tasks):
     ankle_sensitivity = np.linalg.norm(jacobian[:, 0])
     assert ankle_sensitivity == pytest.approx(np.pi / 180.0, rel=1e-6)
     assert ankle_sensitivity > 0.0
+
+
+# -- the task must be pelvis-FRAME, not merely pelvis-origin (2026-09-03) ---
+#
+# `evaluate` zeroed pelvis_tx/ty/tz and then read the GLOBAL centre of mass, so
+# translation was removed and rotation was not. The task variable was therefore
+# ground-frame COM, and rotating the root moved it: sweeping pelvis_rotation
+# from 0 to 180 degrees on the real model, with every relative joint held
+# fixed, moved x by 0.166 m and gave pelvis_rotation the 4th-largest Jacobian
+# column of 18. For a pelvis-relative task that column must be exactly zero.
+#
+# Downstream, absolute lab-frame heading became a real input to the task
+# variable, so between-trial heading differences contaminated every pooled
+# synergy index -- see VENDORING.md, "The synergy index was measuring where the
+# subject was pointed".
+
+
+class RotatingFakeModel(FakeModel):
+    """A model whose global COM rotates with the root, as a real one does.
+
+    The pelvis frame is a yaw rotation by `pelvis_rotation` about the vertical,
+    and the COM sits at a fixed offset expressed in that frame. So the GLOBAL
+    COM depends on the root angle while the PELVIS-FRAME COM cannot.
+    """
+
+    OFFSET = np.array([0.2, 0.5, 0.0])   # in the pelvis frame
+
+    def _yaw(self):
+        return self.values.get("pelvis_rotation", 0.0)
+
+    def pelvis_rotation_matrix(self):
+        c, s = np.cos(self._yaw()), np.sin(self._yaw())
+        return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+
+    def pelvis_origin(self):
+        return np.zeros(3)
+
+    def center_of_mass(self):
+        return self.pelvis_rotation_matrix() @ self.OFFSET
+
+
+def test_the_task_is_invariant_to_root_yaw(tasks):
+    """Rotating the whole body must not move a pelvis-relative task variable.
+    This is an exact invariance, not an approximation: it has to hold at every
+    configuration, not just near a mean."""
+    model = RotatingFakeModel()
+    names = ["pelvis_rotation", "knee_angle_r"]
+    task = tasks.PelvisRelativeComTask(model, names)
+
+    reference = task.evaluate([0.0, 0.0])
+    for yaw_degrees in (10.0, 45.0, 90.0, 180.0):
+        moved = task.evaluate([yaw_degrees, 0.0])
+        assert np.allclose(moved, reference, atol=1e-12), (
+            f"root yaw of {yaw_degrees} deg moved the task variable by "
+            f"{np.linalg.norm(moved - reference):.4f} -- the task is being read "
+            "in the ground frame, not the pelvis frame")
+
+
+def test_root_orientation_has_no_jacobian_column(tasks):
+    """The consequence that matters for UCM: a coordinate the task cannot
+    depend on must contribute an exactly zero column, so it lands wholly in
+    the nullspace rather than steering the decomposition."""
+    model = RotatingFakeModel()
+    names = ["pelvis_rotation", "knee_angle_r"]
+    task = tasks.PelvisRelativeComTask(model, names)
+
+    jacobian = task.jacobian([30.0, 20.0])
+
+    assert np.linalg.norm(jacobian[:, 0]) < 1e-9, (
+        "pelvis_rotation must have a zero Jacobian column for a pelvis-relative "
+        f"task; got norm {np.linalg.norm(jacobian[:, 0]):.3e}")

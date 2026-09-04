@@ -290,3 +290,88 @@ def test_auto_trim_keeps_the_picker_signals_in_step(pipeline, session_dir):
     assert set(opened['lengths'].values()) == {opened['frames']}, (
         "signal lengths %s do not match the %d frames handed over"
         % (opened['lengths'], opened['frames']))
+
+
+# -- one trial, one window, on the real pipeline ---------------------------
+#
+# The wiring tests in test_gait_event_picker_wiring.py drive reuse_across_legs
+# against a stub timeline. This drives it against the real one: the
+# MarkerTimeline collect_manual_events actually builds, carrying the trial's
+# own frame count and trial_name, on a trial whose automatic detection
+# genuinely fails. run_gait_analysis constructs gait_analysis twice per trial
+# -- leg='r' then leg='l' -- and this is the pair.
+
+
+@pytest.fixture(scope="module")
+def both_legs(pipeline, session_dir):
+    """The same trial analysed on both legs, sharing one wrapped provider --
+    exactly what run_gait_analysis does."""
+    gait_module, ui = pipeline
+    opened = []
+
+    def scripted_operator(model):
+        # Shifted on every call, so a replay is distinguishable from a second
+        # visit to the window. An operator who happened to pick identically
+        # twice would make a broken reuse look like a working one, which is
+        # what an earlier version of this fixture did.
+        motion = model.picker.motion
+        opened.append((motion.name, motion.n_rows))
+        shift = 0.01 * len(opened)
+        for event_type, fraction in (
+                ('rHS', 0.10), ('lTO', 0.16), ('lHS', 0.30), ('rTO', 0.36),
+                ('rHS', 0.50), ('lTO', 0.56), ('lHS', 0.70), ('rTO', 0.76),
+                ('rHS', 0.90)):
+            model.select(event_type)
+            model.pick_at(float(int(motion.n_rows * (fraction + shift))))
+
+    provider = ui.reuse_across_legs(
+        ui.make_manual_event_provider(show=scripted_operator))
+
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        legs = [
+            gait_module.gait_analysis(
+                str(session_dir), TRIAL, 0.0, 0.0, leg=leg, n_gait_cycles=-1,
+                allow_manual_entry=True, modelName=MODEL,
+                manual_event_provider=provider)
+            for leg in ('r', 'l')
+        ]
+    finally:
+        os.chdir(cwd)
+    return legs, opened
+
+
+def test_one_trial_asks_the_operator_once_across_both_legs(both_legs):
+    """Both legs of a trial fail auto-trim together, so an unwrapped provider
+    would open two windows for one trial and accept two different answers."""
+    _legs, opened = both_legs
+
+    assert len(opened) == 1, (
+        "the picker window opened %d times for one trial; the operator is "
+        "being asked the same question about the same curves twice"
+        % len(opened))
+    assert opened[0][0] == TRIAL
+
+
+def test_both_legs_are_segmented_from_the_same_picked_events(both_legs):
+    """The replay has to reach the real picker, not merely skip the window --
+    the second leg's events are what its gait cycles are built from."""
+    legs, _opened = both_legs
+    right, left = legs
+
+    assert right.manualEventPicker is not None
+    assert left.manualEventPicker is not None
+    assert left.manualEventPicker.as_segment_walking_events() == \
+        right.manualEventPicker.as_segment_walking_events(), (
+            "the second leg was picked afresh rather than replayed, so one "
+            "trial's two legs are segmented from two different event sets")
+
+
+def test_the_replayed_leg_still_produces_gait_cycles(both_legs):
+    """A replay that marked nothing would leave the second leg declining, and
+    a decline raises rather than silently producing an empty result."""
+    legs, _opened = both_legs
+    _right, left = legs
+
+    assert len(left.gaitEvents['ipsilateralIdx']) >= 1
