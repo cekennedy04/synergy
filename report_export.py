@@ -28,6 +28,7 @@ export.
 import importlib.util
 import os
 import sys
+import textwrap
 
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
@@ -37,6 +38,7 @@ PAGE_SIZE = (8.5, 11)  # inches -- US Letter, matches PdfPages' own default assu
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _MODULE_LOADING_PATH = os.path.join(_REPO_ROOT, "module_loading.py")
 _REPORT_FORMATTING_PATH = os.path.join(_REPO_ROOT, "report_formatting.py")
+_FIGURE_THEME_PATH = os.path.join(_REPO_ROOT, "figure_theme.py")
 
 
 def _bootstrap_load_module_loading():
@@ -58,9 +60,44 @@ def _bootstrap_load_module_loading():
     return module
 
 
-_report_formatting = _bootstrap_load_module_loading().load_module_by_path(
+_module_loading = _bootstrap_load_module_loading()
+_report_formatting = _module_loading.load_module_by_path(
     "report_formatting_for_report_export", _REPORT_FORMATTING_PATH
 )
+# Loaded by path like its sibling above rather than imported by name: this
+# module is itself loaded by path from clinician_gui.py, where the repo root
+# is not guaranteed to be on sys.path.
+theme = _module_loading.load_module_by_path(
+    "figure_theme_for_report_export", _FIGURE_THEME_PATH
+)
+
+
+def _wrapped_note(axis, x, y, text, width=88, fontsize=9, line_height=0.018):
+    """Draw an italic note, wrapped explicitly, and return the new y.
+
+    matplotlib's own `wrap=True` measures against the *figure* width and is
+    unreliable on a text placed in axes coordinates: the GDI basis line ran
+    straight off the right edge of the page, taking with it the sentence
+    saying the score covers the session rather than this trial -- which is
+    the caveat that most needed reading. textwrap is deterministic, and it is
+    what gait_event_picker_ui already uses for the same reason.
+    """
+    lines = textwrap.wrap(text, width) or [""]
+    for line in lines:
+        axis.text(x, y, line, fontsize=fontsize, style="italic", va="top",
+                  transform=axis.transAxes)
+        y -= line_height
+    return y
+
+
+def _cell(text, width=22):
+    """One table cell's text, wrapped onto as many lines as it needs.
+
+    matplotlib's table does not clip an over-long cell -- it draws straight
+    through its neighbour, so a long "not available" reason rendered on top of
+    the adjacent leg's number and read as that leg's value.
+    """
+    return "\n".join(textwrap.wrap(str(text), width) or [""])
 
 
 def _new_text_page():
@@ -100,11 +137,17 @@ def _build_metadata_page(metadata):
     # SPATIAL_PROVENANCE). A metadata row alone is easy to skim past, so the
     # limitation is also stated in prose on the page carrying the numbers.
     if metadata.get("spatial_displacement_validated") is False:
-        axis.text(
-            0.05, 0.32, "Note: this pipeline's inverse kinematics solves orientations only, with root translation pinned. Gait speed and stride length are therefore inferred from stance-phase foot velocity rather than measured from global displacement, and are not independent of one another. Cadence is derived from event timing and is unaffected.",
-            fontsize=9, va="top", ha="left", style="italic", wrap=True,
-            transform=axis.transAxes,
-        )
+        # _wrapped_note, not wrap=True: matplotlib wraps against the figure
+        # width, so a note starting at x=0.05 got a left margin and no right
+        # one -- the last line ran flush into the page edge.
+        _wrapped_note(
+            axis, 0.05, 0.32,
+            "Note: this pipeline's inverse kinematics solves orientations "
+            "only, with root translation pinned. Gait speed and stride length "
+            "are therefore inferred from stance-phase foot velocity rather "
+            "than measured from global displacement, and are not independent "
+            "of one another. Cadence is derived from event timing and is "
+            "unaffected.")
     return figure
 
 
@@ -123,12 +166,23 @@ def _build_summary_page(summary):
     summary = summary or {}
     gdi = summary.get("gdi") or {}
     synergy = summary.get("synergy") or {}
-    if not gdi and not synergy:
+    unavailable = summary.get("unavailable")
+    if not gdi and not synergy and not unavailable:
         return None
 
     figure, axis = _new_text_page()
     axis.text(0.05, 0.95, "Summary scores", fontsize=18, fontweight="bold",
               va="top", ha="left", transform=axis.transAxes)
+
+    # A stated reason, not a missing page. A report that simply omits the
+    # scores looks the same as one whose scores were fine, and the reader
+    # cannot tell which they are holding.
+    if unavailable:
+        axis.text(0.05, 0.85, "Not available", fontsize=13,
+                  fontweight="bold", va="top", transform=axis.transAxes)
+        _wrapped_note(axis, 0.05, 0.79, unavailable, fontsize=10,
+                      line_height=0.020)
+        return figure
 
     y = 0.82
     if gdi:
@@ -144,9 +198,8 @@ def _build_summary_page(summary):
                   fontsize=22, va="top", family="monospace",
                   transform=axis.transAxes)
         y -= 0.055
-        axis.text(0.08, y, gdi.get("basis", ""), fontsize=9, style="italic",
-                  va="top", transform=axis.transAxes)
-        y -= 0.09
+        y = _wrapped_note(axis, 0.08, y, gdi.get("basis", ""))
+        y -= 0.07
 
     if synergy:
         axis.text(0.05, y, "Synergy index", fontsize=13, fontweight="bold",
@@ -160,9 +213,19 @@ def _build_summary_page(summary):
         # methodologies reverses with it, so a dV without it is not
         # interpretable.
         for line in synergy.get("notes", []):
-            axis.text(0.08, y, line, fontsize=9, style="italic", va="top",
-                      wrap=True, transform=axis.transAxes)
-            y -= 0.035
+            y = _wrapped_note(axis, 0.08, y, line)
+            y -= 0.017
+
+    # Said out loud when there is no synergy block at all. A page headed
+    # "Summary scores" that carries one score reads as though the other was
+    # not computed, or worse as though this analysis has only one; the note
+    # says it is a deliberate omission and where the number lives.
+    note = summary.get("synergy_note")
+    if note and not synergy:
+        axis.text(0.05, y, "Synergy index", fontsize=13, fontweight="bold",
+                  va="top", transform=axis.transAxes)
+        y -= 0.06
+        _wrapped_note(axis, 0.08, y, note)
     return figure
 
 
@@ -184,34 +247,63 @@ def _build_gdi_figure(gdi_scores):
     figure = Figure(figsize=PAGE_SIZE, dpi=100)
     axis = figure.add_subplot(111)
 
-    axis.axhspan(90, 110, color="#cfe6cf", alpha=0.7, zorder=0,
-                 label="within 1 SD of control mean")
-    axis.axhspan(80, 90, color="#f2e3c2", alpha=0.7, zorder=0,
-                 label="1-2 SD below")
-    axis.axhline(100, color="#4a7c4a", linewidth=1.2, zorder=1)
+    # The band is a confidence statement in the same language as the
+    # per-segment tiers, so it is drawn in the semantic tokens rather than in
+    # a green and an amber invented for this one figure.
+    for band in theme.NORMATIVE_BAND:
+        axis.axhspan(band["low"], band["high"], color=band["color"], alpha=0.7,
+                     zorder=0, label=band["label"])
+    axis.axhline(100, color=theme.NORMATIVE_MEAN_LINE, linewidth=1.2, zorder=1)
 
     for position, (name, entry) in enumerate(sides):
         if not entry:
             continue
+        style = theme.limb_style(name)
         strides = entry.get("per_stride") or []
         if strides:
-            axis.plot([position] * len(strides), strides, "o", color="#666666",
-                      markersize=5, alpha=0.65, zorder=2,
-                      label="individual strides" if position == 0 else None)
-        axis.plot([position], [entry["mean"]], "D", color="#1f6fb4",
-                  markersize=11, zorder=3,
-                  label="trial mean" if position == 0 else None)
+            axis.plot([position] * len(strides), strides,
+                      linestyle="none", marker=style["marker"],
+                      color=theme.LIMB_TINT[name], markersize=6, alpha=0.9,
+                      markeredgecolor=style["color"], markeredgewidth=0.6,
+                      zorder=2)
+        # Marker shape carries the limb alongside hue, per figure_theme's rule
+        # that no figure here distinguishes limbs by colour alone.
+        axis.plot([position], [entry["mean"]], linestyle="none",
+                  marker=style["marker"], color=style["color"],
+                  markersize=11, markeredgecolor=theme.SURFACE, zorder=3)
         axis.annotate(f"{entry['mean']:.1f}", (position, entry["mean"]),
                       textcoords="offset points", xytext=(16, -4), fontsize=12,
-                      fontweight="bold", color="#1f6fb4")
+                      fontweight="bold", color=style["color"])
 
     axis.set_xticks([0, 1])
     axis.set_xticklabels(["Right", "Left"], fontsize=12)
     axis.set_xlim(-0.5, 1.5)
     axis.set_ylabel("Gait Deviation Index", fontsize=11)
     axis.set_title("GDI against the normative range", fontsize=14, pad=14)
-    axis.grid(axis="y", alpha=0.25)
-    axis.legend(loc="lower right", fontsize=8, framealpha=0.9)
+    theme.style_axis(axis, grid_axis="y")
+
+    # The mean/stride entries are drawn as neutral proxies rather than as
+    # whichever limb happened to be plotted first. While both limbs shared one
+    # colour a "trial mean" swatch was accurate for both; now that colour
+    # carries the limb, a blue swatch labelled "trial mean" would be a
+    # statement about the right leg standing in for a key to the whole figure,
+    # and the left leg would have no entry at all. Colour is explained by the
+    # x axis; the legend explains size and shape.
+    from matplotlib.lines import Line2D
+    proxies = [
+        Line2D([], [], linestyle="none", marker="o", markersize=11,
+               color=theme.INK_2, label="trial mean"),
+        Line2D([], [], linestyle="none", marker="o", markersize=6,
+               color=theme.BASELINE, label="individual strides"),
+    ]
+    handles, labels = axis.get_legend_handles_labels()
+    # 'best', not 'lower right'. A poor GDI is a low GDI, so the bottom of
+    # this axis is exactly where an impaired limb's strides land -- the fixed
+    # corner was covering the worst limb in the trial, which is the one a
+    # clinician opened the report to look at. Same argument as the picker's
+    # legend placement.
+    axis.legend(handles + proxies, labels + [p.get_label() for p in proxies],
+                loc="best", fontsize=8, framealpha=0.9)
     figure.tight_layout()
     return figure
 
@@ -232,28 +324,28 @@ def _build_synergy_figure(synergy):
 
     figure = Figure(figsize=PAGE_SIZE, dpi=100)
     top = figure.add_subplot(211)
-    top.axhline(0, color="#888888", linewidth=1)
-    top.plot(x, delta_v, color="#1f6fb4", linewidth=1.8)
+    top.axhline(0, color=theme.ZERO_LINE, linewidth=1)
+    top.plot(x, delta_v, color=theme.V_UCM, linewidth=1.8)
     top.fill_between(x, 0, delta_v, where=[v > 0 for v in delta_v],
-                     color="#1f6fb4", alpha=0.20, interpolate=True)
+                     color=theme.V_UCM, alpha=0.20, interpolate=True)
     top.fill_between(x, 0, delta_v, where=[v <= 0 for v in delta_v],
-                     color="#d95f02", alpha=0.20, interpolate=True)
+                     color=theme.V_ORT, alpha=0.20, interpolate=True)
     top.set_ylabel("dV", fontsize=10)
     top.set_title(f"Synergy across the gait cycle -- {synergy.get('task_variable', '')}",
                   fontsize=13, pad=12)
-    top.grid(alpha=0.25)
+    theme.style_axis(top)
     top.text(0.01, 0.95, "above zero: joints co-vary to stabilise the task",
              transform=top.transAxes, fontsize=8, va="top", style="italic")
 
     bottom = figure.add_subplot(212)
-    bottom.plot(x, per_phase.get("v_ucm") or [], color="#2e8b57",
+    bottom.plot(x, per_phase.get("v_ucm") or [], color=theme.V_UCM,
                 linewidth=1.5, label="V_UCM (task-irrelevant)")
-    bottom.plot(x, per_phase.get("v_ort") or [], color="#d95f02",
-                linewidth=1.5, label="V_ORT (task-relevant)")
+    bottom.plot(x, per_phase.get("v_ort") or [], color=theme.V_ORT,
+                linestyle="--", linewidth=1.5, label="V_ORT (task-relevant)")
     bottom.set_xlabel("Gait cycle (%)", fontsize=10)
     bottom.set_ylabel("Variance per DOF", fontsize=10)
     bottom.legend(fontsize=8)
-    bottom.grid(alpha=0.25)
+    theme.style_axis(bottom)
     figure.tight_layout()
     return figure
 
@@ -298,15 +390,25 @@ def _build_metrics_page(metrics):
         row = row or {}
         rows.append([
             str(name).replace("_", " "),
-            _report_formatting.format_metric_value(row.get("r")),
-            _report_formatting.format_metric_value(row.get("l")),
-            _report_formatting.format_symmetry_value(row.get("symmetry")),
+            # Wrapped, not truncated. A status string is prose ("no left gait
+            # cycle segmented") and routinely outruns a column built for
+            # "0.71 s"; matplotlib does not clip an over-wide cell, it draws
+            # straight through the neighbour, so the text ended up sitting in
+            # the Right column reading as that leg's value.
+            _cell(_report_formatting.format_metric_value(row.get("r"))),
+            _cell(_report_formatting.format_metric_value(row.get("l"))),
+            _cell(_report_formatting.format_symmetry_value(row.get("symmetry"))),
         ])
 
     table = axis.table(cellText=rows, colLabels=columns, loc="center", cellLoc="center")
     table.auto_set_font_size(False)
     table.set_fontsize(9)
-    table.scale(1, 1.5)
+    # Row height follows the tallest cell. A fixed 1.5 fitted one line, so a
+    # wrapped two-line reason drew above and below its own row box -- the
+    # overflow moved from sideways into the next column to vertically over the
+    # row border, which is not a fix.
+    tallest = max((cell.count("\n") + 1) for row in rows for cell in row)
+    table.scale(1, 1.5 * tallest)
     return figure
 
 
@@ -332,17 +434,43 @@ def _build_confidence_page(confidence):
         )
         return figure
 
-    lines = []
+    # One row per segment: a tier chip, the segment, its RMS, then the
+    # accessibility sentence. Until 2026-09-04 this page rendered every tier
+    # as identical black text, so the one thing a tier is for -- letting a
+    # clinician find the doubtful segment without reading -- did not survive
+    # the export. The GUI showed chips; the PDF a wall of prose.
+    y = 0.88
     for segment_name, row in segments.items():
         row = row or {}
-        rms = row.get("rms_deg")
-        rms_display = f"{rms:.1f} deg RMS" if isinstance(rms, (int, float)) else "not scored"
-        label_text = row.get("label_text") or "not scored"
-        lines.append(f"{segment_name}: {label_text} ({rms_display})")
+        tier = row.get("display_tier") or row.get("tier") or "not_scored"
+        colours = theme.TIER.get(tier, theme.TIER["not_scored"])
 
-    axis.text(
-        0.05, 0.85, "\n".join(lines), fontsize=11, va="top", ha="left", transform=axis.transAxes,
-    )
+        # Uppercase short tag, per DESIGN.md: the sentence-case treatment is
+        # for the GUI's long in-panel labels, a standalone tag is uppercase.
+        # The tag is also what keeps this readable in greyscale and to a
+        # colourblind reader -- the colour is never the only carrier.
+        axis.text(0.05, y, tier.replace("_", " ").upper(), fontsize=8,
+                  family="monospace", va="center", ha="left", color=colours["fg"],
+                  transform=axis.transAxes,
+                  bbox={"facecolor": colours["bg"], "edgecolor": colours["fg"],
+                        "linewidth": 0.6, "boxstyle": "round,pad=0.35"})
+
+        axis.text(0.26, y, str(segment_name), fontsize=10, va="center",
+                  ha="left", transform=axis.transAxes)
+
+        rms = row.get("rms_deg")
+        rms_display = (f"{rms:.1f} deg RMS" if isinstance(rms, (int, float))
+                       else "not scored")
+        axis.text(0.60, y, rms_display, fontsize=10, family="monospace",
+                  va="center", ha="left", color=theme.INK_2,
+                  transform=axis.transAxes)
+        y -= 0.035
+
+        label_text = row.get("label_text")
+        if label_text:
+            y = _wrapped_note(axis, 0.26, y + 0.008, label_text, width=74,
+                              fontsize=8, line_height=0.016)
+        y -= 0.022
     return figure
 
 
@@ -373,38 +501,43 @@ def export_report_to_pdf(pdf_path, shaped_results, figures=None):
     """
     figures = figures or {}
     shaped_results = shaped_results or {}
-    page_count = 0
+    pages = []
 
     with PdfPages(pdf_path) as pdf:
-        pdf.savefig(_build_metadata_page(shaped_results.get("metadata")))
+        # Counted at the point of writing rather than by a `+= 1` beside each
+        # call site. The three optional score pages below were added
+        # 2026-09-01 under a single increment that already belonged to the
+        # metadata page, so a six-page report reported three -- the count and
+        # the writing had drifted apart because they were two separate
+        # statements that had to be kept in step by hand.
+        def save(figure):
+            pdf.savefig(figure)
+            pages.append(figure)
+
+        save(_build_metadata_page(shaped_results.get("metadata")))
 
         # Second, so the headline numbers are found without paging through
         # every joint-angle curve to reach the metrics table.
         summary = shaped_results.get("summary_scores")
         summary_page = _build_summary_page(summary)
         if summary_page is not None:
-            pdf.savefig(summary_page)
+            save(summary_page)
         for builder, payload in ((_build_gdi_figure, (summary or {}).get("gdi_detail")),
                                  (_build_synergy_figure, (summary or {}).get("synergy_detail"))):
             page = builder(payload)
             if page is not None:
-                pdf.savefig(page)
-        page_count += 1
+                save(page)
 
         curves = shaped_results.get("curves") or {}
         for label, curve in curves.items():
             curve = curve or {}
             figure = figures.get(label)
             if curve.get("available") and figure is not None:
-                pdf.savefig(figure)
+                save(figure)
             else:
-                pdf.savefig(_build_not_available_page(f"Joint-angle curve: {label}", curve.get("reason")))
-            page_count += 1
+                save(_build_not_available_page(f"Joint-angle curve: {label}", curve.get("reason")))
 
-        pdf.savefig(_build_metrics_page(shaped_results.get("metrics")))
-        page_count += 1
+        save(_build_metrics_page(shaped_results.get("metrics")))
+        save(_build_confidence_page(shaped_results.get("confidence")))
 
-        pdf.savefig(_build_confidence_page(shaped_results.get("confidence")))
-        page_count += 1
-
-    return {"pdf_path": str(pdf_path), "page_count": page_count}
+    return {"pdf_path": str(pdf_path), "page_count": len(pages)}

@@ -169,7 +169,8 @@ def test_full_results_shape_for_display_without_error(mod, tmp_path):
     shaped = mod.shape_results_for_display(result, xsens_module=fake_xsens)
 
     assert set(shaped.keys()) == {
-        "metadata", "curves", "metrics", "confidence", "outputs", "output_folder",
+        "metadata", "curves", "metrics", "confidence", "outputs",
+        "output_folder", "summary_scores",
     }
 
     metadata = shaped["metadata"]

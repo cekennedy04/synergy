@@ -31,10 +31,7 @@ Usage:
         [--reference context/gdi_reference_2026-08-27] [--conversion ik]
 """
 import argparse
-import csv
 import importlib.util
-import re
-from collections import OrderedDict
 from pathlib import Path
 
 import matplotlib
@@ -55,50 +52,22 @@ def _load(name, filename):
     return module
 
 
-def pooled_paths(session_dir, conversion="ik"):
-    """The session's pooled matrix per side, and its index sidecar."""
-    curves = Path(session_dir) / "GaitCurves"
-    found = {}
-    for side in ("right", "left"):
-        matches = sorted(curves.glob(f"*_all-trials_{conversion}_{side}.csv"))
-        matches = [m for m in matches if not m.name.endswith("_index.csv")]
-        if matches:
-            index = matches[0].with_name(matches[0].stem + "_index.csv")
-            found[side] = {"matrix": matches[0],
-                           "index": index if index.is_file() else None}
-    if not found:
-        raise FileNotFoundError(
-            f"no pooled '_all-trials_{conversion}_' matrix in {curves}. Run the "
-            "session through process_participants first -- pooling happens at "
-            "the end of a batch, not per trial.")
-    return found
+# The shared palette. Loaded eagerly and by path, matching how this file
+# reaches every other sibling. Until 2026-09-04 the four colours below were
+# copied here from report_export.py rather than shared, so the two reports
+# that quote the same GDI drew its normative band in two different greens.
+theme = _load("_theme_for_session", "figure_theme.py")
+_gdi_scoring = _load("_gdi_scoring_for_session", "gdi_scoring.py")
 
 
-def stride_trials(index_path):
-    """Column index -> trial name, from the provenance sidecar."""
-    if not index_path or not Path(index_path).is_file():
-        return []
-    with open(index_path, newline="", encoding="utf-8") as handle:
-        return [row["trial"] for row in csv.DictReader(handle)]
-
-
-def gdi_by_trial(per_stride, trials):
-    """Mean GDI per trial, in session order.
-
-    Ordered by trial number rather than by first appearance, so the x-axis of
-    the trend plot is session order -- which is the axis a drift shows up on.
-    """
-    grouped = OrderedDict()
-    for score, trial in zip(per_stride, trials):
-        grouped.setdefault(trial, []).append(score)
-
-    def trial_number(name):
-        found = re.findall(r"(\d+)", name)
-        return int(found[-1]) if found else 0
-
-    return OrderedDict(
-        (name, float(np.mean(grouped[name])))
-        for name in sorted(grouped, key=trial_number))
+# The GDI half moved to gdi_scoring.py on 2026-09-04, so the clinician GUI
+# can score a session without importing this file -- which would switch the
+# GUI's process to Agg and silently disable the gait-event picker. Re-exported
+# under their original names: cohort_scores.py, validate_control_baseline.py
+# and this file's own tests all reach them through here.
+pooled_paths = _gdi_scoring.pooled_paths
+stride_trials = _gdi_scoring.stride_trials
+gdi_by_trial = _gdi_scoring.gdi_by_trial
 
 
 def session_scores(session_dir, reference_dir, conversion="ik",
@@ -109,27 +78,14 @@ def session_scores(session_dir, reference_dir, conversion="ik",
     scores_mod = _load("_scores_for_session", "trial_scores.py")
 
     feature_set = gdi.get_feature_set(feature_set or gdi.DEFAULT_FEATURE_SET)
-    reference = gdi.load_gdi_reference(reference_dir, feature_set)
-    row_order = curves.exported_row_order()
+    scored = _gdi_scoring.score_pooled_gdi(session_dir, reference_dir,
+                                           conversion, feature_set,
+                                           gdi=gdi, curves=curves)
     paths = pooled_paths(session_dir, conversion)
 
     result = {"session": Path(session_dir).name, "conversion": conversion,
-              "feature_set": feature_set.name, "gdi": {}, "by_trial": {}}
-
-    for side, entry in paths.items():
-        matrix = curves.load_curve_matrix(entry["matrix"], row_order)
-        per_stride = curves.score_curves(matrix, side, reference, feature_set,
-                                         gdi, row_order)
-        result["gdi"][side] = {
-            "mean": float(np.mean(per_stride)),
-            "sd": float(np.std(per_stride)) if per_stride.size > 1 else None,
-            "n_strides": int(per_stride.size),
-            "per_stride": [float(v) for v in per_stride],
-        }
-        trials = stride_trials(entry["index"])
-        if len(trials) == per_stride.size:
-            result["by_trial"][side] = gdi_by_trial(per_stride, trials)
-    result["gdi"]["feature_set"] = feature_set.name
+              "feature_set": feature_set.name,
+              "gdi": scored["gdi"], "by_trial": scored["by_trial"]}
 
     result["synergy"] = {}
     if model_path:
@@ -198,15 +154,22 @@ def _gdi_trend_figure(scores):
         return None
     figure = Figure(figsize=PAGE_SIZE, dpi=100)
     axis = figure.add_subplot(211)
-    axis.axhspan(90, 110, color="#cfe6cf", alpha=0.6, zorder=0)
-    axis.axhline(100, color="#4a7c4a", linewidth=1.1, zorder=1)
+    band = theme.NORMATIVE_BAND[0]
+    axis.axhspan(band["low"], band["high"], color=band["color"], alpha=0.6,
+                 zorder=0)
+    axis.axhline(100, color=theme.NORMATIVE_MEAN_LINE, linewidth=1.1, zorder=1)
 
-    for side, colour in (("right", "#1f6fb4"), ("left", "#d95f02")):
+    for side in ("right", "left"):
         series = by_trial.get(side)
         if not series:
             continue
+        # Colour, linestyle and marker all carry the limb -- see figure_theme
+        # on why hue alone is not allowed to.
+        style = theme.limb_style(side)
+        colour = style["color"]
         values = list(series.values())
-        axis.plot(range(1, len(values) + 1), values, "o-", color=colour,
+        axis.plot(range(1, len(values) + 1), values, color=colour,
+                  linestyle=style["linestyle"], marker=style["marker"],
                   label=side, markersize=5)
         # A perfectly flat series has zero variance, so corrcoef divides by
         # zero and returns nan -- which would print "r=nan" on a clinical
@@ -224,7 +187,7 @@ def _gdi_trend_figure(scores):
     axis.set_ylabel("GDI", fontsize=10)
     axis.set_title("GDI across the session", fontsize=13, pad=12)
     axis.legend(fontsize=8)
-    axis.grid(alpha=0.25)
+    theme.style_axis(axis)
     axis.text(0.01, -0.42,
               "Trial order should not predict a score: trials are processed "
               "independently, so a monotonic trend here indicates drift in the "

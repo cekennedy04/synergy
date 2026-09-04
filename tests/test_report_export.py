@@ -316,3 +316,323 @@ def test_metadata_page_omits_the_caveat_when_displacement_is_validated(mod):
     rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
 
     assert "stance-phase foot velocity" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# The headline-scores pages (added 2026-09-01, covered 2026-09-04).
+#
+# These three builders -- summary, GDI, synergy -- shipped with no test of
+# any kind, and the page counter that shipped with them was wrong: all three
+# pages were written under a single `page_count += 1` that already belonged
+# to the metadata page, so a six-page report reported three. Nothing caught
+# it because no fixture in this file had ever set "summary_scores".
+#
+# The count is therefore cross-checked against pypdf here rather than against
+# arithmetic repeated from the implementation. Repeating the implementation's
+# own sum is what let the original defect through: the assertion and the code
+# were wrong in the same direction.
+# ---------------------------------------------------------------------------
+
+def _make_summary_scores():
+    return {
+        "gdi": {"right_display": "88.0", "left_display": "91.2",
+                "basis": "100 = control mean, 10 points = 1 SD"},
+        "synergy": {"value_display": "0.42",
+                    "notes": ["task variable: pelvis-relative CoM"]},
+        "gdi_detail": {
+            "right": {"mean": 88.0, "per_stride": [86.4, 88.1, 89.5]},
+            "left": {"mean": 91.2, "per_stride": [90.0, 91.4, 92.2]},
+        },
+        "synergy_detail": {
+            "task_variable": "pelvis-relative CoM",
+            "per_phase": {"delta_v": [0.4, 0.1, -0.2, 0.3],
+                          "v_ucm": [1.2, 1.1, 0.9, 1.3],
+                          "v_ort": [0.8, 1.0, 1.1, 1.0]},
+        },
+    }
+
+
+def _actual_pdf_pages(pdf_path):
+    """The real page count, read back off the file rather than recomputed."""
+    pypdf = pytest.importorskip("pypdf")
+    return len(pypdf.PdfReader(str(pdf_path)).pages)
+
+
+def test_page_count_matches_the_file_when_score_pages_are_present(mod, tmp_path):
+    """The regression the counter actually had: three extra pages written,
+    none of them counted."""
+    shaped_results, curves = _make_full_shaped_results()
+    shaped_results["summary_scores"] = _make_summary_scores()
+    figures = _make_full_figures(curves)
+    pdf_path = tmp_path / "with_scores.pdf"
+
+    result = mod.export_report_to_pdf(str(pdf_path), shaped_results, figures)
+
+    assert result["page_count"] == _actual_pdf_pages(pdf_path)
+    # And the three score pages are genuinely additional, not a relabelling
+    # of pages that were already being written.
+    assert result["page_count"] == len(curves) + 6
+
+
+def test_page_count_matches_the_file_when_scores_are_absent(mod, tmp_path):
+    """The GUI export path, which supplies no summary_scores at all: the
+    count must still agree with the file rather than only agreeing in the
+    case the new pages happen to fire."""
+    shaped_results, curves = _make_full_shaped_results()
+    figures = _make_full_figures(curves)
+    pdf_path = tmp_path / "no_scores.pdf"
+
+    result = mod.export_report_to_pdf(str(pdf_path), shaped_results, figures)
+
+    assert result["page_count"] == _actual_pdf_pages(pdf_path)
+    assert result["page_count"] == len(curves) + 3
+
+
+def test_partial_scores_only_add_the_pages_they_can_fill(mod, tmp_path):
+    """A summary with no per-phase detail must skip the synergy figure rather
+    than emit an empty one -- and the count must follow what was written."""
+    shaped_results, curves = _make_full_shaped_results()
+    summary = _make_summary_scores()
+    del summary["synergy_detail"]
+    shaped_results["summary_scores"] = summary
+    figures = _make_full_figures(curves)
+    pdf_path = tmp_path / "partial_scores.pdf"
+
+    result = mod.export_report_to_pdf(str(pdf_path), shaped_results, figures)
+
+    assert result["page_count"] == _actual_pdf_pages(pdf_path)
+    assert result["page_count"] == len(curves) + 5
+
+
+def test_summary_page_is_skipped_entirely_when_there_is_nothing_to_show(mod):
+    """An empty summary must produce no page rather than a blank one."""
+    assert mod._build_summary_page({}) is None
+    assert mod._build_summary_page(None) is None
+    assert mod._build_summary_page({"gdi": {}, "synergy": {}}) is None
+
+
+def test_summary_page_carries_both_scores_and_the_task_variable(mod):
+    """The task variable is not a footnote: the ranking between
+    methodologies reverses with it, so a dV without it is not interpretable."""
+    figure = mod._build_summary_page(_make_summary_scores())
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "88.0" in rendered and "91.2" in rendered
+    assert "0.42" in rendered
+    assert "pelvis-relative CoM" in rendered
+
+
+def test_gdi_figure_draws_every_stride_not_just_the_mean(mod):
+    """A mean over three scattered strides is much weaker evidence than one
+    over three tight ones, and the mean alone hides which you have."""
+    scores = _make_summary_scores()["gdi_detail"]
+    figure = mod._build_gdi_figure(scores)
+    axis = figure.axes[0]
+
+    plotted = [len(line.get_ydata()) for line in axis.lines]
+    assert 3 in plotted, "per-stride points are missing from the GDI figure"
+
+
+def test_gdi_figure_is_skipped_when_no_side_has_a_score(mod):
+    assert mod._build_gdi_figure(None) is None
+    assert mod._build_gdi_figure({}) is None
+    assert mod._build_gdi_figure({"right": None, "left": None}) is None
+
+
+def test_synergy_figure_is_skipped_without_per_phase_data(mod):
+    assert mod._build_synergy_figure(None) is None
+    assert mod._build_synergy_figure({}) is None
+    assert mod._build_synergy_figure({"per_phase": {"delta_v": []}}) is None
+
+
+def test_synergy_figure_handles_a_single_phase_sample(mod):
+    """len(delta_v) == 1 divides by zero in the percent-of-cycle axis unless
+    it is special-cased; a one-stride trial must not crash the export."""
+    figure = mod._build_synergy_figure(
+        {"task_variable": "t", "per_phase": {"delta_v": [0.3], "v_ucm": [1.0],
+                                             "v_ort": [0.5]}})
+    assert figure is not None
+
+
+def test_long_notes_are_wrapped_rather_than_running_off_the_page(mod):
+    """The GDI basis line ran straight off the right edge of the page, taking
+    with it the sentence saying the score covers the whole session rather
+    than this trial -- the caveat on that page that most needed reading.
+    matplotlib's own wrap=True measures against the figure, not the axes, and
+    did not catch it."""
+    summary = _make_summary_scores()
+    summary["gdi"]["basis"] = (
+        "reduced6 feature set. 100 is the control mean; each 10 points is one "
+        "standard deviation below it. Scored over all 42 strides pooled across "
+        "this session so far, not this trial alone -- it moves as further "
+        "trials are processed.")
+
+    figure = mod._build_summary_page(summary)
+    lines = [line for t in figure.axes[0].texts
+             for line in t.get_text().split("\n")]
+
+    # Joined, because wrapping legitimately splits the phrase across two
+    # lines -- what must not happen is the tail being dropped entirely.
+    assert "not this trial alone" in " ".join(lines), (
+        "the session-vs-trial caveat is not on the page at all")
+    # And every rendered line is short enough to fit the page. A single
+    # 200-character artist is the shape the truncation took.
+    assert max(len(line) for line in lines) <= 95
+
+
+def test_an_unavailable_summary_states_the_reason_rather_than_vanishing(mod):
+    """A report that silently omits the scores looks exactly like one whose
+    scores were fine. The reader cannot tell which they are holding."""
+    figure = mod._build_summary_page(
+        {"unavailable": "No normative GDI reference at context/gdi_reference."})
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "Not available" in rendered
+    assert "normative GDI reference" in rendered
+
+
+def test_a_summary_with_gdi_but_no_synergy_says_why_synergy_is_missing(mod):
+    """The GUI reports GDI and deliberately does not report the synergy
+    index. A page headed 'Summary scores' carrying one of the two reads as
+    though the other failed."""
+    summary = _make_summary_scores()
+    del summary["synergy"]
+    del summary["synergy_detail"]
+    summary["synergy_note"] = ("The synergy index is not reported here -- run "
+                               "session_report.py for that number.")
+
+    figure = mod._build_summary_page(summary)
+    rendered = " ".join(t.get_text() for t in figure.axes[0].texts)
+
+    assert "Synergy index" in rendered
+    assert "session_report.py" in rendered
+
+
+def test_a_long_status_wraps_inside_its_cell_instead_of_over_its_neighbour(mod):
+    """matplotlib's table does not clip an over-wide cell -- it draws straight
+    through the next one, so "no left gait cycle segmented" rendered on top of
+    the Right column and read as that leg's value. Found by rendering the
+    page, not by any assertion."""
+    figure = mod._build_metrics_page({
+        "stance_time_s": {
+            "r": {"available": True, "value": 0.71, "units": "s"},
+            "l": {"available": False,
+                  "status": "no left gait cycle segmented"},
+            "symmetry": None},
+    })
+    table = [child for child in figure.axes[0].get_children()
+             if hasattr(child, "get_celld")][0]
+    texts = [cell.get_text().get_text() for cell in table.get_celld().values()]
+    long_cell = [t for t in texts if "no left gait cycle" in t]
+
+    assert long_cell, "the status text is missing from the table"
+    assert "\n" in long_cell[0], "the status was not wrapped"
+    assert max(len(line) for line in long_cell[0].split("\n")) <= 22
+
+
+def test_row_height_follows_the_tallest_cell(mod):
+    """Wrapping sideways-overflow into vertical-overflow is not a fix: a
+    two-line cell drew above and below its own row box at the fixed scale."""
+    one_line = mod._build_metrics_page({
+        "cadence": {"r": {"available": True, "value": 1.0, "units": "s"},
+                    "l": {"available": True, "value": 1.0, "units": "s"},
+                    "symmetry": None}})
+    two_line = mod._build_metrics_page({
+        "cadence": {"r": {"available": True, "value": 1.0, "units": "s"},
+                    "l": {"available": False,
+                          "status": "no left gait cycle segmented"},
+                    "symmetry": None}})
+
+    def row_height(figure):
+        table = [c for c in figure.axes[0].get_children()
+                 if hasattr(c, "get_celld")][0]
+        return max(cell.get_height() for cell in table.get_celld().values())
+
+    assert row_height(two_line) > row_height(one_line)
+
+
+def test_the_metadata_caveat_keeps_a_right_margin(mod):
+    """wrap=True measures against the figure, so a note placed at x=0.05 got a
+    left margin and no right one -- its last line ran flush into the page
+    edge."""
+    figure = mod._build_metadata_page(
+        {"trial_name": "t", "spatial_displacement_validated": False})
+    # Split on newlines: the metadata rows are a single artist holding every
+    # row, so measuring the artist rather than its lines would flag a block
+    # that renders perfectly well.
+    lines = [line for t in figure.axes[0].texts
+             for line in t.get_text().split("\n")]
+
+    assert "stance-phase foot velocity" in " ".join(lines)
+    assert max(len(line) for line in lines) <= 95
+
+
+def _tier_chips(figure):
+    """Every text artist drawn with a filled bbox -- i.e. the tier chips."""
+    return [t for t in figure.axes[0].texts if t.get_bbox_patch() is not None]
+
+
+def test_each_confidence_tier_is_drawn_in_its_own_design_md_colours(mod):
+    """This page rendered every tier as identical black text, so the one
+    thing a tier is for -- letting a clinician find the doubtful segment
+    without reading every line -- did not survive the export. The GUI showed
+    chips; the PDF a wall of prose."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {
+            "pelvis": {"display_tier": "high", "rms_deg": 2.0},
+            "femur_r": {"display_tier": "medium", "rms_deg": 6.8},
+            "tibia_l": {"display_tier": "low", "rms_deg": 14.3},
+            "calcn_l": {"display_tier": "not_scored", "rms_deg": None},
+        },
+    })
+    chips = _tier_chips(figure)
+    assert len(chips) == 4
+
+    backgrounds = [chip.get_bbox_patch().get_facecolor() for chip in chips]
+    assert len(set(backgrounds)) == 4, (
+        "tiers are not visually distinguishable from one another")
+
+    # And they are DESIGN.md's values, not four colours invented here.
+    from matplotlib.colors import to_rgba
+    expected = {to_rgba(mod.theme.TIER[t]["bg"])
+                for t in ("high", "medium", "low", "not_scored")}
+    assert set(backgrounds) == expected
+
+
+def test_the_tier_is_readable_without_colour(mod):
+    """Colour is never the only carrier -- the same rule figure_theme applies
+    to limbs. A greyscale print, or a colourblind reader, must still get the
+    tier."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {"tibia_l": {"display_tier": "low", "rms_deg": 14.3}},
+    })
+    assert [chip.get_text() for chip in _tier_chips(figure)] == ["LOW"]
+
+
+def test_a_segment_with_no_tier_falls_back_rather_than_raising(mod):
+    """A partially-shaped row must not take the whole page down."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {"calcn_l": {"rms_deg": None, "label_text": "no mapping"}},
+    })
+    assert [chip.get_text() for chip in _tier_chips(figure)] == ["NOT SCORED"]
+
+
+def test_the_accessibility_sentence_survives_and_is_wrapped(mod):
+    """KTD5's full sentence is the accessible form of the tier. It must be on
+    the page, and inside the margins."""
+    figure = mod._build_confidence_page({
+        "available": True,
+        "segments": {"tibia_l": {
+            "display_tier": "low", "rms_deg": 14.3,
+            "label_text": ("Low agreement with the suit's own onboard "
+                           "estimate. Treat this segment's angles as "
+                           "unreliable for this trial.")}},
+    })
+    lines = [line for t in figure.axes[0].texts
+             for line in t.get_text().split("\n")]
+
+    assert "unreliable for this trial" in " ".join(lines)
+    assert max(len(line) for line in lines) <= 95
