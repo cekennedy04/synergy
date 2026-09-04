@@ -432,3 +432,51 @@ def test_the_picker_opens_without_deadlocking_the_pipeline_thread(mod,
     assert detail["rHS"] == 2, (
         "the operator's picks did not reach the picker the pipeline thread "
         "is holding")
+
+
+# -- reachable however clinician_gui was loaded ---------------------------
+
+
+def test_the_picker_modules_load_without_the_repo_root_on_sys_path(mod,
+                                                                    monkeypatch):
+    """Caught by CI, not locally, on 2026-09-04.
+
+    The picker modules import their siblings by plain name -- gait_event_picker_ui
+    does `from gait_event_picker import ...` -- so loading them by path is not
+    enough on its own: it resolves the file we name, not the imports that file
+    then makes. Whether that works depends on how the process was started.
+
+    `python -m pytest` puts the working directory on sys.path; a bare `pytest
+    tests/` does not, and CI runs the bare form. Every local run was green
+    while CI failed on eleven tests with ModuleNotFoundError. This pins the
+    loader rather than the launcher.
+    """
+    without_root = [entry for entry in sys.path
+                    if Path(entry or ".").resolve() != REPO_ROOT]
+    monkeypatch.setattr(sys, "path", without_root)
+
+    picker_ui = mod._load_gait_event_picker_ui()
+
+    assert hasattr(picker_ui, "reuse_across_legs")
+    assert hasattr(picker_ui, "EventPickerModel")
+
+
+def test_the_thread_can_build_its_provider_without_the_repo_root(mod,
+                                                                  monkeypatch):
+    """The same failure, at the site that actually hit it: start_pipeline_thread
+    builds the provider before the run begins, so this broke every pipeline
+    test rather than only the manual-entry ones."""
+    without_root = [entry for entry in sys.path
+                    if Path(entry or ".").resolve() != REPO_ROOT]
+    monkeypatch.setattr(sys, "path", without_root)
+
+    captured = {}
+
+    def _fake_run_pipeline(_session, _mvnx, progress_callback=None, **kwargs):
+        captured["provider"] = kwargs.get("manual_event_provider")
+        return {}
+
+    monkeypatch.setattr(mod, "run_pipeline", _fake_run_pipeline)
+    mod.start_pipeline_thread("s", "m", queue.Queue()).join(timeout=5)
+
+    assert captured.get("provider") is not None

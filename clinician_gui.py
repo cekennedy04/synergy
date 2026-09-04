@@ -54,6 +54,8 @@ _XTOO_PATH = os.path.join(REPO_ROOT, "xtoo.py")
 _COMBINE_CURVES_PATH = os.path.join(REPO_ROOT, "combine_curves.py")
 _REPORT_FORMATTING_PATH = os.path.join(REPO_ROOT, "report_formatting.py")
 _MODULE_LOADING_PATH = os.path.join(REPO_ROOT, "module_loading.py")
+_GAIT_EVENT_PICKER_UI_PATH = os.path.join(REPO_ROOT, "gait_event_picker_ui.py")
+_GAIT_EVENT_PICKER_TK_PATH = os.path.join(REPO_ROOT, "gait_event_picker_tk.py")
 
 
 def _bootstrap_load_module_loading():
@@ -137,6 +139,45 @@ def _load_joint_confidence():
 def _load_combine_curves():
     """Lazy, path-based load matching the other pipeline modules."""
     return _load_module_by_path("combine_curves_for_clinician_gui", _COMBINE_CURVES_PATH)
+
+
+def _ensure_repo_root_importable():
+    """Put REPO_ROOT on sys.path if it is not already there.
+
+    The picker modules import their own siblings by plain name --
+    `gait_event_picker_ui` does `from gait_event_picker import ...`, and
+    `gait_event_picker_tk` imports `gait_event_picker_ui` -- which needs the
+    repo root importable. Loading them by path is not enough on its own: it
+    resolves the file we name, not the imports that file then makes.
+
+    That is true whenever clinician_gui.py is itself loaded by path rather
+    than run as a script, which is every test in this repo and, as of
+    2026-09-04, CI. `launch_gui.py` runs the GUI as a script, where sys.path[0]
+    is already the repo root, which is why this only ever failed under
+    `pytest tests/` -- and not under `python -m pytest`, which adds the
+    working directory. Local green was not enough to catch it.
+    """
+    if REPO_ROOT not in sys.path:
+        sys.path.insert(0, REPO_ROOT)
+
+
+def _load_gait_event_picker_ui():
+    """Lazy, path-based load matching the other pipeline modules."""
+    _ensure_repo_root_importable()
+    return _load_module_by_path("gait_event_picker_ui_for_clinician_gui",
+                                _GAIT_EVENT_PICKER_UI_PATH)
+
+
+def _load_gait_event_picker_tk():
+    """Lazy, path-based load matching the other pipeline modules.
+
+    Deferred to the moment a picker is actually needed: this one imports
+    tkinter and matplotlib's Tk backend, and a headless caller of
+    clinician_gui's pure functions must not pay for that (or fail on it).
+    """
+    _ensure_repo_root_importable()
+    return _load_module_by_path("gait_event_picker_tk_for_clinician_gui",
+                                _GAIT_EVENT_PICKER_TK_PATH)
 
 
 def _load_xtoo():
@@ -994,8 +1035,8 @@ def start_pipeline_thread(session_dir, mvnx_path, result_queue, **pipeline_kwarg
         result_queue.put(("progress", message))
 
     if "manual_event_provider" not in pipeline_kwargs:
-        from gait_event_picker_ui import reuse_across_legs
-        pipeline_kwargs["manual_event_provider"] = reuse_across_legs(
+        picker_ui = _load_gait_event_picker_ui()
+        pipeline_kwargs["manual_event_provider"] = picker_ui.reuse_across_legs(
             queue_manual_event_provider(result_queue))
 
     def _target():
@@ -2152,10 +2193,10 @@ class ClinicianGUI:
             "Automatic detection failed for %s - pick the gait events."
             % (request.trial_name or "this trial"))
         try:
-            from gait_event_picker_tk import show_picker_in_tk
-            from gait_event_picker_ui import EventPickerModel
-
-            show_picker_in_tk(EventPickerModel(request.picker), self.root)
+            picker_ui = _load_gait_event_picker_ui()
+            picker_tk = _load_gait_event_picker_tk()
+            picker_tk.show_picker_in_tk(
+                picker_ui.EventPickerModel(request.picker), self.root)
         except Exception as exc:  # noqa: BLE001 -- the worker re-raises it
             # Handed to the pipeline thread rather than shown here: it is
             # mid-run and blocked, and its own failure path routes through
