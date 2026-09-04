@@ -102,6 +102,7 @@ No supervisor or upstream ancestor. Every one is covered by tests in `tests/`.
 | `clinician_gui.py` | 2124 | The GUI. Built across U1–U5: shell and session/trial input, background pipeline execution with error mapping, per-segment confidence, results review display, one-action PDF export. Later gained a scrollable results panel, raw `.mot`/`.trc` surfacing, curve-matrix export, and whole-session batch processing (`run_batch()`). |
 | `report_export.py` | 248 | PDF report generation. |
 | `report_formatting.py` | 38 | Report formatting helpers. |
+| `render_gallery.py` | 285 | Renders every clinician-facing figure and PDF page to PNG with deliberately awkward fixtures, so they can be looked at. Three defects shipped past a green suite; all three were obvious on sight. See `.claude/skills/render-and-look/`. |
 | `gdi_scoring.py` | 133 | Pooled GDI for one session, with no matplotlib behind it. Split out of `session_report.py` so the clinician GUI can score a session without that file's process-wide `matplotlib.use("Agg")` silently disabling the gait-event picker. |
 | `figure_theme.py` | 175 | The one palette every matplotlib surface here draws from, derived from `DESIGN.md`. Replaced four private palettes that had drifted into contradiction — blue meant "left" in the gait-event picker and "right" in the cohort figures. |
 | `joint_confidence.py` | 361 | Per-segment confidence: compares pipeline `.mot` joint angles against the Xsens suit's own. |

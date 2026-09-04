@@ -468,7 +468,8 @@ def test_long_notes_are_wrapped_rather_than_running_off_the_page(mod):
         "trials are processed.")
 
     figure = mod._build_summary_page(summary)
-    lines = [t.get_text() for t in figure.axes[0].texts]
+    lines = [line for t in figure.axes[0].texts
+             for line in t.get_text().split("\n")]
 
     # Joined, because wrapping legitimately splits the phrase across two
     # lines -- what must not happen is the tail being dropped entirely.
@@ -505,3 +506,62 @@ def test_a_summary_with_gdi_but_no_synergy_says_why_synergy_is_missing(mod):
 
     assert "Synergy index" in rendered
     assert "session_report.py" in rendered
+
+
+def test_a_long_status_wraps_inside_its_cell_instead_of_over_its_neighbour(mod):
+    """matplotlib's table does not clip an over-wide cell -- it draws straight
+    through the next one, so "no left gait cycle segmented" rendered on top of
+    the Right column and read as that leg's value. Found by rendering the
+    page, not by any assertion."""
+    figure = mod._build_metrics_page({
+        "stance_time_s": {
+            "r": {"available": True, "value": 0.71, "units": "s"},
+            "l": {"available": False,
+                  "status": "no left gait cycle segmented"},
+            "symmetry": None},
+    })
+    table = [child for child in figure.axes[0].get_children()
+             if hasattr(child, "get_celld")][0]
+    texts = [cell.get_text().get_text() for cell in table.get_celld().values()]
+    long_cell = [t for t in texts if "no left gait cycle" in t]
+
+    assert long_cell, "the status text is missing from the table"
+    assert "\n" in long_cell[0], "the status was not wrapped"
+    assert max(len(line) for line in long_cell[0].split("\n")) <= 22
+
+
+def test_row_height_follows_the_tallest_cell(mod):
+    """Wrapping sideways-overflow into vertical-overflow is not a fix: a
+    two-line cell drew above and below its own row box at the fixed scale."""
+    one_line = mod._build_metrics_page({
+        "cadence": {"r": {"available": True, "value": 1.0, "units": "s"},
+                    "l": {"available": True, "value": 1.0, "units": "s"},
+                    "symmetry": None}})
+    two_line = mod._build_metrics_page({
+        "cadence": {"r": {"available": True, "value": 1.0, "units": "s"},
+                    "l": {"available": False,
+                          "status": "no left gait cycle segmented"},
+                    "symmetry": None}})
+
+    def row_height(figure):
+        table = [c for c in figure.axes[0].get_children()
+                 if hasattr(c, "get_celld")][0]
+        return max(cell.get_height() for cell in table.get_celld().values())
+
+    assert row_height(two_line) > row_height(one_line)
+
+
+def test_the_metadata_caveat_keeps_a_right_margin(mod):
+    """wrap=True measures against the figure, so a note placed at x=0.05 got a
+    left margin and no right one -- its last line ran flush into the page
+    edge."""
+    figure = mod._build_metadata_page(
+        {"trial_name": "t", "spatial_displacement_validated": False})
+    # Split on newlines: the metadata rows are a single artist holding every
+    # row, so measuring the artist rather than its lines would flag a block
+    # that renders perfectly well.
+    lines = [line for t in figure.axes[0].texts
+             for line in t.get_text().split("\n")]
+
+    assert "stance-phase foot velocity" in " ".join(lines)
+    assert max(len(line) for line in lines) <= 95

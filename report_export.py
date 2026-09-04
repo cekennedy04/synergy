@@ -90,6 +90,16 @@ def _wrapped_note(axis, x, y, text, width=88, fontsize=9, line_height=0.018):
     return y
 
 
+def _cell(text, width=22):
+    """One table cell's text, wrapped onto as many lines as it needs.
+
+    matplotlib's table does not clip an over-long cell -- it draws straight
+    through its neighbour, so a long "not available" reason rendered on top of
+    the adjacent leg's number and read as that leg's value.
+    """
+    return "\n".join(textwrap.wrap(str(text), width) or [""])
+
+
 def _new_text_page():
     figure = Figure(figsize=PAGE_SIZE, dpi=100)
     axis = figure.add_subplot(111)
@@ -127,11 +137,17 @@ def _build_metadata_page(metadata):
     # SPATIAL_PROVENANCE). A metadata row alone is easy to skim past, so the
     # limitation is also stated in prose on the page carrying the numbers.
     if metadata.get("spatial_displacement_validated") is False:
-        axis.text(
-            0.05, 0.32, "Note: this pipeline's inverse kinematics solves orientations only, with root translation pinned. Gait speed and stride length are therefore inferred from stance-phase foot velocity rather than measured from global displacement, and are not independent of one another. Cadence is derived from event timing and is unaffected.",
-            fontsize=9, va="top", ha="left", style="italic", wrap=True,
-            transform=axis.transAxes,
-        )
+        # _wrapped_note, not wrap=True: matplotlib wraps against the figure
+        # width, so a note starting at x=0.05 got a left margin and no right
+        # one -- the last line ran flush into the page edge.
+        _wrapped_note(
+            axis, 0.05, 0.32,
+            "Note: this pipeline's inverse kinematics solves orientations "
+            "only, with root translation pinned. Gait speed and stride length "
+            "are therefore inferred from stance-phase foot velocity rather "
+            "than measured from global displacement, and are not independent "
+            "of one another. Cadence is derived from event timing and is "
+            "unaffected.")
     return figure
 
 
@@ -374,15 +390,25 @@ def _build_metrics_page(metrics):
         row = row or {}
         rows.append([
             str(name).replace("_", " "),
-            _report_formatting.format_metric_value(row.get("r")),
-            _report_formatting.format_metric_value(row.get("l")),
-            _report_formatting.format_symmetry_value(row.get("symmetry")),
+            # Wrapped, not truncated. A status string is prose ("no left gait
+            # cycle segmented") and routinely outruns a column built for
+            # "0.71 s"; matplotlib does not clip an over-wide cell, it draws
+            # straight through the neighbour, so the text ended up sitting in
+            # the Right column reading as that leg's value.
+            _cell(_report_formatting.format_metric_value(row.get("r"))),
+            _cell(_report_formatting.format_metric_value(row.get("l"))),
+            _cell(_report_formatting.format_symmetry_value(row.get("symmetry"))),
         ])
 
     table = axis.table(cellText=rows, colLabels=columns, loc="center", cellLoc="center")
     table.auto_set_font_size(False)
     table.set_fontsize(9)
-    table.scale(1, 1.5)
+    # Row height follows the tallest cell. A fixed 1.5 fitted one line, so a
+    # wrapped two-line reason drew above and below its own row box -- the
+    # overflow moved from sideways into the next column to vertically over the
+    # row border, which is not a fix.
+    tallest = max((cell.count("\n") + 1) for row in rows for cell in row)
+    table.scale(1, 1.5 * tallest)
     return figure
 
 
