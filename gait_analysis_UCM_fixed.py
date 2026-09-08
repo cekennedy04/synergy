@@ -226,12 +226,51 @@ class MarkerTimeline:
         return self.times[row]
 
 
-def build_manual_picker(analysis):
-    """An empty GaitEventPicker over `analysis`'s own frame index space."""
-    return GaitEventPicker(
+SEEDED_EVENT_ORDER = ('rHS', 'lHS', 'rTO', 'lTO')
+
+
+def build_manual_picker(analysis, detected=None):
+    """A GaitEventPicker over `analysis`'s own frame index space, carrying
+    whatever automatic detection managed to find.
+
+    **Why it is seeded rather than empty.** Auto-trim hands over when it
+    cannot produce a *usable* gait cycle, which is not the same as finding
+    nothing: the handover condition is two ipsilateral heel strikes, so a
+    trial that yields one heel strike and three toe-offs still comes here. It
+    used to come here with an empty window, and the operator re-picked from
+    scratch events the detector had already found correctly. That is slower
+    and it is worse -- every re-picked event is a fresh chance to click the
+    wrong peak, on a trial where the detector was mostly right.
+
+    Seeded, the window opens on the machine's answer and the human corrects
+    it. Accepting it unchanged is a legitimate outcome: the operator is then
+    saying detection's events were right and only the cycle-count rule
+    rejected them.
+
+    `detected` is `(rHS, lHS, rTO, lTO)` as segment_walking holds them --
+    frame indices in this same trimmed index space, which is why they can be
+    marked directly with no conversion.
+
+    Out-of-range frames are dropped rather than raising. Trimming rebuilds the
+    index space, and a seed pointing outside it is a bug in the caller, not
+    something an operator can act on -- losing that marker leaves them a
+    window they can still finish the trial from, where an exception leaves
+    them nothing.
+    """
+    picker = GaitEventPicker(
         MarkerTimeline(analysis.markerDict['time'],
                        name=getattr(analysis, 'trial_name', '') or '',
                        signals=getattr(analysis, 'eventDetectionSignals', None)))
+    if not detected:
+        return picker
+
+    last = picker.motion.n_rows - 1
+    for event_type, rows in zip(SEEDED_EVENT_ORDER, detected):
+        for row in (rows if rows is not None else []):
+            frame = int(row)
+            if 0 <= frame <= last:
+                picker.mark(event_type, frame)
+    return picker
 
 
 def prompt_for_event_rows(picker, input_fn=None, output_fn=None):
@@ -324,16 +363,19 @@ def parse_event_rows(raw, event_type, last):
     return rows
 
 
-def collect_manual_events(analysis):
+def collect_manual_events(analysis, detected=None):
     """Get a picked event set for `analysis`, from its UI or from stdin.
 
     The provider is handed a ready-made picker built over this trial's own
-    frames. It may mark events on that picker and return None, or return a
-    picker of its own (a set restored from disk, say). Anything else is a
-    wiring mistake and is refused here rather than allowed to reach
-    segmentation as an unpackable object.
+    frames, already carrying whatever automatic detection found (`detected`,
+    as `(rHS, lHS, rTO, lTO)`) so the operator corrects rather than re-picks.
+
+    It may mark events on that picker and return None, or return a picker of
+    its own (a set restored from disk, say). Anything else is a wiring mistake
+    and is refused here rather than allowed to reach segmentation as an
+    unpackable object.
     """
-    picker = build_manual_picker(analysis)
+    picker = build_manual_picker(analysis, detected)
     provider = getattr(analysis, 'manual_event_provider', None)
     if provider is None:
         return prompt_for_event_rows(picker)
@@ -425,8 +467,14 @@ def forced_manual_entry():
         "1", "true", "yes", "on")
 
 
-def manual_steps(self):
+def manual_steps(self, detected=None):
     """Hand-picked gait events, as (rHS, lHS, rTO, lTO).
+
+    `detected` is what automatic detection found before giving up, as the
+    same four lists. It seeds the picker so the operator corrects the
+    machine's answer instead of re-picking it -- see build_manual_picker.
+    Defaults to None, which opens an empty window, for the callers that have
+    no detection result to offer.
 
     Called from segment_walking, which unpacks exactly those four in exactly
     that order. Lifted out of segment_walking (2026-08-31) so it is reachable
@@ -447,7 +495,7 @@ def manual_steps(self):
         )
 
     if self.dflag == 0:
-        picker = collect_manual_events(self)
+        picker = collect_manual_events(self, detected)
         rHS, lHS, rTO, lTO = picker.as_segment_walking_events()
 
         # Reported, never enforced. detect_correct_order's cycle is what a
@@ -1710,7 +1758,10 @@ class gait_analysis(kinematics):
                 raise Exception(autoTrimFailure)
 
         if manual_flag==1:
-            rHS,lHS,rTO,lTO = manual_steps(self)
+            # Detection's own events go in with it: the handover
+            # condition is 'no usable CYCLE', not 'nothing found',
+            # so there is usually a partly-right answer to correct.
+            rHS,lHS,rTO,lTO = manual_steps(self, (rHS, lHS, rTO, lTO))
 
             # Nothing picked is the operator declining. There is no rung four,
             # so the trial fails with the reason auto-trim gave -- not with a

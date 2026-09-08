@@ -258,6 +258,17 @@ def make_manual_event_provider(show=None, model_factory=EventPickerModel):
     can drive the whole provider path without a display; it defaults to the
     real matplotlib window.
 
+    **The emptiness check below is a backstop, and since 2026-09-08 it is a
+    partial one.** `build_manual_picker` now seeds the picker with whatever
+    automatic detection found, so on a trial where detection found something
+    the picker arrives non-empty and a window that never opened would return
+    those seeded events rather than an empty set -- which this check could not
+    tell from an operator accepting the machine's answer, because that is a
+    real and expected outcome. The deterministic guard is
+    `assert_interactive_backend`, which `show_picker_window` calls before
+    building anything; this check still catches the case where detection found
+    nothing at all, and is kept for it.
+
     **An empty picker is ambiguous, and the ambiguity is dangerous.**
     `segment_walking` reads an empty set as the operator declining, and falls
     back to auto-trim. But a window that never opened also returns an empty
