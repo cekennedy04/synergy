@@ -57,6 +57,7 @@ _MODULE_LOADING_PATH = os.path.join(REPO_ROOT, "module_loading.py")
 _GAIT_EVENT_PICKER_UI_PATH = os.path.join(REPO_ROOT, "gait_event_picker_ui.py")
 _GAIT_EVENT_PICKER_TK_PATH = os.path.join(REPO_ROOT, "gait_event_picker_tk.py")
 _GDI_SCORING_PATH = os.path.join(REPO_ROOT, "gdi_scoring.py")
+_SESSION_SCAFFOLD_PATH = os.path.join(REPO_ROOT, "session_scaffold.py")
 _TRIAL_SCORES_PATH = os.path.join(REPO_ROOT, "trial_scores.py")
 
 # The normative reference GDI is scored against. Lives under context/, which
@@ -1210,6 +1211,96 @@ def drain_queue(result_queue, on_progress, on_result, on_error, on_batch=None,
     return terminal
 
 
+def _load_session_scaffold():
+    """Lazy, path-based load matching the other pipeline modules."""
+    return _load_module_by_path("session_scaffold_for_clinician_gui",
+                                _SESSION_SCAFFOLD_PATH)
+
+
+def session_participant_code(session_dir, scaffold=None):
+    """Which participant an OpenCap session belongs to, as a short code.
+
+    The code, never the name. `sessionMetadata.yaml`'s `subjectID` is
+    sometimes a participant code and sometimes a real full name, so this
+    returns `session_scaffold.initials` of it either way -- 'AN', not
+    'Aravind Nehrujee'. This repository is public and `session_scaffold`
+    already sets the rule that nothing writes a subjectID into a filename or
+    a log line; a value that is displayed in a window and put into a warning
+    message needs the same treatment.
+
+    None when the session carries no metadata, which is not an error -- a
+    scaffolded Xsens session has its own layout and need not have one.
+    """
+    scaffold = scaffold or _load_session_scaffold()
+    subject_id = scaffold.read_subject_id(session_dir)
+    if not subject_id:
+        return None
+    return scaffold.initials(subject_id)
+
+
+def trial_participant_code(trial_name):
+    """The participant code a trial's filename claims: 'AN-012' -> 'AN'.
+
+    The convention is a short code, a separator, then the trial number, and
+    all three are required. Matching a looser shape reads 'trial_two' as
+    participant 'TRIAL' -- which is how a guard against a rare, serious
+    mistake turns into a warning on ordinary files, and a warning that fires
+    on ordinary files is one an operator learns to dismiss unread.
+
+    None when the name does not follow the convention: nothing can be
+    concluded from it, which is not the same as a mismatch.
+    """
+    match = re.match(r"\s*([A-Za-z]{2,4})[-_]\d", str(trial_name))
+    return match.group(1).upper() if match else None
+
+
+def check_participant_match(session_dir, trial_names, scaffold=None):
+    """(ok, message) -- does this session belong to the trials being run?
+
+    **Why this exists.** A trial is processed against the session's scaled
+    model, so running one participant's recordings against another's session
+    produces a complete, plausible, entirely wrong result. `session_scaffold`
+    names that as the failure mode this project keeps running into, and on
+    2026-09-04 it happened again in the GUI: twelve AN-xxx trials were
+    processed into an OpenCap session belonging to a different participant.
+    Nothing objected, because nothing in the window ever said whose session
+    was selected -- the folder is named `OpenCapData_<uuid>` and the identity
+    is inside a metadata file the operator has no reason to open.
+
+    Returns ok=True when the codes agree, when the session carries no
+    subjectID, or when the trials do not follow the code-prefix convention.
+    Absence of evidence is not a mismatch, and this must not cry wolf on a
+    session it simply cannot check.
+
+    It reports; it never blocks. This project's standing rule is that code
+    flags data problems and a human decides -- a legitimately unconventional
+    trial name must not be un-runnable.
+    """
+    codes = {code for code in (trial_participant_code(name)
+                               for name in trial_names) if code}
+    if not codes:
+        return True, ""
+
+    session_code = session_participant_code(session_dir, scaffold)
+    if session_code is None:
+        return True, ""
+
+    mismatched = sorted(codes - {session_code})
+    if not mismatched:
+        return True, ""
+
+    listed = ", ".join(mismatched)
+    return False, (
+        f"This session belongs to participant {session_code}, but the "
+        f"selected trials are named for {listed}.\n\n"
+        "Every trial is processed against this session's scaled model, so "
+        "running one participant's recordings against another's session "
+        "produces a complete and plausible result that is simply the wrong "
+        "person's.\n\n"
+        "Continue only if you know the pairing is right."
+    )
+
+
 def validate_inputs(session_dir, mvnx_path):
     """Pure validation function, no Tk dependency -- importable and testable
     standalone (plan U1 requirement).
@@ -2006,6 +2097,15 @@ class ClinicianGUI:
         ttk.Button(frame, text="Browse...", command=self._pick_session_dir).grid(
             row=1, column=1, padx=(6, 0)
         )
+        # Whose session this is. Blank when the session carries no subjectID,
+        # rather than saying "unknown" -- a scaffolded Xsens session need not
+        # have one, and a permanent "unknown" beside a perfectly good session
+        # is noise an operator stops reading.
+        self.participant_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=self.participant_var,
+                  foreground=DESIGN_ACCENT).grid(
+            row=2, column=0, sticky="w", pady=(2, 0)
+        )
 
         ttk.Label(frame, text="Xsens .mvnx trial file:").grid(
             row=2, column=0, sticky="w", pady=(10, 0)
@@ -2135,6 +2235,27 @@ class ClinicianGUI:
         # Windows delivers multiples of 120 in event.delta.
         self._results_canvas.yview_scroll(int(-event.delta / 120), "units")
 
+    def _confirm_participant(self, trial_names):
+        """True to proceed. Warns first if the session and trials disagree.
+
+        A warning, not a refusal -- this project's standing rule is that code
+        flags a data problem and a human decides. But it is modal and it
+        defaults to "no", because the mistake it guards is silent: the run
+        succeeds, the report is complete, and every number in it belongs to
+        somebody else.
+        """
+        try:
+            ok, message = check_participant_match(self.session_dir, trial_names)
+        except Exception:                                  # noqa: BLE001
+            # A guard must never be the reason a run cannot start.
+            return True
+        if ok:
+            return True
+        return bool(messagebox.askokcancel(
+            "Session and trials name different participants", message,
+            default=messagebox.CANCEL, icon=messagebox.WARNING,
+            parent=self.root))
+
     def _on_batch_clicked(self):
         """Pick a folder of .mvnx files and process the lot.
 
@@ -2156,6 +2277,14 @@ class ClinicianGUI:
             initialdir=os.path.dirname(self.mvnx_path) or os.path.expanduser("~"),
         )
         if not mvnx_dir:
+            return
+        # Checked here rather than per trial inside run_batch: a batch runs
+        # unattended, and a modal question fifteen times over is a dialog an
+        # operator clicks through. Ask once, about the whole folder, before
+        # anything starts. This is the exact shape of the 2026-09-04 mistake
+        # -- twelve trials into the wrong participant's session in one go.
+        if not self._confirm_participant(
+                [path.stem for path in Path(mvnx_dir).glob("*.mvnx")]):
             return
 
         self.run_button.state(["disabled"])
@@ -2233,6 +2362,27 @@ class ClinicianGUI:
             self.session_dir_var.set(selected)
             self._revalidate()
 
+    def _refresh_participant_label(self):
+        """Say whose session is selected, in its own label.
+
+        Deliberately NOT appended to the session path field: that field is an
+        editable Entry whose contents are read back as the path
+        (`_on_paths_edited`), so decorating it would feed "<path>
+        [participant SB]" back in as a directory the moment anyone typed in
+        it.
+
+        An OpenCap session folder is named `OpenCapData_<uuid>` and the
+        identity lives in a metadata file the operator has no reason to open.
+        On 2026-09-04 that let twelve trials be processed into the wrong
+        participant's session with nothing to notice. Saying it here is what
+        makes a wrong pick visible before a run rather than after one.
+        """
+        try:
+            code = session_participant_code(self.session_dir) if self.session_dir else None
+        except Exception:                                  # noqa: BLE001
+            code = None
+        self.participant_var.set(f"Participant: {code}" if code else "")
+
     def _pick_mvnx_file(self):
         # Mirrors Examples/gaitAnalysis-UCM.py's _select_zip_interactively
         # picker pattern.
@@ -2248,6 +2398,7 @@ class ClinicianGUI:
 
     def _revalidate(self):
         ready, reason = validate_inputs(self.session_dir, self.mvnx_path)
+        self._refresh_participant_label()
         self.run_button.configure(state="normal" if ready else "disabled")
         self.reason_var.set(reason)
         return ready, reason
@@ -2260,6 +2411,8 @@ class ClinicianGUI:
         # run; _revalidate's own message then explains why nothing happened.
         ready, _reason = self._revalidate()
         if not ready:
+            return
+        if not self._confirm_participant([Path(self.mvnx_path).stem]):
             return
 
         self.run_button.configure(state="disabled")
