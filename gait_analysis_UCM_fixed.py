@@ -392,6 +392,39 @@ def _gait_cycle_possible(leg, rHS, lHS):
     return len(rHS) > 0 and len(lHS) > 0 and max(len(rHS), len(lHS)) >= 2
 
 
+FORCE_MANUAL_EVENTS_VAR = "SYNERGY_FORCE_MANUAL_EVENTS"
+
+
+def forced_manual_entry():
+    """Is the picker being demanded deliberately, rather than by a failure?
+
+    A test seam, and the reason it exists is that the thing it tests cannot
+    otherwise be reached. The gait-event picker is the fallback for automatic
+    detection failing, and on 2026-09-08 a scan of all 90 processed trials in
+    this dataset found **zero** auto-trim failures. So the picker -- including
+    the clinician GUI's cross-thread modal handshake, which is the least
+    covered path in the application -- could not be exercised on real data at
+    all, and "it works" rested on unit tests of the pieces.
+
+    Set `SYNERGY_FORCE_MANUAL_EVENTS=1` and detection's result is discarded on
+    every trial, sending each one to the picker as though no cycle had been
+    found. Unset (the default) nothing here runs and nothing changes.
+
+    **This does not fake a result.** It forces the handover, not the answer:
+    the events that come back are the ones a human actually picked in the
+    window, and the trial then proceeds down exactly the path a genuinely
+    unsegmentable trial would take. What it cannot tell you is whether
+    detection would have failed on its own.
+
+    It announces itself on every trial, because a variable left set in a shell
+    would otherwise quietly turn an unattended batch into fifteen modal
+    windows, or -- with `allow_manual_entry=False` -- into fifteen failures
+    blamed on the data.
+    """
+    return os.environ.get(FORCE_MANUAL_EVENTS_VAR, "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def manual_steps(self):
     """Hand-picked gait events, as (rHS, lHS, rTO, lTO).
 
@@ -1633,6 +1666,25 @@ class gait_analysis(kinematics):
                 'set, so the retry loop can report success having found '
                 'nothing.'
             )
+
+        # The test seam. Placed here, after detection has fully run, so a
+        # forced trial takes the same path a genuinely unsegmentable one does
+        # rather than a shortcut around it -- the point is to exercise the
+        # handover, and a shortcut would exercise something else.
+        if autoTrimFailure is None and forced_manual_entry():
+            autoTrimFailure = (
+                FORCE_MANUAL_EVENTS_VAR + ' is set, so automatic detection was '
+                'discarded on purpose and this trial was handed to the picker. '
+                'Detection had in fact found right heel strikes: ' +
+                str(len(rHS)) + ', left: ' + str(len(lHS)) + '. This is a '
+                'testing switch: unset ' + FORCE_MANUAL_EVENTS_VAR +
+                ' for normal operation.'
+            )
+            # Short, because the interactive path prints the full reason on
+            # the next line. This banner exists for the unattended path, which
+            # raises instead of printing -- there, a batch failing every trial
+            # would otherwise look like bad data rather than a set variable.
+            print('*** TESTING SWITCH ACTIVE: ' + FORCE_MANUAL_EVENTS_VAR)
 
         # Rung three. Only now -- the automatic path has run and come up empty,
         # which is the whole condition for interrupting a person. Before this,

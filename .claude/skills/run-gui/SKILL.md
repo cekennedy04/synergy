@@ -165,3 +165,63 @@ the *builders* directly with fixtures. It cannot tell you the button is wired
 to them, that the thread handoff works, or that the window stays responsive.
 Do both: the gallery for what the output looks like, this for whether the
 application works.
+
+## Testing the gait-event picker on demand
+
+The picker is the fallback for automatic gait-event detection failing, and it
+is the least covered path in the application: the worker thread posts a
+`ManualEventRequest`, the main thread opens a modal `Toplevel` from its
+`root.after` poll, and the worker blocks until it is answered. Nothing
+automated exercises that handshake.
+
+It also cannot be reached by waiting. A scan of all 90 processed trials in
+this dataset on 2026-09-08 found **zero** auto-trim failures, so there is no
+trial to test it on.
+
+Set the switch instead:
+
+```powershell
+$env:SYNERGY_FORCE_MANUAL_EVENTS = "1"
+Start-Process -FilePath "C:\Users\cladi\miniconda3\python.exe" `
+  -ArgumentList "launch_gui.py" -WorkingDirectory "C:\Users\cladi\synergy" -PassThru
+```
+
+Every trial then reports that detection found no usable cycle and hands over
+to the picker, exactly as a genuinely unsegmentable trial would. **Unset it
+afterwards** -- it must be set before the GUI starts, so closing and
+relaunching without it is the way back.
+
+It forces the *handover*, not the answer: the events that come back are the
+ones actually picked in the window. What it cannot tell you is whether
+detection would have failed on its own.
+
+### What to check once the window opens
+
+1. **It opens at all**, and the run pauses rather than continuing behind it.
+2. **The rest of the GUI is blocked** while it is up -- Run and Export should
+   not be clickable, and the window should refuse to close underneath it.
+3. **Picking works**: click on the curves, right-click to erase, the verdict
+   line updates, the picked list on the left agrees with the markers.
+4. **"Use these events" lets the run finish**, and the resulting trial produces
+   the same artefacts a normal one does -- curve matrix, metrics, PDF.
+5. **The X button falls back to auto-trim** rather than hanging the worker.
+   This is the failure mode worth the most attention: the worker is blocked on
+   an answer, and a close that never sends one leaves it blocked forever.
+6. **One window per trial, not two.** `run_gait_analysis` builds
+   `gait_analysis` twice per trial (right leg, then left), so without
+   `reuse_across_legs` the same question is asked twice about the same curves
+   and can come back with two different answers.
+
+### The standalone picker, without the GUI
+
+`rescue_trial.py` runs the picker on one already-converted trial in its own
+process, re-entering at the gait stage:
+
+```
+python rescue_trial.py --session <session folder> --trial <trial name>
+```
+
+Cheaper than a GUI run -- it reuses the `.mot` on disk instead of redoing
+conversion and IK -- and the right tool for checking the picker window itself.
+It does **not** exercise the GUI's cross-thread handshake, which is the risky
+part, so it is a complement to the switch above rather than a substitute.
