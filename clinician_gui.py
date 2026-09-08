@@ -2038,6 +2038,8 @@ class ClinicianGUI:
         self.root = root or tk.Tk()
         self.root.title("Clinician Trial Report")
         self._data_font = apply_design_system(self.root)
+        # Closing mid-run is silent and expensive -- see _on_close_requested.
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
         self.session_dir = ""
         self.mvnx_path = ""
@@ -2234,6 +2236,46 @@ class ClinicianGUI:
     def _on_mousewheel(self, event):
         # Windows delivers multiples of 120 in event.delta.
         self._results_canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def run_in_progress(self):
+        """Is a pipeline or batch thread still working?"""
+        thread = self._pipeline_thread
+        return bool(thread is not None and thread.is_alive())
+
+    def _on_close_requested(self):
+        """Confirm before closing while a run is still going.
+
+        **Why this is worth a dialog.** Both pipeline threads are daemons, so
+        closing the window kills the run instantly and mid-trial. In a batch
+        that is expensive in a way nothing announces: `run_batch` pools the
+        session once, at the very end, so a batch abandoned at trial 11 of 15
+        leaves eleven trials' curves on disk and no `_all-trials_` matrix at
+        all -- and since 2026-09-04 the pooled matrix is what the report's
+        GDI page is scored from, so the next export reports no scores.
+
+        It is also indistinguishable afterwards from the batch dying on its
+        own, which this project has seen twice and never explained. On
+        2026-09-08 an abandoned run was briefly diagnosed as a third
+        occurrence of that bug on exactly this ambiguity. Asking here means
+        the operator knows they ended it, and so does anyone reading the
+        folder later.
+
+        There is still no cancel control (KTD8, deliberate for v1). This is
+        not one: it does not stop a run gracefully, it only makes ending one
+        deliberate rather than accidental.
+        """
+        if self.run_in_progress() and not messagebox.askokcancel(
+                "A run is still in progress",
+                "Closing now ends the run immediately.\n\n"
+                "If this is a whole-session run, the trials already finished "
+                "keep their own results, but the session is pooled only at "
+                "the end -- so closing before it finishes leaves no combined "
+                "matrix, and the exported report will have no GDI scores.\n\n"
+                "Close anyway?",
+                default=messagebox.CANCEL, icon=messagebox.WARNING,
+                parent=self.root):
+            return
+        self.root.destroy()
 
     def _confirm_participant(self, trial_names):
         """True to proceed. Warns first if the session and trials disagree.

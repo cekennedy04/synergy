@@ -147,3 +147,31 @@ def test_a_prose_filename_with_a_separator_is_not_a_participant_code(mod):
     # ...while the real convention still reads.
     assert mod.trial_participant_code("AN-012") == "AN"
     assert mod.trial_participant_code("MINT-004") == "MINT"
+
+
+# ---------------------------------------------------------------------------
+# Closing the window mid-run. Same file because both guard the same class of
+# thing: a silent, expensive mistake with no failure to notice afterwards.
+# ---------------------------------------------------------------------------
+
+class _FakeThread:
+    def __init__(self, alive):
+        self._alive = alive
+
+    def is_alive(self):
+        return self._alive
+
+
+def test_run_in_progress_reads_the_pipeline_thread(mod):
+    """The close guard keys off this, and it must not claim a finished run is
+    still going -- a dialog on every ordinary close is one nobody reads."""
+    gui = mod.ClinicianGUI.__new__(mod.ClinicianGUI)
+
+    gui._pipeline_thread = None
+    assert gui.run_in_progress() is False
+
+    gui._pipeline_thread = _FakeThread(alive=False)
+    assert gui.run_in_progress() is False
+
+    gui._pipeline_thread = _FakeThread(alive=True)
+    assert gui.run_in_progress() is True
