@@ -279,7 +279,7 @@ def test_a_non_interactive_backend_is_refused_on_the_real_pipeline(
     """
     _gait_module, ui = pipeline
     matplotlib = pytest.importorskip("matplotlib")
-    monkeypatch.setattr(matplotlib, "get_backend", lambda: "Agg")
+    monkeypatch.setattr(matplotlib, "get_backend", lambda *a, **k: "Agg")
 
     # NOT redundant with test_a_non_interactive_backend_is_refused_before_
     # drawing in test_gait_event_picker_ui.py, which calls show_picker_window
@@ -330,21 +330,72 @@ def test_a_never_opened_window_over_a_seed_still_fails_loudly(pipeline,
                manual_event_provider=ui.make_manual_event_provider(
                    show=never_opens))
 
-    # Stated rather than implied: both halves of this test's premise -- that
-    # the seed was non-empty (so the emptiness backstop could not fire) and
-    # that it carried no rHS (so the branch below is the one reached) -- are
-    # facts about the trial, and a data change that alters either should
-    # report itself here instead of surfacing as a confusing assertion below.
-    assert seed == {'rHS': 0, 'rTO': 1, 'lHS': 1, 'lTO': 0}, (
+    # Stated rather than implied, and only the two facts this test rests on:
+    # the seed was non-empty (so the emptiness backstop could not fire) and it
+    # carried no rHS (so the branch below is the one reached). The rest of the
+    # composition is incidental output of prominence escalation and cumulative
+    # auto-trim on one gitignored trial -- pinning it exactly would break this
+    # test on a detector retune it does not depend on.
+    assert seed['rHS'] == 0 and any(seed.values()), (
         "the seed composition changed; this test pins the zero-rHS branch: %r"
         % (seed,))
 
     message = str(caught.value)
-    assert "no heel-strike events" in message, (
-        "an incomplete seed passed as a segmentable answer: " + message)
+    # The phrase unique to the manual-entry branch. "no heel-strike events"
+    # would also pass here, but only by accident of capitalisation -- the two
+    # detection-failure messages say "No heel-strike events" with a capital N,
+    # which is not a property anyone editing those strings would know to
+    # preserve. tests/test_gait_analysis_manual_entry.py:441 pins this same
+    # phrase, so the CI-visible tier and this one move together.
+    assert "Manual entry supplied" in message, (
+        "an incomplete seed passed as a segmentable answer, or the failure "
+        "did not come from the manual-entry branch: " + message)
     assert "'rHS': 0" in message, (
         "the failure did not quote what the picker was actually holding: "
         + message)
+
+
+def test_one_picked_heel_strike_still_names_the_leg_and_the_counts(
+        pipeline, session_dir):
+    """One heel strike is not a cycle -- and it is the shape the handover was
+    built for, not a corner of it.
+
+    `_gait_cycle_possible` hands over on `len(hsIps)` of 0 OR 1, and the 1 case
+    is the one the codebase names: `build_manual_picker`'s docstring calls out
+    'one heel strike and three toe-offs' as what reaches the picker, and
+    `tests/test_picker_seeding.py` pins it under the name
+    `test_the_partial_detection_that_actually_triggers_the_handover`.
+
+    It used to fall past the `len(hsIps) == 0` branch to a bare 'Not enough
+    gait cycles found.' -- no leg, no counts, no sign that a human had been
+    asked at all. An operator who had just picked an event was told a sentence
+    naming nothing they could act on, which is the same quiet drop the zero
+    case has been guarded against since manual entry existed.
+    """
+    _gait_module, ui = pipeline
+    held = {}
+
+    def picks_one_heel_strike(model):
+        model.select('rHS')
+        model.pick_at(float(int(model.picker.motion.n_rows * 0.5)))
+        held.update(model.picker.counts())
+
+    with pytest.raises(Exception) as caught:
+        _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
+               manual_event_provider=ui.make_manual_event_provider(
+                   show=picks_one_heel_strike))
+
+    assert held.get('rHS') == 1, (
+        "the premise changed; this test pins the one-rHS branch: %r" % (held,))
+
+    message = str(caught.value)
+    assert message != 'Not enough gait cycles found.', (
+        "a hand-picked trial was dropped with a message naming nothing the "
+        "operator can act on")
+    assert "Manual entry supplied" in message, (
+        "the failure did not come from the manual-entry branch: " + message)
+    assert "'rHS': 1" in message, (
+        "the failure did not say what the picker was holding: " + message)
 
 
 def test_auto_trim_keeps_the_picker_signals_in_step(pipeline, session_dir):

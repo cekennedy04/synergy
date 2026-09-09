@@ -441,6 +441,34 @@ def test_an_empty_pick_for_this_leg_is_not_reported_as_a_detection_failure(sourc
     assert "Manual entry supplied no heel-strike events" in tail
 
 
+def test_one_picked_heel_strike_is_not_reported_as_a_bare_cycle_shortage(source):
+    """SOURCE PIN. Behaviour proven by test_gait_analysis_picker_end_to_end.py::
+    test_one_picked_heel_strike_still_names_the_leg_and_the_counts.
+
+    `_gait_cycle_possible` hands over on 0 OR 1 ipsilateral heel strikes, and
+    1 is the shape the handover was built for -- `build_manual_picker`'s
+    docstring names 'one heel strike and three toe-offs' as what reaches the
+    picker, and test_picker_seeding.py pins that exact seed. But 1 skips the
+    `len(hsIps) == 0` branch above and used to land on a bare 'Not enough gait
+    cycles found.', which names no leg, no counts, and no sign a human was
+    asked.
+
+    Pinned HERE as well as end-to-end because this file runs in CI and that
+    one does not: the e2e tier needs OpenSim and a gitignored Data/, so a
+    regression in this branch would otherwise be invisible to every green run
+    on the runner.
+    """
+    guard = source.index("if n_gait_cycles <1:")
+    tail = source[guard:guard + 1200]
+
+    assert "manualEventPicker" in tail, (
+        "the cycle-shortage guard does not distinguish hand-picked events "
+        "from a detection failure")
+    assert "Manual entry supplied" in tail
+    assert "counts()" in tail, (
+        "the failure does not quote what the picker was holding")
+
+
 # -- ordering is reported, never enforced ----------------------------------
 
 

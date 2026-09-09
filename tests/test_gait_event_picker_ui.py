@@ -371,7 +371,7 @@ def test_a_deliberate_cancel_is_not_an_error(ui, picker):
 def test_a_non_interactive_backend_is_refused_before_drawing(ui, model,
                                                              monkeypatch):
     matplotlib = pytest.importorskip("matplotlib")
-    monkeypatch.setattr(matplotlib, "get_backend", lambda: "Agg")
+    monkeypatch.setattr(matplotlib, "get_backend", lambda *a, **k: "Agg")
 
     with pytest.raises(RuntimeError, match="never opens a window"):
         ui.show_picker_window(model)

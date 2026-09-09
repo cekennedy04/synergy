@@ -33,13 +33,15 @@ finds the `opencap-processing` environment (the only place `opensim` is
 installed) and re-executes the GUI under it. On Windows, `launch_gui.bat` does
 the same and can be double-clicked.
 
-Note that the **tests** run under a different interpreter than the app: `pytest`
-lives in base, not in `opencap-processing`. Since 2026-09-01 `pytest` is installed in
-`opencap-processing` too, and running it there is the *only* way to exercise the tests
-that need real OpenSim — see [Testing it](#testing-it) below for both tiers.
+Note that the **tests** run in two tiers, and the two are not equivalent. Base python
+runs most of the suite and needs no OpenSim; `opencap-processing` (which has had `pytest`
+since 2026-09-01) is the only tier that exercises the OpenSim-dependent tests, which
+otherwise skip. See [Testing it](#testing-it) below for both invocations and what each
+one covers.
 
 ```
-~/miniconda3/python.exe -m pytest tests -q
+~/miniconda3/python.exe -m pytest tests -q                          # most of the suite
+~/miniconda3/envs/opencap-processing/python.exe -m pytest tests -q  # + real OpenSim
 ```
 
 See `.claude/skills/run-gui/SKILL.md` for the failure modes and the

@@ -1891,6 +1891,24 @@ class gait_analysis(kinematics):
         # Contralateral gait events: toe-off, heel strike.
         gaitEvents_cont = np.zeros((n_gait_cycles, 2),dtype=int)
         if n_gait_cycles <1:
+            # The one-heel-strike handover, which reaches here rather than the
+            # len(hsIps) == 0 branch above. _gait_cycle_possible hands over on
+            # 0 OR 1 ipsilateral heel strikes, and 1 is the shape the handover
+            # was built for -- build_manual_picker's docstring names 'one heel
+            # strike and three toe-offs' as what arrives at the picker. Without
+            # this branch an operator who had just picked events was told
+            # 'Not enough gait cycles found.', which names no leg, no counts,
+            # and no sign that a human had been asked: the same quiet drop the
+            # zero case has been guarded against since manual entry existed.
+            if getattr(self, 'manualEventPicker', None) is not None:
+                raise Exception(
+                    "Manual entry supplied " + str(len(hsIps)) + " heel strike"
+                    + ("" if len(hsIps) == 1 else "s") + " for the '" + leg +
+                    "' leg, which is not enough for a gait cycle. Picked so "
+                    "far: " + str(self.manualEventPicker.counts()) + ". A "
+                    'cycle runs heel strike to the next heel strike on the '
+                    'same leg, so this leg needs at least two.'
+                )
             raise Exception('Not enough gait cycles found.')
 
         for i in range(n_gait_cycles):
