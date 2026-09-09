@@ -22,10 +22,15 @@ default suite on base python stays green. That makes the suite two-tier, and
 the difference is worth knowing before trusting a green run:
 
     ~/miniconda3/python.exe -m pytest tests -q
-        538 passed, 6 skipped  -- everything except this file
+        everything except this file, which skips
 
     ~/miniconda3/envs/opencap-processing/python.exe -m pytest tests -q
-        544 passed, 0 skipped  -- including this file, against real OpenSim
+        including this file, against real OpenSim
+
+Deliberately no pass/skip counts here. They were quoted as 538/6 and 544/0
+until 2026-09-08, by which point the suite had grown past 845 and the numbers
+were quietly wrong -- a stale count in a docstring is worse than no count,
+because it reads as a check someone can make and fails them silently.
 
 Only the second actually exercises gait_analysis. pytest was installed into
 the opencap-processing environment on 2026-09-01 for exactly this; nothing
@@ -254,17 +259,92 @@ def test_picking_one_leg_under_auto_says_so(pipeline, session_dir):
     assert "marker data quality" not in message
 
 
-def test_a_window_that_never_opens_does_not_pass_as_a_decline(pipeline,
-                                                              session_dir):
-    """The silent failure: plt.show() returns immediately under a
-    non-interactive backend, and an empty picker reads as a decline. This must
-    surface as an error naming the cause, not vanish into auto-trim."""
-    _gait_module, ui = pipeline
+def test_a_non_interactive_backend_is_refused_on_the_real_pipeline(
+        pipeline, session_dir, monkeypatch):
+    """The silent failure this pair of tests exists for: `plt.show()` returns
+    immediately under a non-interactive backend, so the operator never sees a
+    window and whatever the picker holds is passed off as their answer.
+    make_reports.py and make_comparison_figures.py both force Agg process-wide
+    at import, so any process that has touched either would hit this.
 
-    with pytest.raises(RuntimeError, match="never opened"):
+    Until 2026-09-08 the check that caught it was an emptiness backstop in
+    `make_manual_event_provider`, and this test drove it with
+    `show=lambda model: None` -- which never called the real `show` at all, so
+    it proved the backstop worked and nothing about the path an operator takes.
+    Seeding made the backstop partial (see the test below), and moved the
+    deterministic guard to `assert_interactive_backend`, which
+    `show_picker_window` calls before building anything. So this now runs the
+    REAL `show_picker_window` through real `segment_walking`, which is both the
+    honest guard and a stronger test than the one it replaces.
+    """
+    _gait_module, ui = pipeline
+    matplotlib = pytest.importorskip("matplotlib")
+    monkeypatch.setattr(matplotlib, "get_backend", lambda: "Agg")
+
+    # NOT redundant with test_a_non_interactive_backend_is_refused_before_
+    # drawing in test_gait_event_picker_ui.py, which calls show_picker_window
+    # directly. The point here is the empty argument list below: it proves the
+    # guarded show is what make_manual_event_provider DEFAULTS to and that
+    # segment_walking actually reaches it. Keep both -- and note this one runs
+    # only in the opencap tier, so the unit copy is CI's only cover.
+    with pytest.raises(RuntimeError, match="never opens a window"):
+        _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
+               manual_event_provider=ui.make_manual_event_provider())
+
+
+def test_a_never_opened_window_over_a_seed_still_fails_loudly(pipeline,
+                                                              session_dir):
+    """The residual risk seeding introduced, pinned so it stays loud.
+
+    `build_manual_picker` seeds the picker with what detection found, so on a
+    trial where detection found *something* a window that never opened returns
+    those seeded events rather than an empty set -- and the emptiness backstop
+    cannot tell that from an operator accepting the machine's answer, which is
+    a legitimate outcome. The backstop therefore does not fire here.
+
+    What must not follow is a silent pass. This trial seeds ZERO right heel
+    strikes (one lHS and one rTO), so it lands on the `len(hsIps) == 0` branch,
+    which knows manual entry was involved: it names the leg and quotes the
+    counts, and an operator who saw no window is told what was actually held
+    rather than being dropped back to auto-trim.
+
+    **That guarantee is currently only half the story, and this test pins the
+    half that holds.** Reaching the picker on an explicit leg means
+    `_gait_cycle_possible` was false, which is `len(hsIps)` of 0 *or* 1. The
+    one-heel-strike case does not reach the branch asserted here -- it falls
+    through to `n_gait_cycles == 0` and raises a bare 'Not enough gait cycles
+    found.', with no leg, no counts and no mention of manual entry. That is the
+    same quiet drop this test exists to forbid, and it wants the
+    `manualEventPicker is not None` branch the zero case already has. Widen
+    this test when it gets one; do not widen the claim before then.
+    """
+    _gait_module, ui = pipeline
+    seed = {}
+
+    def never_opens(model):
+        """A window that never opened still had the seed marked on it."""
+        seed.update(model.picker.counts())
+
+    with pytest.raises(Exception) as caught:
         _build(pipeline, session_dir, leg='r', allow_manual_entry=True,
                manual_event_provider=ui.make_manual_event_provider(
-                   show=lambda model: None))
+                   show=never_opens))
+
+    # Stated rather than implied: both halves of this test's premise -- that
+    # the seed was non-empty (so the emptiness backstop could not fire) and
+    # that it carried no rHS (so the branch below is the one reached) -- are
+    # facts about the trial, and a data change that alters either should
+    # report itself here instead of surfacing as a confusing assertion below.
+    assert seed == {'rHS': 0, 'rTO': 1, 'lHS': 1, 'lTO': 0}, (
+        "the seed composition changed; this test pins the zero-rHS branch: %r"
+        % (seed,))
+
+    message = str(caught.value)
+    assert "no heel-strike events" in message, (
+        "an incomplete seed passed as a segmentable answer: " + message)
+    assert "'rHS': 0" in message, (
+        "the failure did not quote what the picker was actually holding: "
+        + message)
 
 
 def test_auto_trim_keeps_the_picker_signals_in_step(pipeline, session_dir):

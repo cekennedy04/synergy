@@ -34,7 +34,9 @@ installed) and re-executes the GUI under it. On Windows, `launch_gui.bat` does
 the same and can be double-clicked.
 
 Note that the **tests** run under a different interpreter than the app: `pytest`
-lives in base, not in `opencap-processing`.
+lives in base, not in `opencap-processing`. Since 2026-09-01 `pytest` is installed in
+`opencap-processing` too, and running it there is the *only* way to exercise the tests
+that need real OpenSim — see [Testing it](#testing-it) below for both tiers.
 
 ```
 ~/miniconda3/python.exe -m pytest tests -q
@@ -42,6 +44,182 @@ lives in base, not in `opencap-processing`.
 
 See `.claude/skills/run-gui/SKILL.md` for the failure modes and the
 `SYNERGY_PYTHON` override.
+
+## The gait-event picker
+
+Some trials cannot be segmented automatically. The picker is the window an operator
+gets in that case: the same curves the detector failed on, with the events placed by
+hand instead. It sits inside **step 2 of the [pipeline](#pipeline) below**,
+gait-cycle segmentation — everything downstream of that step depends on the events
+this window produces.
+
+![The gait-event picker window](docs/images/gait-event-picker.png)
+
+*Rendered by `render_gallery.py` on deliberately awkward synthetic signals, so the
+waveforms are not a real trial — the layout, controls and readouts are exactly what an
+operator sees. To refresh it after changing the picker's drawing code, run
+`render_gallery.py` and copy `context/render-gallery/picker_window.png` over this file;
+the gallery writes to a gitignored directory, so this copy will not update itself.*
+
+### Why it exists
+
+Segmentation finds heel strikes and toe-offs by running `scipy.signal.find_peaks` over
+four marker traces. On a clean walk that works. On some trials it does not, and
+`segment_walking` escalates through a fallback chain before it gives up:
+
+1. **Lower the peak prominence** — 0.3, then 0.25, then 0.2.
+2. **Auto-trim and retry** — shorten the trial from the end and run detection again,
+   repeatedly.
+3. **Ask a human** — this picker.
+
+There is no rung four. By the time the window opens, the machine has genuinely run out
+of ideas, so declining fails the trial rather than falling through to something else.
+
+**In practice almost nothing reaches rung three.** 4 of the 77 trials in `Data/` fail the
+ordering check at every prominence — but that only sends them to rung two, and a scan of
+all 90 processed trials on 2026-09-08 found *zero* auto-trim failures. So the picker is a
+safety net that, on this dataset, has not yet had to catch anything. Which is also why it
+needs the escape hatch below to be testable at all.
+
+### What the operator sees
+
+Two panels — right leg on top, left leg below. Each carries the heel (`calc`) and toe
+traces for that leg: the **same four signals `detect_gait_peaks` runs `find_peaks`
+over**. That is deliberate. Picking against a different rendering of the trial would
+mean the human and the detector were answering different questions.
+
+The x axis is the **frame index, not time**. Events are stored as frame indices the
+whole way through, because `segment_walking` consumes indices — putting seconds in
+between would add a conversion that can only lose precision.
+
+### Using it
+
+| Action | Effect |
+| --- | --- |
+| Radio buttons (`rHS` / `rTO` / `lHS` / `lTO`) | choose which kind of event you are placing |
+| **Left-click on a panel** | place an event there |
+| **Right-click on an event** | erase it |
+| Hover | readout shows the frame and time under the cursor |
+| Toolbar zoom / pan | navigate without depositing events |
+| **Use these events** | accept the picked set and continue the trial |
+| **Cancel (use auto-trim)** | decline — see below, this **fails the trial** |
+| **Clear all** | reset the picked set |
+
+**The panel you click decides the leg.** Clicking the left panel while `rHS` is
+selected records a *left* heel strike, not a right one — an operator reading the left
+trace means the left leg, and silently recording the other foot is exactly the class of
+bug this pipeline has been bitten by before.
+
+**Cancel is not an undo, and despite its label it does not hand the trial to auto-trim.**
+Auto-trim has already failed by the time the window opens; there is nothing left to fall
+back to. Cancelling empties the picker, and the trial then **fails**, carrying auto-trim's
+own reason rather than a message blaming the operator for not picking. Use it to decline a
+trial deliberately — not to get out of the window.
+
+Right-click erases the nearest event **of any type** within a few frames, not just the
+kind currently selected, so a stray marker can be removed without first working out which
+button made it.
+
+Two live readouts keep the operator oriented. The **status line** at the top mirrors the
+pipeline's ordering rule against the current set — a duplicate of the check inside
+`segment_walking`, which is not importable, held to it by a test — so you see the
+pipeline's verdict while picking rather than a rejection afterwards. The **list at bottom
+left** shows the picked events in time order (the most recent 18, older ones counted off),
+which matters when two land within a few frames of each other and the markers overlap.
+
+Ordering is **reported but never enforced**. A pathological gait may genuinely violate
+the expected cycle, and this project stopped hard-refusing trials on 2026-08-27, so an
+out-of-order set can still be saved.
+
+### Seeing it for yourself
+
+Because no trial in this dataset currently fails hard enough to summon the picker, waiting
+for one is not a way to look at it. Set the environment variable and every trial routes
+through the window instead:
+
+```
+SYNERGY_FORCE_MANUAL_EVENTS=1 python launch_gui.py            # bash
+$env:SYNERGY_FORCE_MANUAL_EVENTS = "1"; python launch_gui.py   # PowerShell
+```
+
+This **forces the handover, not the answer**. Detection's result is discarded, so each
+trial arrives at the picker as though no cycle had been found, but the events that come
+back are the ones actually picked in the window and the trial then takes exactly the path
+a genuinely unsegmentable trial would. What it cannot tell you is whether detection would
+have failed on its own.
+
+It announces itself on every trial on purpose: left set in a shell, it would turn an
+unattended batch into one modal window per trial — or, with `allow_manual_entry=False`,
+into a run of failures blamed on the data. Unset it when you are done looking.
+
+### It opens on what the detector already found
+
+Since 2026-09-08 the window arrives **seeded** with detection's own events rather than
+blank. Auto-trim hands over when it cannot produce a usable gait *cycle*, which is not
+the same as finding nothing — a trial yielding one heel strike and three toe-offs still
+reaches the picker. Re-picking those from scratch was slower and worse: every re-picked
+event is a fresh chance to click the wrong peak on a trial the machine was mostly right
+about.
+
+So the operator corrects rather than re-enters, and **accepting the seed unchanged is a
+legitimate answer** — it means the detector's events were right and only the cycle-count
+rule rejected them. Cancel still clears the picker, so declining still reads as a decline.
+
+**One window per trial, not two.** A trial is analysed once per leg — the symmetry metric
+is only defined by comparing both — so segmentation runs twice and an unwrapped picker
+would ask the same operator the same question about the same curves twice, with no
+guarantee the two answers agree. `reuse_across_legs` remembers the first answer and
+applies it to the second leg. A decline is remembered too. Nothing is remembered across
+trials: frame count is not identity, and two trials from one participant routinely share
+one, so an unnamed trial is always asked again.
+
+### Where it lives
+
+| File | Role |
+| --- | --- |
+| `gait_event_picker.py` | the data layer — events, ordering checks, and the `rHS, lHS, rTO, lTO` tuple `segment_walking` consumes |
+| `gait_event_picker_ui.py` | the window: drawing, click handling, and the `manual_event_provider` seam into `gait_analysis_UCM_fixed` |
+| `gait_event_picker_tk.py` | the same picker as a modal window *inside* the clinician GUI |
+
+Two ways of showing one picker. The standalone version ends in `plt.show()`, which
+starts a Tk mainloop of its own; the clinician GUI is already running one, and two
+mainloops in a process deadlock. The Tk version embeds the identical figure in a
+`Toplevel` and blocks with `wait_window` instead. Both build the view through the same
+`build_picker_view`, so they cannot drift apart.
+
+The window must be created **on the main thread** — building it from the GUI's pipeline
+worker deadlocks. The worker therefore posts a `ManualEventRequest` onto the pipeline
+queue and waits; `clinician_gui` picks it up in its `root.after` poll, which is the main
+thread, and opens the window there.
+
+### Two things a reviewer should know
+
+**The model is separable from the window.** `EventPickerModel` holds every decision —
+which frame a click means, what the summary says, what the ordering verdict is — and
+touches no matplotlib. That is the only reason any of this is testable on a machine with
+no display, which is every machine that runs the test suite.
+
+**A non-interactive backend is refused before anything is drawn.** `plt.show()` returns
+immediately under Agg, so the operator would never see a window and whatever the picker
+held would be passed off as their answer. `make_reports.py` and
+`make_comparison_figures.py` both force Agg process-wide at import, so a notebook or REPL
+that imports either and then picks would hit this — no code path in the repo does today,
+but the guard costs nothing and the failure it prevents is invisible.
+`assert_interactive_backend` raises instead.
+
+### Testing it
+
+The picker's tests run in both tiers this repo uses:
+
+```
+~/miniconda3/python.exe -m pytest tests -q                        # no OpenSim needed
+~/miniconda3/envs/opencap-processing/python.exe -m pytest tests -q  # real OpenSim + Data/
+```
+
+Most coverage is fixture-based and runs anywhere, including CI.
+`tests/test_gait_event_picker_real_data.py` drives the picker against the real `.trc`
+files, and `tests/test_gait_analysis_picker_end_to_end.py` drives it through real
+`segment_walking`; both skip on a fresh clone, because `Data/` is gitignored.
 
 ## Pipeline
 
