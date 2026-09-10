@@ -20,8 +20,10 @@ not call this. It posts a `ManualEventRequest` onto the pipeline queue and
 waits; `clinician_gui` picks the request up in its `root.after` poll, which is
 the main thread, and calls this there. See `clinician_gui.answer_manual_event_request`.
 
-**Closing the window is a decline, not a failure.** `segment_walking` reads an
-empty picker as the operator declining and falls back to the auto-trim rung.
+**Closing the window is a decline, not an error.** `segment_walking` reads an
+empty picker as the operator declining, and the trial then fails carrying
+auto-trim's own reason -- a decline is a deliberate outcome, not a fallback to
+another rung, because there is no rung after this one.
 The standalone provider treats an empty-and-not-cancelled picker as "the
 window never opened", because under a non-interactive backend `plt.show()`
 returns instantly and would otherwise look like a considered answer. Here the

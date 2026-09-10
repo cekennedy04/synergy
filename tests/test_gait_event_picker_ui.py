@@ -12,9 +12,9 @@ What matters here, in order:
    (Not because these files are irregularly sampled: measured 2026-09-01, all
    77 .trc files in Data/ have a single dt of 0.016667.)
 2. **Cancel actually empties the picker.** segment_walking reads an empty set
-   as a decline and falls back to the auto-trim rung; a cancel that merely
-   closed the window would hand back whatever was picked so far and skip
-   rung two.
+   as a decline and then FAILS the trial -- there is no rung four by this
+   point; a cancel that merely closed the window would hand back whatever was
+   picked so far and segment the trial on a set the operator rejected.
 3. **Ordering is reported, never enforced** -- an out-of-order set is still
    handed back.
 """
@@ -347,7 +347,7 @@ def test_a_timeline_without_signals_still_yields_drawable_data(gait_module,
 
 def test_a_window_that_never_opened_is_an_error_not_a_decline(ui, picker):
     """The dangerous ambiguity. segment_walking reads an empty picker as the
-    operator declining and falls back to auto-trim -- but plt.show() returns
+    operator declining, and fails the trial -- but plt.show() returns
     immediately under a non-interactive backend, which also yields an empty
     picker. make_reports.py and make_comparison_figures.py force Agg
     process-wide at import, so any process touching either would silently lose

@@ -143,8 +143,8 @@ Needs a real OpenCap session with a scaled model, plus an `.mvnx` trial.
    `root.after` poll, and the worker blocks until it is answered. Check the
    window opens, that the *rest* of the GUI is properly blocked while it is up,
    that picking events and pressing "Use these events" lets the run finish, and
-   that closing it with the X button falls back to auto-trim rather than
-   hanging the worker forever.
+   that closing it with the X button declines the trial (which fails it,
+   loudly) rather than hanging the worker forever.
 6. **Re-run the same trial.** v1 overwrites rather than versioning output
    (KTD8, deliberate). Confirm it still overwrites cleanly and does not
    half-write.
@@ -204,7 +204,8 @@ detection would have failed on its own.
    line updates, the picked list on the left agrees with the markers.
 4. **"Use these events" lets the run finish**, and the resulting trial produces
    the same artefacts a normal one does -- curve matrix, metrics, PDF.
-5. **The X button falls back to auto-trim** rather than hanging the worker.
+5. **The X button declines the trial** -- which fails it, carrying auto-trim's
+   reason -- rather than hanging the worker.
    This is the failure mode worth the most attention: the worker is blocked on
    an answer, and a close that never sends one leaves it blocked forever.
 6. **One window per trial, not two.** `run_gait_analysis` builds

@@ -204,9 +204,18 @@ class EventPickerModel:
         self.picker.clear(event_type)
 
     def cancel(self):
-        """Decline to pick. segment_walking reads an empty set as a decline and
-        falls back to the auto-trim rung, so this must actually empty the
-        picker rather than merely close the window."""
+        """Decline to pick, which FAILS the trial.
+
+        `segment_walking` reads an empty set as the operator declining, and
+        there is no rung four -- auto-trim has already given up by the time
+        this window opens, so the trial then fails carrying auto-trim's own
+        reason. This must actually empty the picker rather than merely close
+        the window, because emptiness is what signals the decline.
+
+        Corrected 2026-09-10. Until then this docstring, three others and the
+        button label all said cancelling "falls back to the auto-trim rung",
+        which the code has never done.
+        """
         self.picker.clear()
         self.cancelled = True
 
@@ -292,7 +301,8 @@ def make_manual_event_provider(show=None, model_factory=EventPickerModel):
                 "make_reports.py and make_comparison_figures.py force Agg "
                 "process-wide at import, so importing either before picking "
                 "disables the picker. Press Cancel to decline a trial "
-                "deliberately -- that falls back to auto-trim.")
+                "deliberately -- that fails the trial with auto-trim's "
+                "reason, which is the only outcome left by this point.")
         return None
     return provider
 
@@ -308,7 +318,7 @@ def reuse_across_legs(provider):
     the same curves, the same question. The second answer can also differ from
     the first, which would put the two legs of one trial on different events.
 
-    The remembered answer includes a decline. Cancel means "use auto-trim",
+    The remembered answer includes a decline. Cancel means "fail this trial",
     and re-opening on the other leg the window the operator just dismissed is
     the same failure in the other direction.
 
@@ -539,12 +549,13 @@ def build_picker_view(model, figure):
     done.on_clicked(lambda _event: window.close())
 
     def on_cancel(_event):
-        # Empties the picker: segment_walking reads an empty set as a decline
-        # and falls back to the auto-trim rung rather than failing the trial.
+        # Empties the picker: segment_walking reads an empty set as a decline,
+        # and with no rung four left the trial then FAILS, carrying auto-trim's
+        # own reason rather than one blaming the operator for not picking.
         model.cancel()
         window.close()
     cancel = Button(figure.add_axes([0.02, 0.42, 0.16, 0.06]),
-                    'Cancel (use auto-trim)')
+                    'Cancel (fail trial)')
     cancel.on_clicked(on_cancel)
 
     clear = Button(figure.add_axes([0.02, 0.34, 0.16, 0.06]), 'Clear all')

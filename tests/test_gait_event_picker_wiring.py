@@ -102,7 +102,7 @@ def test_the_second_leg_replays_the_first_legs_picks(ui, picker_mod):
 
 
 def test_a_decline_is_remembered_too(ui, picker_mod):
-    """Cancel means "use auto-trim". Asking again on the other leg would
+    """Cancel means "fail this trial". Asking again on the other leg would
     re-open the window the operator just dismissed."""
     opened = []
 

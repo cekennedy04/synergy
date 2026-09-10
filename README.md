@@ -104,7 +104,7 @@ between would add a conversion that can only lose precision.
 | Hover | readout shows the frame and time under the cursor |
 | Toolbar zoom / pan | navigate without depositing events |
 | **Use these events** | accept the picked set and continue the trial |
-| **Cancel (use auto-trim)** | decline — see below, this **fails the trial** |
+| **Cancel (fail trial)** | decline — this **fails the trial**, see below |
 | **Clear all** | reset the picked set |
 
 **The panel you click decides the leg.** Clicking the left panel while `rHS` is
@@ -112,11 +112,14 @@ selected records a *left* heel strike, not a right one — an operator reading t
 trace means the left leg, and silently recording the other foot is exactly the class of
 bug this pipeline has been bitten by before.
 
-**Cancel is not an undo, and despite its label it does not hand the trial to auto-trim.**
-Auto-trim has already failed by the time the window opens; there is nothing left to fall
-back to. Cancelling empties the picker, and the trial then **fails**, carrying auto-trim's
-own reason rather than a message blaming the operator for not picking. Use it to decline a
-trial deliberately — not to get out of the window.
+**Cancel is not an undo.** Auto-trim has already failed by the time the window opens, so
+there is nothing left to fall back to: cancelling empties the picker and the trial
+**fails**, carrying auto-trim's own reason rather than a message blaming the operator for
+not picking. Use it to decline a trial deliberately — not to get out of the window.
+
+(The button read `Cancel (use auto-trim)` until 2026-09-10, which promised a fallback that
+has never existed. It, three docstrings and an error message all said so; all are now
+corrected.)
 
 Right-click erases the nearest event **of any type** within a few frames, not just the
 kind currently selected, so a stray marker can be removed without first working out which
