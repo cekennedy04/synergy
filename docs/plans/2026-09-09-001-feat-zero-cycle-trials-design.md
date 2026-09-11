@@ -3,11 +3,33 @@ title: Zero-Cycle Trials - Design
 type: feat
 date: 2026-09-09
 topic: zero-cycle-trials
-status: revised-after-review-2026-09-09
+status: SUPERSEDED by 2026-09-11-001-feat-unsegmentable-trials-design.md
 source: brainstorm dialogue, 2026-09-09
 ---
 
 # Zero-Cycle Trials — Design
+
+> **SUPERSEDED 2026-09-11 by**
+> [`2026-09-11-001-feat-unsegmentable-trials-design.md`](2026-09-11-001-feat-unsegmentable-trials-design.md).
+>
+> **Do not implement this document.** Its decision — let a zero-cycle trial flow
+> through the pipeline — was reversed after the option it was chosen over turned
+> out to have been rejected on a property it does not have. Two findings killed it:
+>
+> 1. The rejection of "skip but flag loudly" rested on the claim that a skipped
+>    trial "vanishes from the results into a log line". False:
+>    `clinician_gui.py` records a structured per-trial entry carrying `ok: False`
+>    and the full reason, and prints a per-trial `Skipped:` list naming each
+>    trial and why.
+> 2. Flow-through's own pooling hazard forced the "write no curve file" rule, and
+>    with no curve file a zero-cycle trial contributes nothing to the pooled GDI
+>    — which is what skipping already did. Its pooling advantage was zero.
+>
+> **It is kept, not deleted**, because its measured evidence is still true and
+> still load-bearing: the 7474-byte blank-CSV reproduction, the three-seam map,
+> the `_shape_scalar_entry` contract, and the `leg='auto'` hazard all remain
+> accurate descriptions of what flow-through would have cost. That evidence is
+> the argument for the successor.
 
 ## Goal
 
