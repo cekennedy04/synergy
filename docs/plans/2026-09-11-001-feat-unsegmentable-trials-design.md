@@ -3,7 +3,7 @@ title: Unsegmentable Trials - Design
 type: feat
 date: 2026-09-11
 topic: unsegmentable-trials
-status: mostly-already-built
+status: CLOSED - no work required, goal already met
 supersedes: 2026-09-09-001-feat-zero-cycle-trials-design.md
 source: ce-pov reversal, 2026-09-11
 ---
@@ -63,28 +63,36 @@ it is short.
 | Operator sees each skipped trial and its reason | completion dialog `Skipped:` block | shipped |
 | Batch continues past a failing trial | `run_batch` | shipped |
 
-The remaining gap is narrow, and it is the only work this design proposes.
+That list is the whole behaviour. The section below explains why nothing needs adding
+to it.
 
-## The gap, and the design
+## There is no gap. Close this design.
 
-**An unsegmentable trial produces no per-trial PDF page.** Its reason reaches the operator
-in the batch summary and nowhere else. A clinician reading a session's reports later sees
-a trial that is simply not there, with no page saying why.
+The first draft of this document (2026-09-11, same day) claimed one remaining item: that
+"an unsegmentable trial produces no per-trial PDF page". Verified the same day, that claim
+is wrong in a way that removes the work entirely.
 
-Build the page, at the report layer, against the record that already exists. The report
-layer is already designed for this: it renders an `unavailable` section without raising
-and prints a per-curve `reason` verbatim. A trial-level equivalent is the same idea one
-level up.
+**No trial produces an automatic PDF page.** Export runs off `self.last_shaped` and
+`self._current_figures` — an Export button acting on whichever trial the clinician
+currently has loaded. There is no per-trial report artifact for an unsegmentable trial to
+be missing from.
 
-Explicitly **not** in scope, and this is the point of the reversal:
+**An unsegmentable trial opened interactively already explains itself.** `map_error_to_message`
+has a purpose-written branch for it that tells the clinician detection failed, that no
+events were picked when the picker opened, what conditions cause it (very short recording,
+non-walking motion, noisy tracking), what to do (re-run and pick rather than closing the
+window), and gives a `rescue_trial.py` command that recovers the trial without redoing the
+conversion.
 
-- No change to `segment_walking`'s postcondition. It still guarantees at least one cycle
-  or an exception.
-- No guard in `compute_scalars`, `get_coordinates_normalized_time`, or
-  `compute_treadmill_speed`. Nothing downstream needs to learn about zero cycles.
-- No `leg='auto'` carve-out, because no zero-cycle result is ever produced.
-- No change to `combine_curves`. A failing trial writes no curve file today, which is
-  already the safe behaviour the superseded design had to legislate.
+**In a batch it is named with its reason** in the completion dialog's `Skipped:` block.
+
+So an unsegmentable trial is already visible in both paths a clinician uses, with a reason
+in both, and the remedy in one. The goal this design and its predecessor set out to reach
+was reached before either was written.
+
+**Recommendation: close this design unimplemented.** Build nothing. If a future need
+appears — a session-level report page listing unsegmentable trials, say — it should be
+specified from that need, not from this document's assumption that something is missing.
 
 ## Why this is the safer shape
 
@@ -94,17 +102,15 @@ its own evidence showed that surface was where the hazards lived — the `nan` t
 speed, the `"None"` metrics cell, the `KeyError` on an absent `mean`, the `'auto'` leg
 resolving silently to left.
 
-This design adds one page to a layer built to render missing things. It cannot corrupt a
-pooled matrix, cannot put `nan` on a report, and cannot change what any existing trial
-produces.
+The shape that won is the one that adds nothing. It cannot corrupt a pooled matrix,
+cannot put `nan` on a report, and cannot change what any existing trial produces, because
+it does not touch them.
 
 ## Testing
 
-- An unsegmentable trial produces a report page naming the trial and the reason
-  segmentation failed, and the surrounding session's other trials export unchanged.
-- A session containing an unsegmentable trial still pools: the combined matrix contains
-  exactly the segmentable trials' strides, and the GDI is scored over those.
-- The existing failure messages keep naming the leg and quoting the counts. Pinned by
+No new tests, because no new behaviour. What must keep holding is already pinned:
+
+- The failure messages keep naming the leg and quoting the counts. Pinned by
   `test_a_never_opened_window_over_a_seed_still_fails_loudly`,
   `test_one_picked_heel_strike_still_names_the_leg_and_the_counts`, and the CI-visible
   source pin `test_one_picked_heel_strike_is_not_reported_as_a_bare_cycle_shortage`.
@@ -115,17 +121,22 @@ produces.
 
 ## Open items
 
-- **Report wording** for the unsegmentable-trial page is not settled here. Choose it
-  against a rendered page per this repo's render-and-look rule, not in prose.
-- **Whether cohort figures should count unsegmentable trials separately** ("N trials, 3
-  unsegmentable") is deferred to implementation, where the figures can be looked at.
+Only one, and it is not implementation work.
+
 - **The "never drop" rule** (2026-08-27) exists in this repo only in these two design
   documents. It is a standing user instruction, not a repo artifact. Worth writing down
   properly somewhere durable if it is to keep deciding questions like this one.
 
 ## Status
 
-Not started, and mostly not needed. The behaviour this design set out to guarantee is
-shipped except for the per-trial page. Confirm the page is wanted before building it — if
-the batch summary is where operators actually look, this design is already complete and
-should be closed rather than implemented.
+**Closed 2026-09-11, unimplemented, because the work turned out not to exist.**
+
+Two designs were written for this goal. The first proposed changing `segment_walking`'s
+postcondition across 58 references; review found five wrong load-bearing claims in it. The
+second proposed one report page; verification found that page was neither missing nor
+automatic anywhere.
+
+The behaviour both were chasing — an unsegmentable trial is visible, with its reason, and
+corrupts nothing — was already shipped. What was actually needed was the one-line fix that
+landed in `63762dd`, which made the one-heel-strike failure name the leg and quote the
+counts instead of saying 'Not enough gait cycles found.'
